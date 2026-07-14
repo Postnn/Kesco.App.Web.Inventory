@@ -1,0 +1,15 @@
+@page "/"
+@using Clayzor.Lib.Web.Settings
+@inject ClayAppSettings AppSettings
+
+<PageTitle>@AppSettings.ApplicationName</PageTitle>
+
+<ClayGrid TEntity="IClayGridRow"
+          Dynamic="true"
+          Title="Инвентаризация"
+          Id="clay-grid-root"
+          ShowPagination="true"
+          ColumnMenuMode="@ColumnMenuMode.Always"
+          SelectVisible="true"
+          ShowPrint="true"
+          ShowExcel="true" />

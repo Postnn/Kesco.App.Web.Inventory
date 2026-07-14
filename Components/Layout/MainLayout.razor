@@ -1,0 +1,73 @@
+@inherits LayoutComponentBase
+@using Clayzor.Lib.Web.Controls.Themes
+@using Clayzor.Lib.Web.Settings
+
+@inject ClayAppSettings AppSettings
+@inject IHttpContextAccessor HttpContextAccessor
+
+<MudThemeProvider Theme="_theme" @bind-IsDarkMode="_isDarkMode" ObserveSystemDarkModeChange="false" />
+<MudPopoverProvider />
+<MudDialogProvider />
+<MudSnackbarProvider />
+
+<MudLayout>
+    <MudAppBar Elevation="0" Dense="true">
+        <MudIconButton Icon="@(_drawerOpen ? Icons.Material.Filled.MenuOpen : Icons.Material.Filled.Menu)"
+                       Color="Color.Inherit"
+                       Edge="Edge.Start"
+                       OnClick="@ToggleDrawer" />
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3">
+            <MudIcon Icon="@Icons.Material.Filled.Inventory" Size="Size.Medium" />
+            <MudText Typo="Typo.h6" Class="clay-appbar-title">
+                @AppSettings.ApplicationName.ToUpper()
+            </MudText>
+        </MudStack>
+        <MudSpacer />
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+            <MudIcon Icon="@Icons.Material.Filled.Person" Size="Size.Small" />
+            <MudText Typo="Typo.body2" Class="clay-drawer-username">@_userName</MudText>
+            <MudDivider Vertical="true" FlexItem="true" Class="mx-2 clay-appbar-divider" />
+            <MudIconButton Icon="@(_isDarkMode ? Icons.Material.Filled.LightMode : Icons.Material.Filled.DarkMode)"
+                           Color="Color.Inherit"
+                           Size="Size.Small"
+                           OnClick="@(() => _isDarkMode = !_isDarkMode)" />
+        </MudStack>
+    </MudAppBar>
+
+    <MudDrawer @bind-Open="_drawerOpen" Elevation="0" Variant="DrawerVariant.Responsive" Class="drawer-fast">
+        <MudNavMenu>
+            <MudNavLink Href="/" Match="NavLinkMatch.All"
+                        Icon="@Icons.Material.Filled.Inventory"
+                        IconColor="Color.Inherit">
+                Инвентаризация
+            </MudNavLink>
+        </MudNavMenu>
+
+        <MudSpacer />
+
+        <MudStack Class="pa-3 clay-drawer-footer">
+            <MudText Typo="Typo.caption" Class="clay-drawer-version">
+                Clayzor v1.0
+            </MudText>
+        </MudStack>
+    </MudDrawer>
+
+    <MudMainContent Class="pa-6">
+        <ClayErrorBar />
+        @Body
+    </MudMainContent>
+</MudLayout>
+
+@code {
+    private MudTheme _theme = ClayTheme.Create();
+    private bool _isDarkMode;
+    private bool _drawerOpen;
+    private string _userName = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        _userName = HttpContextAccessor.HttpContext?.User?.Identity?.Name ?? "Аноним";
+    }
+
+    private void ToggleDrawer() => _drawerOpen = !_drawerOpen;
+}
