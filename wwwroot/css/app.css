@@ -403,6 +403,18 @@ body {
     line-height: 26px;
 }
 
+.grouping-tray-add-btn {
+    color: var(--mud-palette-text-secondary) !important;
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+}
+
+.grouping-tray-add-btn:hover {
+    color: var(--mud-palette-primary) !important;
+    background: rgba(255, 255, 255, 0.08) !important;
+}
+
 .grouping-chip {
     display: inline-flex;
     align-items: center;
@@ -548,6 +560,28 @@ body {
     line-height: 16px;
     vertical-align: middle;
     pointer-events: none;
+}
+
+/* Бейдж группировки — зеркало chip-sort-badge, без стрелки */
+.chip-group-badge {
+    display: inline-block;
+    background: var(--lh-gold);
+    color: var(--lh-navy);
+    border-radius: 0;
+    padding: 0 4px;
+    margin-left: 3px;
+    font-size: var(--clay-font-size);
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    line-height: 16px;
+    vertical-align: middle;
+    pointer-events: none;
+}
+
+.clay-group-toggle {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
 }
 
 .chip-remove-btn {
@@ -806,8 +840,9 @@ body {
         display: none !important;
     }
 
-    /* ── Скрыть кнопки закрытия на чипах треев ── */
-    .clay-grid-printing .chip-remove-btn {
+    /* ── Скрыть кнопки на чипах треев ── */
+    .clay-grid-printing .chip-remove-btn,
+    .clay-grid-printing .grouping-tray-add-btn {
         display: none !important;
     }
 
@@ -1173,7 +1208,7 @@ body {
     color: var(--mud-palette-text-primary);
     font-weight: bold;
     border-bottom: 2px solid var(--clay-gold);
-    margin-bottom: 2px;
+    margin-bottom: -4px;
     cursor: default;
 }
 .clay-column-settings-header:hover {
