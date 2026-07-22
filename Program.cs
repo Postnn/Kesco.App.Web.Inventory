@@ -25,6 +25,9 @@ builder.Services.AddScoped<ISqlErrorHandler>(sp => sp.GetRequiredService<ClayErr
 // DALC: scoped (одно подключение на запрос) — внедряем ISqlErrorHandler
 builder.Services.AddScoped<DbManager>(sp => new DbManager(claySettings.ConnectionString, sp.GetRequiredService<ISqlErrorHandler>()));
 
+// Сервис авто-переподключения к БД (оверлей при потере соединения)
+builder.Services.AddScoped<ClayDbReconnectService>();
+
 // Аутентификация: Windows (Kerberos/NTLM)
 builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme)
     .AddNegotiate();
