@@ -1,0 +1,94 @@
+@page "/tree-test"
+@using Clayzor.Lib.Web.Settings
+@using Clayzor.Lib.Web.Controls.Components.Tree
+@using Clayzor.Lib.Web.Controls.Components.Tree.Models
+@inject ClayAppSettings AppSettings
+
+<PageTitle>Тест дерева</PageTitle>
+
+<MudText Typo="Typo.h5" Class="mb-2">Тест ClayTreeView</MudText>
+
+<div class="d-flex gap-2 mb-3" style="align-items:center">
+    <MudButton Variant="@(_nested ? Variant.Filled : Variant.Outlined)" Size="Size.Small"
+               OnClick="() => OnModeChanged(true)" Color="Color.Primary">Вложенные множества</MudButton>
+    <MudButton Variant="@(!_nested ? Variant.Filled : Variant.Outlined)" Size="Size.Small"
+               OnClick="() => OnModeChanged(false)">Простой родитель</MudButton>
+
+    <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick="ReloadAsync">Обновить</MudButton>
+</div>
+
+<div class="d-flex gap-4 mb-2">
+    <MudPaper Elevation="1" Class="pa-3" Style="flex:1;max-width:400px">
+        <ClayTreeView Options="_treeOptions" OnNodeClick="OnNodeClick" />
+    </MudPaper>
+
+    @if (_lastNode is not null)
+    {
+        <MudPaper Elevation="1" Class="pa-3" Style="flex:0 0 auto;min-width:200px">
+            <MudText Typo="Typo.subtitle2">Последний узел</MudText>
+            <div>Id: @_lastNode.Id</div>
+            <div>Text: @_lastNode.Text</div>
+            <div>Level: @_lastNode.Level</div>
+            <div>HasChildren: @_lastNode.HasChildren</div>
+        </MudPaper>
+    }
+
+    <MudPaper Elevation="1" Class="pa-3" Style="flex:0 0 auto;min-width:150px">
+        <MudText>Раскрыто узлов: @_expandedCount</MudText>
+    </MudPaper>
+</div>
+
+@code {
+    private bool _nested = true;
+    private ClayTreeNode? _lastNode;
+    private int _expandedCount;
+
+    private readonly ClayTreeOptions _nestedOptions = new()
+    {
+        TreeId = "tree-test-nested",
+        SelectSql = "SELECT КодРасположения, Расположение, Parent, L, R FROM Расположения",
+        HierarchyMode = Clayzor.Lib.Entities.Tree.ClayTreeHierarchyMode.NestedSet,
+        Schema = new()
+        {
+            IdColumn = "КодРасположения",
+            TextColumn = "Расположение",
+
+        },
+    };
+
+    private readonly ClayTreeOptions _parentOptions = new()
+    {
+        TreeId = "tree-test-parent",
+        SelectSql = "SELECT КодРасположения, Расположение, Parent, L, R FROM Расположения",
+        HierarchyMode = Clayzor.Lib.Entities.Tree.ClayTreeHierarchyMode.ParentKey,
+        Schema = new()
+        {
+            IdColumn = "КодРасположения",
+            TextColumn = "Расположение",
+            RootParentValue = null,
+        },
+    };
+
+    private ClayTreeOptions _treeOptions => _nested ? _nestedOptions : _parentOptions;
+
+    private async Task OnModeChanged(bool nested)
+    {
+        _nested = nested;
+        _lastNode = null;
+        await Task.CompletedTask;
+    }
+
+    private Task OnNodeClick(ClayTreeNode node)
+    {
+        _lastNode = node;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private async Task ReloadAsync()
+    {
+        // Переключение режима — новый объект настроек заставит OnParametersSet перезагрузиться
+        _nestedOptions.SelectSql = _nestedOptions.SelectSql; // триггер для сравнения
+        await Task.CompletedTask;
+    }
+}

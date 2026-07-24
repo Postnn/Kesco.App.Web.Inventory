@@ -1,7 +1,7 @@
 using Kesco.App.Web.Inventory.Components;
 using Clayzor.Lib.DALC;
 using Clayzor.Lib.Web.Controls;
-using Clayzor.Lib.Web.Controls.Components.Grid.Dynamic;
+using Clayzor.Lib.Web.Controls.Services;
 using Clayzor.Lib.Web.Settings;
 using Microsoft.AspNetCore.Authentication.Negotiate;
 using MudBlazor.Extensions;
@@ -17,6 +17,9 @@ builder.Services.AddSingleton(claySettings);
 
 // Динамический режим ClayGrid
 builder.Services.AddClayGridDynamic(builder.Configuration);
+
+// Компонент ClayTreeView
+builder.Services.AddClayTree();
 
 // Сервис глобального отображения ошибок
 builder.Services.AddScoped<ClayErrorService>();
