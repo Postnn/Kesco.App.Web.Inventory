@@ -4,11 +4,17 @@
 
 <PageTitle>@AppSettings.ApplicationName</PageTitle>
 
-<ClayGrid TEntity="IClayGridRow"
-          Dynamic="true"
-          Id="clay-grid-root"
-          ShowPagination="true"
-          ColumnMenuMode="@ColumnMenuMode.Always"
-          SelectVisible="true"
-          ShowPrint="true"
-          ShowExcel="true" />
+<ClayGrid TEntity="IClayGridRow" Options="_gridOptions" />
+
+@code {
+    private readonly ClayGridOptions _gridOptions = new()
+    {
+        Dynamic        = true,
+        Id             = "clay-grid-root",
+        ShowPagination = true,
+        ColumnMenuMode = ColumnMenuMode.Always,
+        SelectVisible  = true,
+        ShowPrint      = true,
+        ShowExcel      = true,
+    };
+}
