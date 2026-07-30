@@ -19,7 +19,7 @@
 
 <div class="d-flex gap-4 mb-2">
     <MudPaper Elevation="1" Class="pa-3" Style="flex:1;max-width:400px">
-        <ClayTreeView Options="_treeOptions" OnNodeClick="OnNodeClick" />
+        <ClayTreeView Options="_treeOptions" OnNodeClick="OnNodeClick" @ref="_treeRef" />
     </MudPaper>
 
     @if (_lastNode is not null)
@@ -42,17 +42,20 @@
     private bool _nested = true;
     private ClayTreeNode? _lastNode;
     private int _expandedCount;
+    private ClayTreeView? _treeRef;
 
     private readonly ClayTreeOptions _nestedOptions = new()
     {
         TreeId = "tree-test-nested",
-        SelectSql = "SELECT КодРасположения, Расположение, Parent, L, R FROM Расположения",
+        ConnectionStringName = "DS_resource",
+        SelectSql = "SELECT КодРесурса, РесурсРус, Parent, L, R FROM Ресурсы",
         HierarchyMode = Clayzor.Lib.Entities.Tree.ClayTreeHierarchyMode.NestedSet,
         ShowBusyOverlay = false,
+        ShowLines = true,
         Schema = new()
         {
-            IdColumn = "КодРасположения",
-            TextColumn = "Расположение",
+            IdColumn = "КодРесурса",
+            TextColumn = "РесурсРус",
 
         },
     };
@@ -75,9 +78,16 @@
 
     private async Task OnModeChanged(bool nested)
     {
+        if (_nested == nested)
+        {
+            // Повторный клик по активной кнопке — принудительная перезагрузка
+            if (_treeRef is not null)
+                await ((IClayTreeView)_treeRef).ReloadAsync();
+            return;
+        }
+
         _nested = nested;
         _lastNode = null;
-        await Task.CompletedTask;
     }
 
     private Task OnNodeClick(ClayTreeNode node)
@@ -89,8 +99,7 @@
 
     private async Task ReloadAsync()
     {
-        // Переключение режима — новый объект настроек заставит OnParametersSet перезагрузиться
-        _nestedOptions.SelectSql = _nestedOptions.SelectSql; // триггер для сравнения
-        await Task.CompletedTask;
+        if (_treeRef is not null)
+            await ((IClayTreeView)_treeRef).ReloadAsync();
     }
 }
