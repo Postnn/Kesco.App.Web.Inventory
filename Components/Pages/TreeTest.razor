@@ -48,6 +48,7 @@
         TreeId = "tree-test-nested",
         SelectSql = "SELECT КодРасположения, Расположение, Parent, L, R FROM Расположения",
         HierarchyMode = Clayzor.Lib.Entities.Tree.ClayTreeHierarchyMode.NestedSet,
+        ShowBusyOverlay = false,
         Schema = new()
         {
             IdColumn = "КодРасположения",
@@ -61,6 +62,7 @@
         TreeId = "tree-test-parent",
         SelectSql = "SELECT КодРасположения, Расположение, Parent, L, R FROM Расположения",
         HierarchyMode = Clayzor.Lib.Entities.Tree.ClayTreeHierarchyMode.ParentKey,
+        ShowBusyOverlay = false,
         Schema = new()
         {
             IdColumn = "КодРасположения",
