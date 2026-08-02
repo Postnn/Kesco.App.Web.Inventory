@@ -1,4 +1,5 @@
 @page "/tree-test"
+@using Clayzor.Lib.Web.Controls.Components.Grid
 @using Clayzor.Lib.Web.Settings
 @using Clayzor.Lib.Web.Controls.Components.Tree
 @using Clayzor.Lib.Web.Controls.Components.Tree.Models
@@ -48,7 +49,7 @@
     {
         TreeId = "tree-test-nested",
         ConnectionStringName = "DS_resource",
-        SelectSql = "SELECT КодРесурса, РесурсРус, Parent, L, R FROM Ресурсы",
+        SelectSql = "SELECT КодРесурса, РесурсРус, РесурсЛат, Parent, L, R FROM Ресурсы",
         HierarchyMode = Clayzor.Lib.Entities.Tree.ClayTreeHierarchyMode.NestedSet,
         ShowBusyOverlay = false,
         ShowLines = true,
@@ -58,7 +59,12 @@
         {
             IdColumn = "КодРесурса",
             TextColumn = "РесурсРус",
-
+            ExtraColumns = ["РесурсЛат"],
+        },
+        FilterColumns = new ClayTreeFilterColumn[]
+        {
+            new() { SqlName = "РесурсРус", DisplayName = "Ресурс (рус)", ColumnType = ColumnType.Text },
+            new() { SqlName = "РесурсЛат", DisplayName = "Ресурс (лат)", ColumnType = ColumnType.Text },
         },
     };
 

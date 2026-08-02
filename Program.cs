@@ -19,7 +19,7 @@ builder.Services.AddSingleton(claySettings);
 builder.Services.AddClayGridDynamic(builder.Configuration);
 
 // Компонент ClayTreeView
-builder.Services.AddClayTree();
+builder.Services.AddClayTree(builder.Configuration);
 
 // Сервис глобального отображения ошибок
 builder.Services.AddScoped<ClayErrorService>();
