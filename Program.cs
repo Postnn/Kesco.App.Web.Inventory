@@ -1,6 +1,7 @@
 using Kesco.App.Web.Inventory.Components;
 using Clayzor.Lib.DALC;
 using Clayzor.Lib.Web.Controls;
+using Clayzor.Lib.Web.Controls.Components.Tree.State;
 using Clayzor.Lib.Web.Controls.Services;
 using Clayzor.Lib.Web.Settings;
 using Microsoft.AspNetCore.Authentication.Negotiate;
@@ -18,8 +19,9 @@ builder.Services.AddSingleton(claySettings);
 // Динамический режим ClayGrid
 builder.Services.AddClayGridDynamic(builder.Configuration);
 
-// Компонент ClayTreeView
+// Компонент ClayTreeView (персистентное состояние через SQL)
 builder.Services.AddClayTree(builder.Configuration);
+builder.Services.AddScoped<IClayTreeStateStore, ClaySqlTreeStateStore>();
 
 // Сервис глобального отображения ошибок
 builder.Services.AddScoped<ClayErrorService>();
