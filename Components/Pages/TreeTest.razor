@@ -41,7 +41,7 @@
 @code {
     private bool _nested = true;
     private ClayTreeNode? _lastNode;
-    private int _expandedCount;
+    private int _expandedCount = 0;
     private ClayTreeView? _treeRef;
 
     private readonly ClayTreeOptions _nestedOptions = new()
