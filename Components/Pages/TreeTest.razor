@@ -51,6 +51,7 @@
         ConnectionStringName = "DS_resource",
         SelectSql = "SELECT КодРесурса, РесурсРус, РесурсЛат, Parent, L, R FROM Ресурсы",
         HierarchyMode = Clayzor.Lib.Entities.Tree.ClayTreeHierarchyMode.NestedSet,
+        Style = "height:calc(100vh - 210px)",
         ShowBusyOverlay = false,
         ShowLines = true,
         LevelPageSize = 10,
@@ -73,6 +74,7 @@
         TreeId = "tree-test-parent",
         SelectSql = "SELECT КодРасположения, Расположение, Parent, L, R FROM Расположения",
         HierarchyMode = Clayzor.Lib.Entities.Tree.ClayTreeHierarchyMode.ParentKey,
+        Style = "height:calc(100vh - 210px)",
         ShowBusyOverlay = false,
         Schema = new()
         {
