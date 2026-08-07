@@ -1,6 +1,7 @@
 using Kesco.App.Web.Inventory.Components;
 using Clayzor.Lib.DALC;
 using Clayzor.Lib.Web.Controls;
+using Clayzor.Lib.Web.Controls.Components.Tree;
 using Clayzor.Lib.Web.Controls.Components.Tree.State;
 using Clayzor.Lib.Web.Controls.Services;
 using Clayzor.Lib.Web.Settings;
@@ -22,6 +23,7 @@ builder.Services.AddClayGridDynamic(builder.Configuration);
 // Компонент ClayTreeView (персистентное состояние через SQL)
 builder.Services.AddClayTree(builder.Configuration);
 builder.Services.AddScoped<IClayTreeStateStore, ClaySqlTreeStateStore>();
+// IClayTreeMutations — через ClayTreeOptions.TableName (см. TreeTest.razor)
 
 // Сервис глобального отображения ошибок
 builder.Services.AddScoped<ClayErrorService>();
