@@ -1,0 +1,96 @@
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Select
+@using Clayzor.Lib.Web.DBSelect.Employees
+
+@inject EmployeeSelectDataSource EmployeeSource
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Row="true" AlignItems="AlignItems.End" Spacing="2" Class="mb-3">
+            <MudTextField @bind-Value="_searchText"
+                          Label="Имя сотрудника"
+                          Variant="Variant.Outlined"
+                          Margin="Margin.Dense"
+                          Immediate="true" />
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SearchAsync" Disabled="_loading">
+                Найти
+            </MudButton>
+        </MudStack>
+
+        <MudTable T="Employee" Items="_employees" Loading="_loading" Hover="true" Dense="true" Height="400px">
+            <HeaderContent>
+                <MudTh>Сотрудник</MudTh>
+                <MudTh>Имя на английском</MudTh>
+                <MudTh></MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Сотрудник">@context.Name</MudTd>
+                <MudTd DataLabel="Имя на английском">@context.NameEn</MudTd>
+                <MudTd>
+                    <MudButton Variant="Variant.Text" Color="Color.Primary" OnClick="() => Select(context)">
+                        Выбрать
+                    </MudButton>
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudText>Сотрудники не найдены</MudText>
+            </NoRecordsContent>
+        </MudTable>
+        @if (_hasMore)
+        {
+            <MudText Typo="Typo.caption" Class="mt-2">Показаны первые 50 записей. Уточните поиск.</MudText>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Отмена</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private string _searchText = string.Empty;
+    private List<Employee> _employees = [];
+    private bool _loading;
+    private bool _hasMore;
+
+    [CascadingParameter]
+    private IMudDialogInstance? MudDialog { get; set; }
+
+    /// <summary>Начальный текст поиска, переданный из ClaySelect.</summary>
+    [Parameter]
+    public string InitialSearch { get; set; } = string.Empty;
+
+    /// <summary>Выполняет начальную загрузку после первого интерактивного рендера.</summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _searchText = InitialSearch;
+            await SearchAsync();
+        }
+    }
+
+    private async Task SearchAsync()
+    {
+        _loading = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var result = await EmployeeSource.SearchAsync(new ClaySelectSearchRequest
+            {
+                SearchText = _searchText.Trim(),
+                Limit = 50,
+            });
+            _employees = result.Items.ToList();
+            _hasMore = result.HasMore;
+        }
+        finally
+        {
+            _loading = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Select(Employee employee) => MudDialog?.Close(DialogResult.Ok(employee));
+
+    private void Cancel() => MudDialog?.Cancel();
+}

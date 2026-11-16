@@ -14,6 +14,7 @@
     <ProjectReference Include="..\Clayzor.Lib.Entities\Clayzor.Lib.Entities.csproj" />
     <ProjectReference Include="..\Clayzor.Lib.Web.Settings\Clayzor.Lib.Web.Settings.csproj" />
     <ProjectReference Include="..\Clayzor.Lib.Web.Controls\Clayzor.Lib.Web.Controls.csproj" />
+    <ProjectReference Include="..\Clayzor.Lib.Web.DBSelect\Clayzor.Lib.Web.DBSelect.csproj" />
   </ItemGroup>
   <Import Project="$(SolutionDir)build\StyleGuard.targets" Condition="Exists('$(SolutionDir)build\StyleGuard.targets')" />
 </Project>

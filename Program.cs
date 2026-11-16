@@ -16,6 +16,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddWebConfig();
 var claySettings = builder.Configuration.BindClaySettings();
 builder.Services.AddSingleton(claySettings);
+Clayzor.Lib.Entities.MedicalTests.DapperColumnMapper.Initialize();
 
 // Динамический режим ClayGrid
 builder.Services.AddClayGridDynamic(builder.Configuration);
@@ -31,6 +32,10 @@ builder.Services.AddScoped<ISqlErrorHandler>(sp => sp.GetRequiredService<ClayErr
 
 // DALC: scoped (одно подключение на запрос) — внедряем ISqlErrorHandler
 builder.Services.AddScoped<DbManager>(sp => new DbManager(claySettings.ConnectionString, sp.GetRequiredService<ISqlErrorHandler>()));
+
+// Общие источники данных ClaySelect
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.EquipmentTypeSelectDataSource>();
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Employees.EmployeeSelectDataSource>();
 
 // Сервис авто-переподключения к БД (оверлей при потере соединения)
 builder.Services.AddScoped<ClayDbReconnectService>();
