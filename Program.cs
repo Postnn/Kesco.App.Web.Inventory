@@ -39,6 +39,7 @@ builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Employees.EmployeeSelectData
 
 // Сервис авто-переподключения к БД (оверлей при потере соединения)
 builder.Services.AddScoped<ClayDbReconnectService>();
+builder.Services.AddScoped<ClaySelectAdvancedSearchService>();
 
 // Аутентификация: Windows (Kerberos/NTLM)
 builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme)

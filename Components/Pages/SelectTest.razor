@@ -3,12 +3,13 @@
 @using Clayzor.Lib.Web.Controls.Components.Select
 @using Clayzor.Lib.Web.DBSelect.Equipment
 @using Clayzor.Lib.Web.DBSelect.Employees
-@using Kesco.App.Web.Inventory.Components.Dialogs
+@using Clayzor.Lib.Web.Controls.Services
 
 @inject EquipmentTypeSelectDataSource EquipmentTypeSource
 @inject Clayzor.Lib.DALC.DbManager Db
 @inject EmployeeSelectDataSource EmployeeSource
-@inject IDialogService DialogService
+@inject ClaySelectAdvancedSearchService AdvancedSearchService
+@inject IConfiguration Configuration
 
 <PageTitle>Тест ClaySelect</PageTitle>
 
@@ -132,25 +133,14 @@
         return Task.CompletedTask;
     }
 
-    private async Task<ClaySelectExternalResult<Employee, int?>?> OpenEmployeeSearchAsync(
+    private Task<ClaySelectExternalResult<Employee, int?>?> OpenEmployeeSearchAsync(
         ClaySelectAdvancedSearchContext context)
     {
-        var parameters = new DialogParameters<EmployeeSearchDialog>
-        {
-            { dialog => dialog.InitialSearch, context.SearchText },
-        };
-        var options = new DialogOptionsEx
-        {
-            MaxWidth = MaxWidth.Medium,
-            FullWidth = true,
-            DragMode = MudDialogDragMode.Simple,
-        };
-        var dialog = await DialogService.ShowExAsync<EmployeeSearchDialog>(
-            "Поиск сотрудника", parameters, options);
-        var result = await dialog.Result;
-        return result is null || result.Canceled || result.Data is not Employee employee
-            ? null
-            : ClaySelectExternalResult<Employee, int?>.FromItem(employee);
+        var searchUrl = Configuration["Users:SearchUrl"]
+                        ?? throw new InvalidOperationException("Не задан Users:SearchUrl");
+        var separator = searchUrl.Contains('?') ? '&' : '?';
+        var url = $"{searchUrl}{separator}search={Uri.EscapeDataString(context.SearchText)}";
+        return AdvancedSearchService.OpenAsync<Employee, int?>(url);
     }
 
     private async Task ValidateAsync()
