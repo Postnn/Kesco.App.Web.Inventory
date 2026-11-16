@@ -35,7 +35,6 @@ builder.Services.AddScoped<DbManager>(sp => new DbManager(claySettings.Connectio
 
 // Общие источники данных ClaySelect
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.EquipmentTypeSelectDataSource>();
-builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.EquipmentModelSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Employees.EmployeeSelectDataSource>();
 
 // Сервис авто-переподключения к БД (оверлей при потере соединения)

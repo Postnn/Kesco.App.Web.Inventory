@@ -6,7 +6,7 @@
 @using Kesco.App.Web.Inventory.Components.Dialogs
 
 @inject EquipmentTypeSelectDataSource EquipmentTypeSource
-@inject EquipmentModelSelectDataSource EquipmentModelSource
+@inject Clayzor.Lib.DALC.DbManager Db
 @inject EmployeeSelectDataSource EmployeeSource
 @inject IDialogService DialogService
 
@@ -41,9 +41,10 @@
                             @bind-Value="_equipmentTypeId"
                             SelectedItemChanged="OnEquipmentTypeChanged"
                             Options="_equipmentTypeOptions" />
-                <ClaySelect TItem="EquipmentModel"
+                <ClaySelect @key="_equipmentTypeId"
+                            TItem="EquipmentModel"
                             TValue="int?"
-                            DataSource="EquipmentModelSource"
+                            DataSource="_equipmentModelSource"
                             ValueSelector="@(item => (int?)item.Id)"
                             TextSelector="@(item => item.Name)"
                             @bind-Value="_equipmentModelId"
@@ -83,6 +84,8 @@
     private EquipmentModel? _equipmentModel;
     private int? _employeeId;
     private Employee? _employee;
+    private EquipmentModelSelectDataSource? _equipmentModelSourceField;
+    private EquipmentModelSelectDataSource _equipmentModelSource => _equipmentModelSourceField ??= new(Db);
 
     private readonly List<StatusItem> _statuses =
     [
@@ -124,7 +127,7 @@
     {
         _equipmentModelId = null;
         _equipmentModel = null;
-        EquipmentModelSource.Filter.EquipmentTypeId = type?.Id;
+        _equipmentModelSource.Filter.EquipmentTypeId = type?.Id;
         _equipmentModelOptions.Placeholder = type is null ? "Сначала выберите тип" : "Введите модель";
         return Task.CompletedTask;
     }
