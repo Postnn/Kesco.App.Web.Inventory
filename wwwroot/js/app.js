@@ -25,3 +25,27 @@ window.clayFocusElement = function (element) {
     requestAnimationFrame(tryFocus);
 };
 
+
+// Обновление родительского списка и закрытие legacy-совместимого popup формы модели.
+window.clayModelEquipmentForm = {
+    refreshOpener() {
+        try {
+            if (!window.opener || window.opener.closed) return;
+            if (typeof window.opener.refresh === "function") window.opener.refresh();
+            else window.opener.location.reload();
+        } catch (_) {
+            // Родительское окно может быть в другом origin; его обновление необязательно.
+        }
+    },
+
+    close() {
+        window.close();
+        setTimeout(() => {
+            if (!window.closed && window.history.length > 1) window.history.back();
+        }, 100);
+    },
+
+    browseFile(elementId) {
+        document.getElementById(elementId)?.click();
+    }
+};

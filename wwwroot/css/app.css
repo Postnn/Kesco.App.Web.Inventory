@@ -1,1 +1,60 @@
 /* Стили этого приложения. Общий стиль компонентов Clayzor — в _content/Clayzor.Lib.Web.Controls/css/clay.css (см. STYLE_RULES.md §1). */
+
+.model-equipment-form {
+    font-family: var(--clay-font-family);
+    font-size: var(--clay-font-size);
+}
+
+.model-equipment-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.model-equipment-row {
+    display: grid;
+    grid-template-columns: 160px minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+}
+
+.model-equipment-row-top {
+    align-items: start;
+}
+
+.model-equipment-label {
+    padding-top: 4px;
+    color: var(--mud-palette-text-secondary);
+}
+
+.model-equipment-inline {
+    display: grid;
+    grid-template-columns: minmax(90px, 0.45fr) minmax(150px, 1fr);
+    align-items: center;
+    gap: 10px;
+}
+
+.model-equipment-inline-label {
+    display: none;
+}
+
+@media (max-width: 600px) {
+    .model-equipment-row {
+        grid-template-columns: 1fr;
+        gap: 4px;
+    }
+
+    .model-equipment-inline {
+        grid-template-columns: 1fr;
+    }
+}
+
+.phone-template-file {
+    display: none;
+}
+
+.phone-template-editor textarea {
+    min-height: 420px;
+    font-family: monospace;
+    font-size: 14px;
+}

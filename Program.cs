@@ -16,6 +16,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddWebConfig();
 builder.Configuration["URI_user_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_user_form");
 builder.Configuration["URI_user_search"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_user_search");
+builder.Configuration["URI_resource_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_resource_form");
+builder.Configuration["URI_resource_search"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_resource_search");
 var claySettings = builder.Configuration.BindClaySettings();
 builder.Services.AddSingleton(claySettings);
 Clayzor.Lib.Entities.MedicalTests.DapperColumnMapper.Initialize();
@@ -37,7 +39,16 @@ builder.Services.AddScoped<DbManager>(sp => new DbManager(claySettings.Connectio
 
 // Общие источники данных ClaySelect
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.EquipmentTypeSelectDataSource>();
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.MemoryTypeSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Employees.EmployeeSelectDataSource>();
+builder.Services.AddScoped(sp =>
+{
+    var connectionString = WebConfigExtensions.ReadConnectionStringFromWebConfig("DS_resource")
+                           ?? throw new InvalidOperationException("Не задана строка подключения DS_resource");
+    return new Clayzor.Lib.Web.DBSelect.Equipment.ResourceSelectDataSource(
+        new DbManager(connectionString, sp.GetRequiredService<ISqlErrorHandler>()));
+});
+builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.ModelEquipmentFormService>();
 
 // Сервис авто-переподключения к БД (оверлей при потере соединения)
 builder.Services.AddScoped<ClayDbReconnectService>();

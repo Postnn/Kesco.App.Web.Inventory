@@ -1,0 +1,50 @@
+@page "/PhoneTemplateForm"
+@using Clayzor.Lib.Entities.Inventory
+@using Kesco.App.Web.Inventory.Services
+@inject ModelEquipmentFormService Service
+@inject IDialogService DialogService
+@inject NavigationManager Navigation
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+
+<PageTitle>@Title</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
+
+<MudPaper Class="pa-4 model-equipment-form" MaxWidth="960px">
+    <MudText Typo="Typo.h5" Class="mb-3">@Title</MudText>
+    <ClayToolbar>
+        <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
+        <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
+        <ClayToolbarButton Options="_loadOptions" Disabled="@(_loading || _saving || !_canEdit)" OnClick="BrowseFileAsync" />
+        <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving)" OnClick="RefreshAsync" />
+        <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
+    </ClayToolbar>
+    <InputFile id="phoneTemplateFile" class="phone-template-file" OnChange="LoadFileAsync" accept=".txt,.cfg,.xml" />
+
+    @if (_notFound)
+    {
+        <MudAlert Severity="Severity.Warning">Модель не найдена или не относится к типу IP-телефон.</MudAlert>
+    }
+    else if (_model is not null)
+    {
+        if (!_canEdit)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-3">
+                Для изменения шаблона требуется роль «Дежурный инженер» (102).
+            </MudAlert>
+        }
+        <ClayTextArea @bind-Value="_model.PhoneTemplate" Options="_templateOptions" />
+    }
+
+    <ClayChanged ChangedById="_model?.ChangedById"
+                 ChangedByName="@_model?.ChangedByName"
+                 ChangedAt="_model?.ChangedAt"
+                 ChangedByUrl="@ChangedByUrl" />
+</MudPaper>
+
+<MudOverlay Visible="@(_loading || _saving)" DarkBackground="true">
+    <div class="clay-busy">
+        <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" />
+        <span>@(_saving ? "Сохранение шаблона…" : "Загрузка шаблона…")</span>
+    </div>
+</MudOverlay>
