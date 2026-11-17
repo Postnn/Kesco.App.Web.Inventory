@@ -11,6 +11,7 @@
 @inject EmployeeSelectDataSource EmployeeSource
 @inject ClaySelectAdvancedSearchService AdvancedSearchService
 @inject IConfiguration Configuration
+@inject Microsoft.JSInterop.IJSRuntime JS
 
 <PageTitle>Тест ClaySelect</PageTitle>
 
@@ -65,6 +66,7 @@
                             ValueSelector="@(item => (int?)item.Id)"
                             TextSelector="@(item => item.Name)"
                             AdvancedSearch="OpenEmployeeSearchAsync"
+                            ViewItem="OpenEmployeeViewAsync"
                             @bind-Value="_employeeId"
                             @bind-SelectedItem="_employee"
                             Options="_employeeOptions" />
@@ -144,6 +146,14 @@
         var separator = searchUrl.Contains('?') ? '&' : '?';
         var url = $"{searchUrl}{separator}search={Uri.EscapeDataString(context.SearchText)}";
         return AdvancedSearchService.OpenAsync<Employee, int?>(url, _pageCts.Token);
+    }
+
+    private async Task OpenEmployeeViewAsync(Employee employee)
+    {
+        var formUrl = Configuration["URI_user_form"]
+                      ?? throw new InvalidOperationException("Не задан URI_user_form");
+        var separator = formUrl.Contains('?') ? '&' : '?';
+        await JS.InvokeVoidAsync("open", $"{formUrl}{separator}id={employee.Id}", "_blank");
     }
 
     private async Task ValidateAsync()
