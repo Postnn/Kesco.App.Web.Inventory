@@ -19,6 +19,7 @@ public partial class EquipmentForm : IDisposable
 {
     private const int InventorySpecialistRoleId = 43;
     private const int SimEquipmentTypeId = 27;
+    private const int OnHandsLocationId = 55;
 
     private readonly CancellationTokenSource _pageCts = new();
     private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "equipment-form" };
@@ -33,6 +34,10 @@ public partial class EquipmentForm : IDisposable
         new() { Title = "Подключение", TextSelector = item => item.ConnectionEquipmentId is > 0 ? $"#{item.ConnectionEquipmentId}" : string.Empty },
         new() { Title = "Срок возврата", TextSelector = item => (item.ReturnDate?.ToString("dd.MM.yyyy") ?? string.Empty) + (string.IsNullOrWhiteSpace(item.Notes) ? string.Empty : $" ({item.Notes})") },
     ];
+    private readonly ClayDetailGridOptions _locationGridOptions = new() { EmptyText = "Нет расположений", AddTooltip = "Добавить расположение" };
+    private IReadOnlyList<ClayDetailColumn<EquipmentLocationPeriod>> _locationColumns = null!;
+    private List<EquipmentLocationPeriod> _locations = [];
+    private readonly Dictionary<DateTime, DateTime> _localDates = new();
     private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
     private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Введите документ поступления" };
     private readonly ClaySelectOptions _writeOffDocumentOptions = new() { Placeholder = "Введите документ списания" };
@@ -58,6 +63,7 @@ public partial class EquipmentForm : IDisposable
     private List<EquipmentPhoneLink> _originalPhones = [];
     private int? _phoneToAdd;
     private int _phoneVersion;
+    private int _locationVersion;
     private string? _warningMessage;
     private DateTime? _writeOffDate;
     private TimeSpan? _writeOffTime;
@@ -97,6 +103,20 @@ public partial class EquipmentForm : IDisposable
         ? EquipmentIns.BuildEditUrl(Configuration["URI_user_form"]!, _model.ChangedById)
         : null;
     private Func<EquipmentModel, Task>? ModelViewItem => !string.IsNullOrWhiteSpace(Configuration["URI_model_form"]) ? OpenModelViewAsync : null;
+
+    /// <inheritdoc />
+    protected override void OnInitialized()
+    {
+        _locationColumns =
+        [
+            new() { Title = "С", TextSelector = item => FormatDisplayDate(item.FromUtc, true) },
+            new() { Title = "Расположение", TextSelector = item => item.LocationName },
+            new() { Title = "Срок возврата", TextSelector = item => item.ReturnDate?.ToString("dd.MM.yyyy") ?? string.Empty },
+            new() { Title = "Примечания", TextSelector = item => item.Notes },
+            new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
+            new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAtUtc, true) },
+        ];
+    }
 
     /// <inheritdoc />
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -148,6 +168,9 @@ public partial class EquipmentForm : IDisposable
                 : (IReadOnlyList<EquipmentPhoneLink>)[];
             if (!IsCurrent(version, id))
                 return;
+            var locations = await Service.GetLocationsAsync(id);
+            if (!IsCurrent(version, id))
+                return;
             DateTime? localWriteOff = null;
             if (model.WriteOffAtUtc is not null)
             {
@@ -163,6 +186,8 @@ public partial class EquipmentForm : IDisposable
             _selectedModel = selectedModel;
             _phones = phones.ToList();
             _originalPhones = ClonePhones(phones);
+            _locations = locations.ToList();
+            await RefreshLocationDisplayDatesAsync();
             _phoneToAdd = null;
             _phoneVersion++;
             _confirmedOwnerId = model.OwnerId;
@@ -416,6 +441,129 @@ public partial class EquipmentForm : IDisposable
             ChangedAt = item.ChangedAt,
         }).ToList();
 
+    private async Task OpenLocationDialogAsync(EquipmentLocationPeriod? existing)
+    {
+        if (_model is null || !_canEdit || _saving)
+            return;
+        var isEdit = existing is not null;
+        var parameters = new DialogParameters<EquipmentLocationDialog>
+        {
+            { dialog => dialog.IsEdit, isEdit },
+            { dialog => dialog.LocationId, existing?.LocationId },
+            { dialog => dialog.FromDate, existing?.FromUtc.Date },
+            { dialog => dialog.FromTime, existing?.FromUtc.TimeOfDay },
+            { dialog => dialog.ReturnDate, existing?.ReturnDate },
+            { dialog => dialog.Notes, existing?.Notes ?? string.Empty },
+        };
+        var dialog = await DialogService.ShowAsync<EquipmentLocationDialog>("Расположение", parameters);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not EquipmentLocationDialogResult value)
+            return;
+        if (!isEdit && _locations.LastOrDefault()?.LocationId == value.LocationId)
+        {
+            _validationMessage = "Оборудование уже находится в выбранном расположении.";
+            return;
+        }
+        var version = ++_locationVersion;
+        var equipmentId = _model.Id;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        await Task.Delay(100);
+        try
+        {
+            var requireResponsible = value.LocationId == OnHandsLocationId &&
+                                     !await Service.HasCurrentResponsibleAsync(equipmentId);
+            var fromUtc = await ConvertLocalToUtcAsync(value.FromLocal);
+            if (_disposed || version != _locationVersion || _model.Id != equipmentId)
+                return;
+            var location = new EquipmentLocationPeriod
+            {
+                EquipmentId = equipmentId,
+                LocationId = value.LocationId,
+                FromUtc = existing?.FromUtc ?? fromUtc,
+                ReturnDate = value.ReturnDate,
+                Notes = value.Notes,
+            };
+            var responsible = !isEdit && requireResponsible && value.EmployeeId is not null
+                ? new EquipmentResponsiblePeriod
+                {
+                    EquipmentId = equipmentId,
+                    EmployeeId = value.EmployeeId.Value,
+                    FromUtc = fromUtc,
+                    Notes = string.Empty,
+                }
+                : null;
+            if (isEdit)
+                await Service.UpdateLocationAsync(location);
+            else
+                await Service.AddLocationAsync(location, responsible);
+            if (_disposed || version != _locationVersion || _model.Id != equipmentId)
+                return;
+            await RefreshLocationsAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _locationVersion)
+                _validationMessage = "Расположение не сохранено. Подробности — в сообщении базы данных.";
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (!_disposed && version == _locationVersion)
+                _validationMessage = ex.Message;
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task RefreshLocationsAsync()
+    {
+        if (_model is null)
+            return;
+        var locations = await Service.GetLocationsAsync(_model.Id);
+        if (_disposed)
+            return;
+        _locations = locations.ToList();
+        _model.LocationId = _locations.LastOrDefault()?.LocationId;
+        await RefreshLocationDisplayDatesAsync();
+    }
+
+    private async Task RefreshLocationDisplayDatesAsync()
+    {
+        _localDates.Clear();
+        foreach (var utc in _locations.SelectMany(item => new[] { item.FromUtc, item.ChangedAtUtc }).Distinct())
+        {
+            var offset = await JS.InvokeAsync<int>(
+                "clayGridTimeZone.getOffsetMinutes", DateTime.SpecifyKind(utc, DateTimeKind.Utc).ToString("O"));
+            if (_disposed)
+                return;
+            _localDates[utc] = utc.AddMinutes(offset);
+        }
+    }
+
+    private async Task<DateTime> ConvertLocalToUtcAsync(DateTime local)
+    {
+        var milliseconds = await JS.InvokeAsync<long>(
+            "clayGridTimeZone.localDateTimeToUtcMilliseconds", _pageCts.Token,
+            local.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+            local.ToString(@"HH\:mm\:ss", System.Globalization.CultureInfo.InvariantCulture));
+        return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).UtcDateTime;
+    }
+
+    private string FormatDisplayDate(DateTime utc, bool includeTime)
+    {
+        if (utc == default)
+            return string.Empty;
+        var local = _localDates.TryGetValue(utc, out var value) ? value : utc;
+        return local.ToString(includeTime ? "dd.MM.yyyy HH:mm:ss" : "dd.MM.yyyy");
+    }
+
     private void ClearHiddenFeatures()
     {
         if (_model is null)
@@ -558,7 +706,13 @@ public partial class EquipmentForm : IDisposable
         return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).UtcDateTime;
     }
 
-    private string Snapshot() => JsonSerializer.Serialize(new { Equipment = _model, WriteOffDate = _writeOffDate, WriteOffTime = _writeOffTime, Phones = _phones });
+    private string Snapshot()
+    {
+        var equipment = JsonSerializer.SerializeToNode(_model)!;
+        equipment.AsObject().Remove(nameof(EquipmentEntity.LocationId));
+        equipment.AsObject().Remove(nameof(EquipmentEntity.EmployeeId));
+        return JsonSerializer.Serialize(new { Equipment = equipment, WriteOffDate = _writeOffDate, WriteOffTime = _writeOffTime, Phones = _phones });
+    }
 
     private async Task RefreshAsync()
     {

@@ -31,6 +31,26 @@ public class EquipmentFormService
         (await _db.QueryAsync<int?>(SQLQueries.SELECT_ТелефонныйНомерОборудованиеПодключения,
             new { PhoneId = phoneId, EmployeeId = employeeId, LocationId = locationId })).SingleOrDefault();
 
+    /// <summary>Загружает историю расположений оборудования.</summary>
+    public virtual async Task<IReadOnlyList<EquipmentLocationPeriod>> GetLocationsAsync(int equipmentId) =>
+        (await _db.QueryAsync<EquipmentLocationPeriod>(
+            SQLQueries.SELECT_ОборудованиеРасположение, new { EquipmentId = equipmentId })).ToList();
+
+    /// <summary>Проверяет наличие действующего ответственного.</summary>
+    public virtual async Task<bool> HasCurrentResponsibleAsync(int equipmentId) =>
+        await _db.ExecuteScalarAsync<int>(
+            SQLQueries.SELECT_ОборудованиеЕстьТекущийОтветственный,
+            new { EquipmentId = equipmentId }, commandType: CommandType.Text) > 0;
+
+    /// <summary>Добавляет расположение и при необходимости ответственного.</summary>
+    public virtual Task AddLocationAsync(
+        EquipmentLocationPeriod location,
+        EquipmentResponsiblePeriod? responsible = null) =>
+        location.InsertAsync(_db, responsible);
+
+    /// <summary>Обновляет срок возврата и примечания расположения.</summary>
+    public virtual Task UpdateLocationAsync(EquipmentLocationPeriod location) => location.UpdateAsync(_db);
+
     /// <summary>Атомарно сохраняет основную запись и телефонный diff.</summary>
     public virtual Task UpdateWithPhonesAsync(
         Equipment equipment,

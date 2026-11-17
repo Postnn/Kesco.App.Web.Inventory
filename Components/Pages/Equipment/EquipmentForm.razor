@@ -230,6 +230,19 @@
                     </Actions>
                 </ClayDetailGrid>
             }
+            <ClayDetailGrid TItem="EquipmentLocationPeriod"
+                            Title="Расположения"
+                            Items="_locations"
+                            Columns="_locationColumns"
+                            Options="_locationGridOptions"
+                            OnAdd="@(() => OpenLocationDialogAsync(null))"
+                            AddDisabled="@(!_canEdit || _saving)"
+                            ReadOnly="@(!_canEdit)">
+                <Actions Context="item">
+                    <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить срок возврата и примечания"
+                                Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenLocationDialogAsync(item))" />
+                </Actions>
+            </ClayDetailGrid>
         }
     </ChildContent>
     <Footer>

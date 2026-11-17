@@ -1,0 +1,130 @@
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Form
+@using Clayzor.Lib.Web.Controls.Components.Select
+@using Clayzor.Lib.Web.DBSelect.Employees
+@using Clayzor.Lib.Web.DBSelect.Locations
+@inject LocationSelectDataSource LocationSource
+@inject EmployeeSelectDataSource EmployeeSource
+
+<MudDialog>
+    <TitleContent>@(IsEdit ? "Изменение расположения" : "Новое расположение")</TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Error">@_error</MudAlert>
+        }
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Расположение:</span>
+            <ClaySelect TItem="LocationLookup" TValue="int?"
+                        DataSource="LocationSource"
+                        ValueSelector="@(item => (int?)item.Id)"
+                        TextSelector="@(item => item.Name)"
+                        @bind-Value="LocationId"
+                        Options="_locationOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">С:</span>
+            <div class="equipment-ins-date">
+                <ClayDatePicker @bind-Value="FromDate" Options="_fromDateOptions" />
+                <ClayTime @bind-Value="FromTime" Options="_fromTimeOptions" />
+            </div>
+        </div>
+        @if (RequireResponsible)
+        {
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Ответственный:</span>
+                <ClaySelect TItem="Employee" TValue="int?"
+                            DataSource="EmployeeSource"
+                            ValueSelector="@(item => (int?)item.Id)"
+                            TextSelector="@(item => item.Name)"
+                            @bind-Value="EmployeeId"
+                            Options="_employeeOptions" />
+            </div>
+        }
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Срок возврата:</span>
+            <ClayDatePicker @bind-Value="ReturnDate" Options="_returnDateOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Примечания:</span>
+            <ClayTextBox @bind-Value="Notes" Options="_notesOptions" />
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Отмена</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply">OK</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private readonly ClaySelectOptions _locationOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите расположение" };
+    private readonly ClaySelectOptions _employeeOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите сотрудника" };
+    private readonly ClayDatePickerOptions _fromDateOptions = new() { Required = true };
+    private readonly ClayTimeOptions _fromTimeOptions = new() { Required = true };
+    private readonly ClayDatePickerOptions _returnDateOptions = new();
+    private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300 };
+    private string? _error;
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+
+    /// <summary>Признак редактирования существующего периода.</summary>
+    [Parameter] public bool IsEdit { get; set; }
+
+    /// <summary>Требуется одновременно назначить ответственного.</summary>
+    [Parameter] public bool RequireResponsible { get; set; }
+
+    /// <summary>Идентификатор расположения.</summary>
+    [Parameter] public int? LocationId { get; set; }
+
+    /// <summary>Идентификатор ответственного сотрудника.</summary>
+    [Parameter] public int? EmployeeId { get; set; }
+
+    /// <summary>Дата начала периода.</summary>
+    [Parameter] public DateTime? FromDate { get; set; }
+
+    /// <summary>Время начала периода.</summary>
+    [Parameter] public TimeSpan? FromTime { get; set; }
+
+    /// <summary>Срок возврата.</summary>
+    [Parameter] public DateTime? ReturnDate { get; set; }
+
+    /// <summary>Примечания.</summary>
+    [Parameter] public string Notes { get; set; } = string.Empty;
+
+    /// <inheritdoc />
+    protected override void OnParametersSet()
+    {
+        _locationOptions.ReadOnly = IsEdit;
+        _fromDateOptions.ReadOnly = IsEdit;
+        _fromTimeOptions.ReadOnly = IsEdit;
+    }
+
+    private void Cancel() => Dialog.Cancel();
+
+    private void Apply()
+    {
+        if (!IsEdit && (LocationId is null || FromDate is null || FromTime is null))
+        {
+            _error = "Укажите расположение, дату и время начала.";
+            return;
+        }
+        if (RequireResponsible && EmployeeId is null)
+        {
+            _error = "Для расположения «На руках» укажите ответственного сотрудника.";
+            return;
+        }
+        var from = (FromDate ?? DateTime.Today).Date.Add(FromTime ?? TimeSpan.Zero);
+        if (from > DateTime.Now)
+        {
+            _error = "Дата и время начала не могут быть в будущем.";
+            return;
+        }
+        if (ReturnDate is not null && (ReturnDate.Value.Date < from.Date || ReturnDate.Value.Date > DateTime.Today.AddMonths(3)))
+        {
+            _error = "Срок возврата должен быть не раньше даты начала и не позднее трёх месяцев.";
+            return;
+        }
+        Dialog.Close(DialogResult.Ok(new EquipmentLocationDialogResult(
+            LocationId!.Value, from, ReturnDate, Notes ?? string.Empty, RequireResponsible ? EmployeeId : null)));
+    }
+}
