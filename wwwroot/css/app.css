@@ -1,6 +1,7 @@
 /* Стили этого приложения. Общий стиль компонентов Clayzor — в _content/Clayzor.Lib.Web.Controls/css/clay.css (см. STYLE_RULES.md §1). */
 
 .model-equipment-form {
+    padding-top: 0 !important;
     font-family: var(--clay-font-family);
     font-size: var(--clay-font-size);
 }
