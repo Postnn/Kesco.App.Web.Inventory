@@ -1,6 +1,7 @@
 @page "/PhoneTemplateForm"
 @using Clayzor.Lib.Entities.Inventory
 @using Kesco.App.Web.Inventory.Services
+@implements IDisposable
 @inject ModelEquipmentFormService Service
 @inject IDialogService DialogService
 @inject NavigationManager Navigation
@@ -32,6 +33,10 @@
             <MudAlert Severity="Severity.Warning" Class="mb-3">
                 Для изменения шаблона требуется роль «Дежурный инженер» (102).
             </MudAlert>
+        }
+        if (!string.IsNullOrWhiteSpace(_errorMessage))
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-3">@_errorMessage</MudAlert>
         }
         <ClayTextArea @bind-Value="_model.PhoneTemplate" Options="_templateOptions" />
     }

@@ -10,7 +10,7 @@ using MudBlazor;
 namespace Kesco.App.Web.Inventory.Components.Pages;
 
 /// <summary>Отдельный редактор шаблона настройки IP-телефона.</summary>
-public partial class PhoneTemplateForm
+public partial class PhoneTemplateForm : IDisposable
 {
     private const int DutyEngineerRoleId = 102;
     private const int PhoneEquipmentTypeId = 30;
@@ -46,8 +46,10 @@ public partial class PhoneTemplateForm
     private bool _loading = true;
     private bool _saving;
     private bool _allowNavigation;
+    private bool _disposed;
     private int _loadedId = -1;
     private int _loadVersion;
+    private string? _errorMessage;
 
     /// <summary>Идентификатор модели IP-телефона.</summary>
     [SupplyParameterFromQuery(Name = "id")]
@@ -117,31 +119,52 @@ public partial class PhoneTemplateForm
                 await CloseAsync();
             return;
         }
-        if (!string.IsNullOrWhiteSpace(_originalTemplate) && string.IsNullOrWhiteSpace(_model.PhoneTemplate) &&
-            !await ConfirmAsync("Очистка шаблона", "Вы уверены, что хотите очистить шаблон телефона для данной модели?"))
-            return;
 
+        var model = _model;
+        var version = ++_loadVersion;
         _saving = true;
+        _errorMessage = null;
         StateHasChanged();
-        await Task.Delay(100);
         try
         {
-            await Service.SavePhoneTemplateAsync(_model);
+            await Task.Delay(100);
+            if (!IsCurrentSave(model, version))
+                return;
+            if (!string.IsNullOrWhiteSpace(_originalTemplate) && string.IsNullOrWhiteSpace(model.PhoneTemplate) &&
+                !await ConfirmAsync("Очистка шаблона", "Вы уверены, что хотите очистить шаблон телефона для данной модели?"))
+                return;
+            if (!IsCurrentSave(model, version))
+                return;
+            await Service.SavePhoneTemplateAsync(model);
+            if (!IsCurrentSave(model, version))
+                return;
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener");
+            if (!IsCurrentSave(model, version))
+                return;
             if (closeAfterSave)
             {
                 await CloseAsync();
                 return;
             }
-            _originalTemplate = _model.PhoneTemplate;
             await LoadCurrentAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (IsCurrentSave(model, version))
+                _errorMessage = "Шаблон не сохранён. Подробности — в сообщении базы данных.";
         }
         finally
         {
-            _saving = false;
-            StateHasChanged();
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
         }
     }
+
+    private bool IsCurrentSave(EquipmentModel model, int version) =>
+        !_disposed && version == _loadVersion && ReferenceEquals(model, _model);
 
     private async Task LoadFileAsync(InputFileChangeEventArgs args)
     {
@@ -178,11 +201,18 @@ public partial class PhoneTemplateForm
 
     private async Task BeforeInternalNavigationAsync(LocationChangingContext context)
     {
-        if (_allowNavigation || !IsModified)
+        if (_allowNavigation)
         {
             _allowNavigation = false;
             return;
         }
+        if (_saving)
+        {
+            context.PreventNavigation();
+            return;
+        }
+        if (!IsModified)
+            return;
         context.PreventNavigation();
         if (!await ConfirmAsync("Переход на другую страницу", "Покинуть форму без сохранения изменений?"))
             return;
@@ -202,5 +232,14 @@ public partial class PhoneTemplateForm
         var dialog = await DialogService.ShowAsync<ConfirmDialog>(title, parameters);
         var result = await dialog.Result;
         return result is not null && !result.Canceled;
+    }
+
+    /// <summary>Блокирует продолжение сохранения и JS-вызовы после ухода со страницы.</summary>
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+        _disposed = true;
+        _loadVersion++;
     }
 }

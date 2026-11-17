@@ -224,13 +224,13 @@ public partial class ModelEquipmentForm : IDisposable
 
     private void OnEquipmentTypeChanged(EquipmentType? type)
     {
-        if (_model is null)
+        if (_model is null || type is null)
             return;
         var previousTypeId = _selectedType?.Id;
         _selectedType = type;
-        _model.EquipmentTypeId = type?.Id ?? 0;
-        _equipmentTypeId = type is null ? null : type.Id;
-        UpdateTypeState(previousTypeId != type?.Id);
+        _model.EquipmentTypeId = type.Id;
+        _equipmentTypeId = type.Id;
+        UpdateTypeState(previousTypeId is not null && previousTypeId.Value != type.Id);
     }
 
     private void UpdateTypeState(bool resetDependentValues)
@@ -309,28 +309,37 @@ public partial class ModelEquipmentForm : IDisposable
             return;
         }
 
+        var model = _model;
+        var version = ++_loadVersion;
         _saving = true;
         _validationMessage = null;
         StateHasChanged();
-        await Task.Delay(100);
         try
         {
+            await Task.Delay(100);
+            if (!IsCurrentSave(model, version))
+                return;
             if (_form is not null)
             {
                 await _form.ValidateAsync();
-                if (!_form.IsValid)
+                if (!IsCurrentSave(model, version) || !_form.IsValid)
                     return;
             }
-            if (!ValidateBusinessRules())
+            if (!ValidateBusinessRules(model))
                 return;
-            if (await Service.HasDuplicateAsync(_model))
+            if (await Service.HasDuplicateAsync(model))
             {
-                _validationMessage = "Модель с таким наименованием и PN уже существует.";
+                if (IsCurrentSave(model, version))
+                    _validationMessage = "Модель с таким наименованием и PN уже существует.";
                 return;
             }
-            if (_model.Id > 0 && _originalTypeId != _model.EquipmentTypeId)
+            if (!IsCurrentSave(model, version))
+                return;
+            if (model.Id > 0 && _originalTypeId != model.EquipmentTypeId)
             {
-                var usage = await Service.GetUsageAsync(_model.Id, _model.EquipmentTypeId);
+                var usage = await Service.GetUsageAsync(model.Id, model.EquipmentTypeId);
+                if (!IsCurrentSave(model, version))
+                    return;
                 if (usage.Total > 0)
                 {
                     var writtenOff = usage.WrittenOff > 0 ? $", из них списано {usage.WrittenOff}" : string.Empty;
@@ -338,51 +347,75 @@ public partial class ModelEquipmentForm : IDisposable
                         "Внимание!",
                         $"С этой моделью связано {usage.Total} единиц оборудования{writtenOff}. " +
                         "Изменение типа изменит характеристики этого оборудования. Продолжить?");
-                    if (!confirmed)
+                    if (!IsCurrentSave(model, version) || !confirmed)
                         return;
                 }
             }
 
-            var isNew = _model.Id == 0;
-            var id = await Service.SaveAsync(_model);
+            var isNew = model.Id == 0;
+            var id = await Service.SaveAsync(model);
+            if (!IsCurrentSave(model, version))
+                return;
+            if (id <= 0)
+            {
+                _validationMessage = "База данных не вернула идентификатор созданной модели.";
+                return;
+            }
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener");
+            if (!IsCurrentSave(model, version))
+                return;
             if (closeAfterSave)
             {
                 await CloseAsync();
                 return;
             }
+            var reloadVersion = ++_loadVersion;
+            await LoadDataAsync(id, 0, reloadVersion);
+            if (_disposed || reloadVersion != _loadVersion || !_loaded)
+                return;
             if (isNew)
             {
                 _allowNavigation = true;
                 _loadedKey = (id, 0);
                 Navigation.NavigateTo($"/ModelEquipmentForm?id={id}", replace: true);
-                return;
             }
-            var version = ++_loadVersion;
-            await LoadDataAsync(id, 0, version);
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (IsCurrentSave(model, version))
+                _validationMessage = "Модель не сохранена. Подробности — в сообщении базы данных.";
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (IsCurrentSave(model, version))
+                _validationMessage = ex.Message;
         }
         finally
         {
-            _saving = false;
-            StateHasChanged();
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
         }
     }
 
-    private bool ValidateBusinessRules()
+    private bool IsCurrentSave(EquipmentModel model, int version) =>
+        !_disposed && version == _loadVersion && ReferenceEquals(model, _model);
+
+    private bool ValidateBusinessRules(EquipmentModel model)
     {
-        if (_model is null)
-            return false;
-        if (_model.EquipmentTypeId <= 0 || string.IsNullOrWhiteSpace(_model.Name))
+        if (model.EquipmentTypeId <= 0 || string.IsNullOrWhiteSpace(model.Name))
         {
             _validationMessage = "Выберите тип и укажите наименование модели.";
             return false;
         }
-        if ((_model.EquipmentTypeId == 1 || _model.EquipmentTypeId == 2) && _model.PartNumber.Trim().Length < 3)
+        if ((model.EquipmentTypeId == 1 || model.EquipmentTypeId == 2) && model.PartNumber.Trim().Length < 3)
         {
             _validationMessage = "Для типов 1 и 2 PN должен содержать не менее 3 символов.";
             return false;
         }
-        if (_model.NetworkInterfaces > 0 && _model.NetworkName.Trim().Length < 3)
+        if (model.NetworkInterfaces > 0 && model.NetworkName.Trim().Length < 3)
         {
             _validationMessage = "При Net больше 0 название Net должно содержать не менее 3 символов.";
             return false;
@@ -415,11 +448,18 @@ public partial class ModelEquipmentForm : IDisposable
 
     private async Task BeforeInternalNavigationAsync(LocationChangingContext context)
     {
-        if (_allowNavigation || !IsModified)
+        if (_allowNavigation)
         {
             _allowNavigation = false;
             return;
         }
+        if (_saving)
+        {
+            context.PreventNavigation();
+            return;
+        }
+        if (!IsModified)
+            return;
         context.PreventNavigation();
         if (!await ConfirmAsync("Переход на другую страницу", "Покинуть форму без сохранения изменений?"))
             return;
