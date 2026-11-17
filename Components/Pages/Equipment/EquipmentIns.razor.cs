@@ -160,6 +160,7 @@ public partial class EquipmentIns : IDisposable
     private async Task LoadAsync()
     {
         var version = ++_operationVersion;
+        _ownerVersion++;
         _loading = true;
         _loaded = false;
         _notFound = false;
@@ -221,6 +222,9 @@ public partial class EquipmentIns : IDisposable
             _validationMessage = null;
             _loaded = true;
             _originalSnapshot = Snapshot();
+        }
+        catch (OperationCanceledException) when (_disposed || !IsCurrent(version))
+        {
         }
         finally
         {
@@ -609,6 +613,8 @@ public partial class EquipmentIns : IDisposable
     /// <summary>Освобождает ресурсы страницы и отменяет ожидания.</summary>
     public void Dispose()
     {
+        if (_disposed)
+            return;
         Navigation.LocationChanged -= OnNavigationLocationChanged;
         _disposed = true;
         _operationVersion++;
