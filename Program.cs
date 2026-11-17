@@ -44,6 +44,7 @@ builder.Services.AddScoped<DbManager>(sp => new DbManager(claySettings.Connectio
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.EquipmentTypeSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.EquipmentModelSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.PhonePoolSelectDataSource>();
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.PhoneNumberSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.MemoryTypeSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Employees.EmployeeSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Locations.LocationSelectDataSource>();

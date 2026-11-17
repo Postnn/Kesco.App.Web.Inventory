@@ -2,15 +2,18 @@
 @layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Select
+@using Clayzor.Lib.Web.Controls.Components.Detail
 @using Clayzor.Lib.Web.DBSelect.Documents
 @using Clayzor.Lib.Web.DBSelect.Equipment
 @using Clayzor.Lib.Web.DBSelect.Persons
+@using Kesco.App.Web.Inventory.Components.Pages.Equipment.Details
 @using Kesco.App.Web.Inventory.Services
 @implements IDisposable
 @inject EquipmentFormService Service
 @inject EquipmentTypeSelectDataSource EquipmentTypeSource
 @inject EquipmentModelSelectDataSource ModelSource
 @inject PhonePoolSelectDataSource PhonePoolSource
+@inject PhoneNumberSelectDataSource PhoneNumberSource
 @inject PersonSelectDataSource PersonSource
 @inject IServiceProvider Services
 @inject IDialogService DialogService
@@ -196,6 +199,37 @@
                     </div>
                 </div>
             </MudForm>
+            @if (!string.IsNullOrWhiteSpace(_warningMessage))
+            {
+                <MudAlert Severity="Severity.Warning" Class="mt-3">@_warningMessage</MudAlert>
+            }
+            @if (ShowPhones)
+            {
+                <div class="equipment-ins-row">
+                    <span class="equipment-ins-label">Новый номер:</span>
+                    <ClaySelect TItem="PhoneNumberLookup" TValue="int?"
+                                DataSource="PhoneNumberSource"
+                                ValueSelector="@(item => (int?)item.Id)"
+                                TextSelector="@(item => item.Name)"
+                                @bind-Value="_phoneToAdd"
+                                Options="_phoneOptions" />
+                </div>
+                <ClayDetailGrid TItem="EquipmentPhoneLink"
+                                Title="Телефонные номера"
+                                Items="_phones"
+                                Columns="_phoneColumns"
+                                Options="_phoneGridOptions"
+                                OnAdd="AddPhoneAsync"
+                                AddDisabled="@(_phoneToAdd is null || _saving)"
+                                ReadOnly="@(!_canEdit)">
+                    <Actions Context="item">
+                        <ClayButton Icon="@Icons.Material.Filled.Schedule" Text="Изменить срок возврата"
+                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => EditPhoneReturnAsync(item))" />
+                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить связь с номером"
+                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => RemovePhoneAsync(item))" />
+                    </Actions>
+                </ClayDetailGrid>
+            }
         }
     </ChildContent>
     <Footer>

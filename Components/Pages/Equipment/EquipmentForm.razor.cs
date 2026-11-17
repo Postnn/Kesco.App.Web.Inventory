@@ -2,8 +2,10 @@ using System.Text.Json;
 using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Web.Controls.Components;
 using Clayzor.Lib.Web.Controls.Components.Form;
+using Clayzor.Lib.Web.Controls.Components.Detail;
 using Clayzor.Lib.Web.Controls.Components.Select;
 using Clayzor.Lib.Web.DBSelect.Documents;
+using Kesco.App.Web.Inventory.Components.Pages.Equipment.Details;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.JSInterop;
@@ -23,6 +25,14 @@ public partial class EquipmentForm : IDisposable
     private readonly ClaySelectOptions _typeOptions = new() { Required = true, AutoSelectSingle = true, MaxItems = 300, Placeholder = "Введите тип оборудования" };
     private readonly ClaySelectOptions _modelOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите модель" };
     private readonly ClaySelectOptions _phonePoolOptions = new() { AutoSelectSingle = true, Placeholder = "Введите телефонный пул" };
+    private readonly ClaySelectOptions _phoneOptions = new() { AutoSelectSingle = true, Placeholder = "Введите телефонный номер" };
+    private readonly ClayDetailGridOptions _phoneGridOptions = new() { EmptyText = "Нет телефонных номеров", AddTooltip = "Связать выбранный номер" };
+    private readonly IReadOnlyList<ClayDetailColumn<EquipmentPhoneLink>> _phoneColumns =
+    [
+        new() { Title = "Номер", TextSelector = item => item.Description + (item.IsDefault ? " (основной)" : string.Empty) },
+        new() { Title = "Подключение", TextSelector = item => item.ConnectionEquipmentId is > 0 ? $"#{item.ConnectionEquipmentId}" : string.Empty },
+        new() { Title = "Срок возврата", TextSelector = item => (item.ReturnDate?.ToString("dd.MM.yyyy") ?? string.Empty) + (string.IsNullOrWhiteSpace(item.Notes) ? string.Empty : $" ({item.Notes})") },
+    ];
     private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
     private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Введите документ поступления" };
     private readonly ClaySelectOptions _writeOffDocumentOptions = new() { Placeholder = "Введите документ списания" };
@@ -44,6 +54,11 @@ public partial class EquipmentForm : IDisposable
     private EquipmentEntity? _model;
     private EquipmentType? _selectedType;
     private EquipmentModel? _selectedModel;
+    private List<EquipmentPhoneLink> _phones = [];
+    private List<EquipmentPhoneLink> _originalPhones = [];
+    private int? _phoneToAdd;
+    private int _phoneVersion;
+    private string? _warningMessage;
     private DateTime? _writeOffDate;
     private TimeSpan? _writeOffTime;
     private bool _sortTypesByName;
@@ -74,6 +89,8 @@ public partial class EquipmentForm : IDisposable
     private bool CanSave => IsModified && _canEdit && !_loading && !_saving;
     private bool ShowNetworkName => _selectedType?.HasNetworkName > 0;
     private bool ShowPhonePool => _selectedType?.HasPhoneNumber > 0;
+    private bool ShowPhones => _selectedType?.HasPhoneNumber > 0;
+    private bool PhonesModified => JsonSerializer.Serialize(_phones) != JsonSerializer.Serialize(_originalPhones);
     private bool ShowCamera => _selectedType?.HasMonitorCharacteristics > 0;
     private int MacCount => Math.Min(3, _selectedModel?.NetworkInterfaces ?? 0);
     private string? ChangedByUrl => _model?.ChangedById > 0 && !string.IsNullOrWhiteSpace(Configuration["URI_user_form"])
@@ -126,6 +143,11 @@ public partial class EquipmentForm : IDisposable
                 : null;
             if (!IsCurrent(version, id))
                 return;
+            var phones = selectedType?.HasPhoneNumber > 0
+                ? await Service.GetPhonesAsync(id)
+                : (IReadOnlyList<EquipmentPhoneLink>)[];
+            if (!IsCurrent(version, id))
+                return;
             DateTime? localWriteOff = null;
             if (model.WriteOffAtUtc is not null)
             {
@@ -139,6 +161,10 @@ public partial class EquipmentForm : IDisposable
             _model = model;
             _selectedType = selectedType;
             _selectedModel = selectedModel;
+            _phones = phones.ToList();
+            _originalPhones = ClonePhones(phones);
+            _phoneToAdd = null;
+            _phoneVersion++;
             _confirmedOwnerId = model.OwnerId;
             ModelSource.Filter.EquipmentTypeId = model.EquipmentTypeId;
             ReceiptDocumentSource.PersonId = model.OwnerId;
@@ -190,7 +216,7 @@ public partial class EquipmentForm : IDisposable
         UpdateOptions();
     }
 
-    private void OnTypeChanged(EquipmentType? type)
+    private async Task OnTypeChanged(EquipmentType? type)
     {
         if (_model is null || type is null)
             return;
@@ -199,6 +225,7 @@ public partial class EquipmentForm : IDisposable
         ModelSource.Filter.EquipmentTypeId = type.Id;
         ClearHiddenFeatures();
         UpdateOptions();
+        await LoadPhonesForCurrentTypeAsync();
     }
 
     private void OnModelIdChanged(int? id)
@@ -303,6 +330,92 @@ public partial class EquipmentForm : IDisposable
         if (index == 3) _model.MacAddressIlo = normalized;
     }
 
+    private async Task AddPhoneAsync()
+    {
+        if (_model is null || _phoneToAdd is null || !_canEdit)
+            return;
+        var version = ++_phoneVersion;
+        var phoneId = _phoneToAdd.Value;
+        if (_phones.Any(item => item.PhoneId == phoneId))
+        {
+            _phoneToAdd = null;
+            return;
+        }
+        var phone = await PhoneNumberSource.GetByIdAsync(phoneId, _pageCts.Token);
+        if (_disposed || version != _phoneVersion || phone is null)
+            return;
+        var connectionId = _model.LocationId is > 0
+            ? await Service.GetConnectionEquipmentIdAsync(phoneId, _model.EmployeeId, _model.LocationId.Value)
+            : null;
+        if (_disposed || version != _phoneVersion)
+            return;
+        _phones.Add(new EquipmentPhoneLink
+        {
+            PhoneId = phone.Id,
+            EquipmentId = _model.Id,
+            Description = phone.Name,
+            ConnectionEquipmentId = connectionId,
+            AutoDialNumber = string.Empty,
+            Notes = string.Empty,
+        });
+        _phoneToAdd = null;
+    }
+
+    private async Task EditPhoneReturnAsync(EquipmentPhoneLink item)
+    {
+        if (!_canEdit || _saving)
+            return;
+        var parameters = new DialogParameters<EquipmentPhoneDialog>
+        {
+            { dialog => dialog.ReturnDate, item.ReturnDate },
+            { dialog => dialog.Notes, item.Notes },
+        };
+        var dialog = await DialogService.ShowAsync<EquipmentPhoneDialog>("Срок возврата", parameters);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not EquipmentPhoneReturnResult value)
+            return;
+        item.ReturnDate = value.ReturnDate;
+        item.Notes = value.Notes;
+    }
+
+    private async Task RemovePhoneAsync(EquipmentPhoneLink item)
+    {
+        if (!_canEdit || _saving)
+            return;
+        if (!await ConfirmAsync("Удаление связи", $"Удалить связь с номером «{item.Description}»?"))
+            return;
+        _phones.Remove(item);
+    }
+
+    private async Task LoadPhonesForCurrentTypeAsync()
+    {
+        if (_model is null || !ShowPhones)
+            return;
+        var version = ++_phoneVersion;
+        var id = _model.Id;
+        var phones = await Service.GetPhonesAsync(id);
+        if (_disposed || version != _phoneVersion || _model.Id != id)
+            return;
+        _phones = phones.ToList();
+        _originalPhones = ClonePhones(phones);
+    }
+
+    private static List<EquipmentPhoneLink> ClonePhones(IEnumerable<EquipmentPhoneLink> phones) =>
+        phones.Select(item => new EquipmentPhoneLink
+        {
+            PhoneId = item.PhoneId,
+            EquipmentId = item.EquipmentId,
+            Description = item.Description,
+            IsDefault = item.IsDefault,
+            ConnectionEquipmentId = item.ConnectionEquipmentId,
+            AutoDialNumber = item.AutoDialNumber,
+            AutoDialDelay = item.AutoDialDelay,
+            ReturnDate = item.ReturnDate,
+            Notes = item.Notes,
+            ChangedByName = item.ChangedByName,
+            ChangedAt = item.ChangedAt,
+        }).ToList();
+
     private void ClearHiddenFeatures()
     {
         if (_model is null)
@@ -320,7 +433,7 @@ public partial class EquipmentForm : IDisposable
         if (_model is null)
             return;
         _snOptions.Required = _selectedType?.IsSerialNumberRequired > 0;
-        foreach (var options in new[] { _typeOptions, _modelOptions, _phonePoolOptions, _ownerOptions, _receiptDocumentOptions, _writeOffDocumentOptions, _shipperOptions, _tenantOptions })
+        foreach (var options in new[] { _typeOptions, _modelOptions, _phonePoolOptions, _phoneOptions, _ownerOptions, _receiptDocumentOptions, _writeOffDocumentOptions, _shipperOptions, _tenantOptions })
             options.ReadOnly = !_canEdit;
         foreach (var options in new ClayInputOptions[] { _writeOffDateOptions, _writeOffTimeOptions, _snOptions, _networkNameOptions, _macOptions, _descriptionOptions })
             options.ReadOnly = !_canEdit;
@@ -357,8 +470,10 @@ public partial class EquipmentForm : IDisposable
         }
         var model = _model;
         var version = ++_operationVersion;
+        var phonesModified = PhonesModified;
         _saving = true;
         _validationMessage = null;
+        _warningMessage = null;
         StateHasChanged();
         try
         {
@@ -374,17 +489,41 @@ public partial class EquipmentForm : IDisposable
             model.WriteOffAtUtc = await ConvertWriteOffToUtcAsync();
             if (!IsCurrentSave(model, version))
                 return;
-            await Service.UpdateAsync(model);
+            if (ShowPhones && phonesModified)
+                await Service.UpdateWithPhonesAsync(model, _originalPhones, _phones);
+            else
+                await Service.UpdateAsync(model);
             if (!IsCurrentSave(model, version))
                 return;
             _originalSnapshot = Snapshot();
+            var warnings = new List<string>();
+            if (ShowPhones && phonesModified)
+            {
+                try
+                {
+                    warnings.AddRange(await Service.SynchronizePhonesAsync(model.Id, _originalPhones, _phones));
+                }
+                catch (Microsoft.Data.SqlClient.SqlException)
+                {
+                    warnings.Add("Синхронизация с АТС не выполнена. Подробности — в сообщении базы данных.");
+                }
+                catch (InvalidOperationException ex)
+                {
+                    warnings.Add($"Синхронизация с АТС не выполнена: {ex.Message}");
+                }
+            }
+            _originalPhones = ClonePhones(_phones);
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _pageCts.Token);
             if (!IsCurrentSave(model, version))
                 return;
-            if (closeAfterSave)
+            if (closeAfterSave && warnings.Count == 0)
+            {
                 await CloseAsync();
-            else
-                await LoadCurrentAsync(Id);
+                return;
+            }
+            await LoadCurrentAsync(Id);
+            if (warnings.Count > 0 && !_disposed)
+                _warningMessage = "Основные данные и телефонные связи сохранены. " + string.Join(" ", warnings);
         }
         catch (Microsoft.Data.SqlClient.SqlException)
         {
@@ -419,7 +558,7 @@ public partial class EquipmentForm : IDisposable
         return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).UtcDateTime;
     }
 
-    private string Snapshot() => JsonSerializer.Serialize(new { Equipment = _model, WriteOffDate = _writeOffDate, WriteOffTime = _writeOffTime });
+    private string Snapshot() => JsonSerializer.Serialize(new { Equipment = _model, WriteOffDate = _writeOffDate, WriteOffTime = _writeOffTime, Phones = _phones });
 
     private async Task RefreshAsync()
     {
@@ -427,6 +566,7 @@ public partial class EquipmentForm : IDisposable
             return;
         if (IsModified && !await ConfirmAsync("Обновление", "Отменить несохранённые изменения и загрузить запись повторно?"))
             return;
+        _warningMessage = null;
         await LoadCurrentAsync(Id);
     }
 

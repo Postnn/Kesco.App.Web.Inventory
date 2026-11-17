@@ -21,6 +21,86 @@ public class EquipmentFormService
     /// <summary>Сохраняет 15 основных полей существующего оборудования.</summary>
     public virtual Task UpdateAsync(Equipment equipment) => equipment.UpdateAsync(_db);
 
+    /// <summary>Загружает телефонные связи оборудования.</summary>
+    public virtual async Task<IReadOnlyList<EquipmentPhoneLink>> GetPhonesAsync(int equipmentId) =>
+        (await _db.QueryAsync<EquipmentPhoneLink>(
+            SQLQueries.SELECT_ТелефонныеНомераОборудования, new { EquipmentId = equipmentId })).ToList();
+
+    /// <summary>Определяет доступное оборудование подключения аналогового номера.</summary>
+    public virtual async Task<int?> GetConnectionEquipmentIdAsync(int phoneId, int? employeeId, int locationId) =>
+        (await _db.QueryAsync<int?>(SQLQueries.SELECT_ТелефонныйНомерОборудованиеПодключения,
+            new { PhoneId = phoneId, EmployeeId = employeeId, LocationId = locationId })).SingleOrDefault();
+
+    /// <summary>Атомарно сохраняет основную запись и телефонный diff.</summary>
+    public virtual Task UpdateWithPhonesAsync(
+        Equipment equipment,
+        IReadOnlyCollection<EquipmentPhoneLink> original,
+        IReadOnlyCollection<EquipmentPhoneLink> current) =>
+        equipment.UpdateWithPhonesAsync(_db, original, current);
+
+    /// <summary>Синхронизирует изменённые номера и оборудование с подтверждёнными АТС.</summary>
+    public virtual async Task<IReadOnlyList<string>> SynchronizePhonesAsync(
+        int equipmentId,
+        IReadOnlyCollection<EquipmentPhoneLink> original,
+        IReadOnlyCollection<EquipmentPhoneLink> current)
+    {
+        var errors = new List<string>();
+        var currentIds = current.Select(item => item.PhoneId).ToHashSet();
+        var phones = original.Select(item => (item.PhoneId, Deleted: !currentIds.Contains(item.PhoneId)))
+            .Concat(current.Select(item => (item.PhoneId, Deleted: false)))
+            .GroupBy(item => item.PhoneId)
+            .Select(group => (PhoneId: group.Key, Deleted: group.Last().Deleted))
+            .OrderBy(item => item.PhoneId);
+        var equipmentIds = original.Select(item => item.ConnectionEquipmentId)
+            .Concat(current.Select(item => item.ConnectionEquipmentId))
+            .Where(id => id is > 0)
+            .Select(id => id!.Value)
+            .Append(equipmentId)
+            .Distinct()
+            .ToList();
+        var needsCcm = false;
+        foreach (var phone in phones)
+        {
+            var lookup = (await _db.QueryAsync<PhoneNumberLookup>(
+                SQLQueries.SELECT_ТелефонныйНомерПоИдентификатору, new { Id = phone.PhoneId })).SingleOrDefault();
+            if (lookup is null)
+            {
+                errors.Add($"Телефонный номер #{phone.PhoneId} не найден для синхронизации.");
+                continue;
+            }
+            needsCcm |= lookup.StationId == 0;
+            if (string.IsNullOrWhiteSpace(lookup.XorcomName))
+                continue;
+            var parameters = new Dapper.DynamicParameters();
+            parameters.Add("@КодТелефонногоНомера", phone.PhoneId, DbType.Int32);
+            var hasDeletedParameter = await _db.ExecuteScalarAsync<int>(
+                SQLQueries.SELECT_ПроцедураИмеетПараметр,
+                new { ProcedureName = SQLQueries.SP_PhoneSync_Xorcom, ParameterName = "@Удаление" },
+                commandType: CommandType.Text) > 0;
+            if (hasDeletedParameter)
+                parameters.Add("@Удаление", phone.Deleted ? 1 : 0, DbType.Int32);
+            parameters.Add("@RETURN_VALUE", dbType: DbType.Int32, direction: ParameterDirection.ReturnValue);
+            await _db.ExecuteAsync(SQLQueries.SP_PhoneSync_Xorcom, parameters);
+            var returnCode = parameters.Get<int>("@RETURN_VALUE");
+            if (returnCode != 0)
+                errors.Add($"Xorcom: номер #{phone.PhoneId}, код ошибки {returnCode}.");
+        }
+        if (needsCcm)
+        {
+            foreach (var id in equipmentIds)
+            {
+                var parameters = new Dapper.DynamicParameters();
+                parameters.Add("@КодОборудования", id, DbType.Int32);
+                parameters.Add("@RETURN_VALUE", dbType: DbType.Int32, direction: ParameterDirection.ReturnValue);
+                await _db.ExecuteAsync(SQLQueries.SP_PhoneSync_Ccm, parameters);
+                var returnCode = parameters.Get<int>("@RETURN_VALUE");
+                if (returnCode != 0)
+                    errors.Add($"CCM: оборудование #{id}, код ошибки {returnCode}.");
+            }
+        }
+        return errors;
+    }
+
     /// <summary>Проверяет роль текущего пользователя с учётом замещений.</summary>
     public virtual async Task<bool> HasRoleAsync(int roleId) =>
         await _db.ExecuteScalarAsync<int>(

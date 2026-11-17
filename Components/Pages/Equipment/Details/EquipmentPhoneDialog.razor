@@ -1,0 +1,35 @@
+@using Clayzor.Lib.Web.Controls.Components.Form
+
+<MudDialog>
+    <TitleContent>Срок возврата телефонного номера</TitleContent>
+    <DialogContent>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Срок возврата:</span>
+            <ClayDatePicker @bind-Value="ReturnDate" Options="_dateOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Примечание:</span>
+            <ClayTextBox @bind-Value="Notes" Options="_notesOptions" />
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Отмена</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply">OK</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private readonly ClayDatePickerOptions _dateOptions = new();
+    private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300 };
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+
+    /// <summary>Выбранный срок возврата.</summary>
+    [Parameter] public DateTime? ReturnDate { get; set; }
+
+    /// <summary>Примечание к сроку возврата.</summary>
+    [Parameter] public string Notes { get; set; } = string.Empty;
+
+    private void Cancel() => Dialog.Cancel();
+    private void Apply() => Dialog.Close(DialogResult.Ok(new EquipmentPhoneReturnResult(ReturnDate, Notes ?? string.Empty)));
+}
