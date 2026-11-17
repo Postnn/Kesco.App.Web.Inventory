@@ -6,6 +6,9 @@
     <RootNamespace>Kesco.App.Web.Inventory</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Clayzor.Lib.Web.Controls.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="MudBlazor" Version="9.*" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="10.*" />
   </ItemGroup>

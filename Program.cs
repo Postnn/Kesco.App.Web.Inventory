@@ -16,6 +16,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddWebConfig();
 builder.Configuration["URI_user_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_user_form");
 builder.Configuration["URI_model_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_model_form");
+builder.Configuration["URI_equipment_form_ins"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_equipment_form_ins");
+builder.Configuration["URI_equipment_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_equipment_form");
 builder.Configuration["URI_user_search"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_user_search");
 builder.Configuration["URI_resource_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_resource_form");
 builder.Configuration["URI_resource_search"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_resource_search");
@@ -40,8 +42,10 @@ builder.Services.AddScoped<DbManager>(sp => new DbManager(claySettings.Connectio
 
 // Общие источники данных ClaySelect
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.EquipmentTypeSelectDataSource>();
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.EquipmentModelSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.MemoryTypeSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Employees.EmployeeSelectDataSource>();
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Locations.LocationSelectDataSource>();
 builder.Services.AddScoped(sp =>
 {
     var connectionString = WebConfigExtensions.ReadConnectionStringFromWebConfig("DS_resource")
@@ -49,7 +53,29 @@ builder.Services.AddScoped(sp =>
     return new Clayzor.Lib.Web.DBSelect.Equipment.ResourceSelectDataSource(
         new DbManager(connectionString, sp.GetRequiredService<ISqlErrorHandler>()));
 });
+builder.Services.AddScoped(sp =>
+{
+    var connectionString = WebConfigExtensions.ReadConnectionStringFromWebConfig("DS_person")
+                           ?? throw new InvalidOperationException("Не задана строка подключения DS_person");
+    return new Clayzor.Lib.Web.DBSelect.Persons.PersonSelectDataSource(
+        new DbManager(connectionString, sp.GetRequiredService<ISqlErrorHandler>()));
+});
+builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Documents.DocumentSelectDataSource>("receipt", (sp, _) =>
+{
+    var connectionString = WebConfigExtensions.ReadConnectionStringFromWebConfig("DS_doc")
+                           ?? throw new InvalidOperationException("Не задана строка подключения DS_doc");
+    return new Clayzor.Lib.Web.DBSelect.Documents.DocumentSelectDataSource(
+        new DbManager(connectionString, sp.GetRequiredService<ISqlErrorHandler>()));
+});
+builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Documents.DocumentSelectDataSource>("accounting", (sp, _) =>
+{
+    var connectionString = WebConfigExtensions.ReadConnectionStringFromWebConfig("DS_doc")
+                           ?? throw new InvalidOperationException("Не задана строка подключения DS_doc");
+    return new Clayzor.Lib.Web.DBSelect.Documents.DocumentSelectDataSource(
+        new DbManager(connectionString, sp.GetRequiredService<ISqlErrorHandler>()));
+});
 builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.ModelEquipmentFormService>();
+builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.EquipmentInsService>();
 
 // Сервис авто-переподключения к БД (оверлей при потере соединения)
 builder.Services.AddScoped<ClayDbReconnectService>();
