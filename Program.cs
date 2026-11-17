@@ -14,6 +14,8 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Конфигурация: appsettings.json + web.config
 builder.Configuration.AddWebConfig();
+builder.Configuration["URI_user_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_user_form");
+builder.Configuration["URI_user_search"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_user_search");
 var claySettings = builder.Configuration.BindClaySettings();
 builder.Services.AddSingleton(claySettings);
 Clayzor.Lib.Entities.MedicalTests.DapperColumnMapper.Initialize();
@@ -39,6 +41,7 @@ builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Employees.EmployeeSelectData
 
 // Сервис авто-переподключения к БД (оверлей при потере соединения)
 builder.Services.AddScoped<ClayDbReconnectService>();
+builder.Services.AddScoped<ClaySelectAdvancedSearchService>();
 
 // Аутентификация: Windows (Kerberos/NTLM)
 builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme)

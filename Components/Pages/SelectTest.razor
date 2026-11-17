@@ -1,14 +1,17 @@
 @page "/select-test"
+@implements IDisposable
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Select
 @using Clayzor.Lib.Web.DBSelect.Equipment
 @using Clayzor.Lib.Web.DBSelect.Employees
-@using Kesco.App.Web.Inventory.Components.Dialogs
+@using Clayzor.Lib.Web.Controls.Services
 
 @inject EquipmentTypeSelectDataSource EquipmentTypeSource
 @inject Clayzor.Lib.DALC.DbManager Db
 @inject EmployeeSelectDataSource EmployeeSource
-@inject IDialogService DialogService
+@inject ClaySelectAdvancedSearchService AdvancedSearchService
+@inject IConfiguration Configuration
+@inject Microsoft.JSInterop.IJSRuntime JS
 
 <PageTitle>Тест ClaySelect</PageTitle>
 
@@ -63,6 +66,7 @@
                             ValueSelector="@(item => (int?)item.Id)"
                             TextSelector="@(item => item.Name)"
                             AdvancedSearch="OpenEmployeeSearchAsync"
+                            ViewItem="OpenEmployeeViewAsync"
                             @bind-Value="_employeeId"
                             @bind-SelectedItem="_employee"
                             Options="_employeeOptions" />
@@ -77,6 +81,8 @@
 </MudForm>
 
 @code {
+    private readonly CancellationTokenSource _pageCts = new();
+    private bool _disposed;
     private MudForm? _form;
     private int? _statusId;
     private int? _equipmentTypeId;
@@ -132,31 +138,39 @@
         return Task.CompletedTask;
     }
 
-    private async Task<ClaySelectExternalResult<Employee, int?>?> OpenEmployeeSearchAsync(
+    private Task<ClaySelectExternalResult<Employee, int?>?> OpenEmployeeSearchAsync(
         ClaySelectAdvancedSearchContext context)
     {
-        var parameters = new DialogParameters<EmployeeSearchDialog>
-        {
-            { dialog => dialog.InitialSearch, context.SearchText },
-        };
-        var options = new DialogOptionsEx
-        {
-            MaxWidth = MaxWidth.Medium,
-            FullWidth = true,
-            DragMode = MudDialogDragMode.Simple,
-        };
-        var dialog = await DialogService.ShowExAsync<EmployeeSearchDialog>(
-            "Поиск сотрудника", parameters, options);
-        var result = await dialog.Result;
-        return result is null || result.Canceled || result.Data is not Employee employee
-            ? null
-            : ClaySelectExternalResult<Employee, int?>.FromItem(employee);
+        var searchUrl = Configuration["URI_user_search"]
+                        ?? throw new InvalidOperationException("Не задан URI_user_search");
+        var separator = searchUrl.Contains('?') ? '&' : '?';
+        var url = $"{searchUrl}{separator}search={Uri.EscapeDataString(context.SearchText)}";
+        return AdvancedSearchService.OpenAsync<Employee, int?>(url, _pageCts.Token);
+    }
+
+    private async Task OpenEmployeeViewAsync(Employee employee)
+    {
+        var formUrl = Configuration["URI_user_form"]
+                      ?? throw new InvalidOperationException("Не задан URI_user_form");
+        var separator = formUrl.Contains('?') ? '&' : '?';
+        await JS.InvokeVoidAsync("open", $"{formUrl}{separator}id={employee.Id}", "_blank");
     }
 
     private async Task ValidateAsync()
     {
         if (_form is not null)
             await _form.ValidateAsync();
+    }
+
+    /// <summary>Отменяет ожидание внешнего поиска при уходе со страницы.</summary>
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        _pageCts.Cancel();
+        _pageCts.Dispose();
     }
 
     private static string FormatId(int? id) => id?.ToString() ?? "—";
