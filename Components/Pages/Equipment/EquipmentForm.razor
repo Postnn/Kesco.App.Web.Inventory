@@ -1,0 +1,211 @@
+@page "/Equipment/EquipmentForm"
+@layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Select
+@using Clayzor.Lib.Web.DBSelect.Documents
+@using Clayzor.Lib.Web.DBSelect.Equipment
+@using Clayzor.Lib.Web.DBSelect.Persons
+@using Kesco.App.Web.Inventory.Services
+@implements IDisposable
+@inject EquipmentFormService Service
+@inject EquipmentTypeSelectDataSource EquipmentTypeSource
+@inject EquipmentModelSelectDataSource ModelSource
+@inject PhonePoolSelectDataSource PhonePoolSource
+@inject PersonSelectDataSource PersonSource
+@inject IServiceProvider Services
+@inject IDialogService DialogService
+@inject NavigationManager Navigation
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+
+<PageTitle>@Title</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
+
+<ClayEntityForm Options="_entityFormOptions">
+    <Toolbar>
+        <ClayToolbar>
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
+            <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
+            <ClayToolbarButton Options="_copyOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="CopyAsync" />
+        </ClayToolbar>
+    </Toolbar>
+    <ChildContent>
+        @if (_notFound)
+        {
+            <MudAlert Severity="Severity.Warning">Оборудование с указанным идентификатором не найдено.</MudAlert>
+        }
+        else if (_model is not null)
+        {
+            if (!_canEdit)
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-3">
+                    Для изменения оборудования требуется роль «Специалист по инвентаризации оборудования» (43).
+                </MudAlert>
+            }
+            if (!string.IsNullOrWhiteSpace(_validationMessage))
+            {
+                <MudAlert Severity="Severity.Error" Class="mb-3">@_validationMessage</MudAlert>
+            }
+
+            <MudForm @ref="_form">
+                <div class="equipment-ins-fields">
+                    <div class="equipment-ins-row">
+                        <span class="equipment-ins-label">Списано:</span>
+                        <div class="equipment-ins-date">
+                            <ClayDatePicker @bind-Value="_writeOffDate" Options="_writeOffDateOptions" />
+                            <ClayTime @bind-Value="_writeOffTime" Options="_writeOffTimeOptions" />
+                        </div>
+                    </div>
+                    <div class="equipment-ins-row">
+                        <span class="equipment-ins-label">Док-т списания:</span>
+                        <ClaySelect TItem="DocumentLookup" TValue="int?"
+                                    DataSource="WriteOffDocumentSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.DisplayName)"
+                                    @bind-Value="_model.DocumentWriteOffId"
+                                    Options="_writeOffDocumentOptions" />
+                    </div>
+                    <div class="equipment-ins-row">
+                        <span class="equipment-ins-label">Тип:</span>
+                        <div>
+                            <ClaySelect TItem="EquipmentType" TValue="int?"
+                                        DataSource="EquipmentTypeSource"
+                                        ValueSelector="@(item => (int?)item.Id)"
+                                        TextSelector="@(item => item.Name)"
+                                        Value="_model.EquipmentTypeId"
+                                        ValueChanged="OnTypeIdChanged"
+                                        SelectedItem="_selectedType"
+                                        SelectedItemChanged="OnTypeChanged"
+                                        Options="_typeOptions" />
+                            <ClayCheckbox State="_sortTypesByName" StateChanged="OnTypeSortChanged"
+                                          Label="сортировать типы в списке по алфавиту" />
+                        </div>
+                    </div>
+                    <div class="equipment-ins-row">
+                        <span class="equipment-ins-label">Модель:</span>
+                        <ClaySelect TItem="EquipmentModel" TValue="int?"
+                                    DataSource="ModelSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.Name)"
+                                    Value="_model.ModelId"
+                                    ValueChanged="OnModelIdChanged"
+                                    SelectedItem="_selectedModel"
+                                    SelectedItemChanged="OnModelChangedAsync"
+                                    ViewItem="ModelViewItem"
+                                    Options="_modelOptions" />
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(_selectedModel?.PartNumber))
+                    {
+                        <div class="equipment-ins-row">
+                            <span class="equipment-ins-label">PN:</span>
+                            <span>@_selectedModel.PartNumber</span>
+                        </div>
+                    }
+                    <div class="equipment-ins-row">
+                        <span class="equipment-ins-label">SN:</span>
+                        <ClayTextBox @bind-Value="_model.SerialNumber" Options="_snOptions" />
+                    </div>
+                    @if (ShowPhonePool)
+                    {
+                        <div class="equipment-ins-row">
+                            <span class="equipment-ins-label">Телефонный пул:</span>
+                            <ClaySelect TItem="PhonePoolLookup" TValue="int?"
+                                        DataSource="PhonePoolSource"
+                                        ValueSelector="@(item => (int?)item.Id)"
+                                        TextSelector="@(item => item.Name)"
+                                        @bind-Value="_model.PhonePoolId"
+                                        Options="_phonePoolOptions" />
+                        </div>
+                    }
+                    @if (ShowCamera)
+                    {
+                        <div class="equipment-ins-row">
+                            <span class="equipment-ins-label">Камера:</span>
+                            <ClayCheckbox State="@(_model.CameraIsConnected != 0)" StateChanged="OnCameraChanged"
+                                          ReadOnly="@(!_canEdit)" Label="подключена камера" />
+                        </div>
+                    }
+                    @if (ShowNetworkName)
+                    {
+                        <div class="equipment-ins-row">
+                            <span class="equipment-ins-label">Сетевое имя:</span>
+                            <ClayTextBox @bind-Value="_model.NetworkName" Options="_networkNameOptions" />
+                        </div>
+                    }
+                    @if (MacCount > 0)
+                    {
+                        <div class="equipment-ins-row">
+                            <span class="equipment-ins-label">MAC:</span>
+                            <div class="equipment-ins-mac">
+                                <ClayTextBox Value="_model.MacAddress" ValueChanged="@(value => OnMacChanged(value, 1))" Options="_macOptions" />
+                                @if (MacCount > 1)
+                                {
+                                    <ClayTextBox Value="_model.MacAddress2" ValueChanged="@(value => OnMacChanged(value, 2))" Options="_macOptions" />
+                                }
+                                @if (MacCount > 2)
+                                {
+                                    <ClayTextBox Value="_model.MacAddressIlo" ValueChanged="@(value => OnMacChanged(value, 3))" Options="_macOptions" />
+                                }
+                            </div>
+                        </div>
+                    }
+                    <div class="equipment-ins-row">
+                        <span class="equipment-ins-label">Владелец:</span>
+                        <ClaySelect TItem="PersonLookup" TValue="int?"
+                                    DataSource="PersonSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.Name)"
+                                    Value="_model.OwnerId"
+                                    ValueChanged="OnOwnerChangedAsync"
+                                    Options="_ownerOptions" />
+                    </div>
+                    <div class="equipment-ins-row">
+                        <span class="equipment-ins-label">Док-т поступления:</span>
+                        <ClaySelect TItem="DocumentLookup" TValue="int?"
+                                    DataSource="ReceiptDocumentSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.DisplayName)"
+                                    Value="_model.DocumentReceiptOuId"
+                                    ValueChanged="OnReceiptDocumentChangedAsync"
+                                    Options="_receiptDocumentOptions" />
+                    </div>
+                    <div class="equipment-ins-row">
+                        <span class="equipment-ins-label">Поставщик:</span>
+                        <ClaySelect TItem="PersonLookup" TValue="int?"
+                                    DataSource="PersonSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.Name)"
+                                    Value="_model.ShipperId"
+                                    ValueChanged="OnShipperChanged"
+                                    Options="_shipperOptions" />
+                    </div>
+                    <div class="equipment-ins-row">
+                        <span class="equipment-ins-label">Арендатор:</span>
+                        <ClaySelect TItem="PersonLookup" TValue="int?"
+                                    DataSource="PersonSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.Name)"
+                                    @bind-Value="_model.TenantId"
+                                    Options="_tenantOptions" />
+                    </div>
+                    <div class="equipment-ins-row equipment-ins-row-top equipment-ins-description">
+                        <span class="equipment-ins-label">Примечание оборудования:</span>
+                        <ClayTextArea @bind-Value="_model.Description" Options="_descriptionOptions" />
+                    </div>
+                </div>
+            </MudForm>
+        }
+    </ChildContent>
+    <Footer>
+        <ClayChanged ChangedById="_model?.ChangedById" ChangedAt="_model?.ChangedAtUtc" ChangedByUrl="ChangedByUrl" />
+    </Footer>
+</ClayEntityForm>
+
+<MudOverlay Visible="@(_loading || _saving)" DarkBackground="true">
+    <div class="clay-busy">
+        <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" />
+        <span>@(_saving ? "Сохранение оборудования…" : "Загрузка формы…")</span>
+    </div>
+</MudOverlay>
