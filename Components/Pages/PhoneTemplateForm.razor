@@ -13,14 +13,16 @@
 <NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
 <ClayEntityForm Options="_entityFormOptions">
+    <Toolbar>
+        <ClayToolbar>
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
+            <ClayToolbarButton Options="_loadOptions" Disabled="@(_loading || _saving || !_canEdit)" OnClick="BrowseFileAsync" />
+            <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
+        </ClayToolbar>
+    </Toolbar>
     <ChildContent>
-    <ClayToolbar>
-        <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
-        <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
-        <ClayToolbarButton Options="_loadOptions" Disabled="@(_loading || _saving || !_canEdit)" OnClick="BrowseFileAsync" />
-        <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving)" OnClick="RefreshAsync" />
-        <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
-    </ClayToolbar>
     <InputFile id="phoneTemplateFile" class="phone-template-file" OnChange="LoadFileAsync" accept=".txt,.cfg,.xml" />
 
     @if (_notFound)
