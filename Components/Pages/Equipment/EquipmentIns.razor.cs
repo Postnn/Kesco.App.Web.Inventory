@@ -81,7 +81,7 @@ public partial class EquipmentIns : IDisposable
     private readonly ClayTimeOptions _timeOptions = new() { Required = true, Clearable = false };
     private readonly ClayTextBoxOptions _snOptions = new() { MaxLength = 50 };
     private readonly ClayTextBoxOptions _networkNameOptions = new() { MaxLength = 50 };
-    private readonly ClayTextBoxOptions _macOptions = new() { MaxLength = 12 };
+    private readonly ClayTextBoxOptions _macOptions = new() { MaxLength = 17 };
     private readonly ClayTextBoxOptions _locationDescriptionOptions = new() { MaxLength = 300 };
     private readonly ClayTextBoxOptions _responsibleDescriptionOptions = new() { MaxLength = 300 };
     private readonly ClayTextBoxOptions _inventoryNumberOptions = new() { MaxLength = 50 };
@@ -105,6 +105,12 @@ public partial class EquipmentIns : IDisposable
     private bool _disposed;
     private int _operationVersion;
     private int _ownerVersion;
+    private int _shipperVersion;
+    private int? _confirmedOwnerId;
+    private int? _createdEquipmentId;
+    private string? _createdEditUrl;
+    private string? _sourceKey;
+    private bool _initialRenderCompleted;
     private string? _validationMessage;
     private string _originalSnapshot = string.Empty;
 
@@ -113,17 +119,38 @@ public partial class EquipmentIns : IDisposable
     private DocumentSelectDataSource AccountingDocumentSource =>
         Services.GetRequiredKeyedService<DocumentSelectDataSource>("accounting");
 
-    private bool IsModified => _loaded && Snapshot() != _originalSnapshot;
+    private bool IsModified => _loaded && _createdEquipmentId is null && Snapshot() != _originalSnapshot;
     private bool CanSave => _loaded && _canEdit && !_loading && !_saving && IsModified;
     private bool ShowNetworkName => _selectedType?.HasNetworkName > 0;
     private int MacCount => Math.Min(3, _selectedModel?.NetworkInterfaces ?? 0);
 
     /// <inheritdoc />
+    protected override async Task OnParametersSetAsync()
+    {
+        var sourceKey = SourceKey;
+        if (_sourceKey is null)
+        {
+            _sourceKey = sourceKey;
+            return;
+        }
+        if (!_initialRenderCompleted || _sourceKey == sourceKey)
+            return;
+        _sourceKey = sourceKey;
+        await LoadAsync();
+    }
+
+    /// <inheritdoc />
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
+        {
+            _initialRenderCompleted = true;
+            _sourceKey = SourceKey;
             await LoadAsync();
+        }
     }
+
+    private string SourceKey => $"{QueryInt("copyId")}:{QueryInt("codetype")}";
 
     private async Task LoadAsync()
     {
@@ -131,6 +158,11 @@ public partial class EquipmentIns : IDisposable
         _loading = true;
         _loaded = false;
         _notFound = false;
+        _allowNavigation = false;
+        _createdEquipmentId = null;
+        _createdEditUrl = null;
+        _confirmedOwnerId = null;
+        _shipperVersion++;
         StateHasChanged();
         await Task.Delay(100);
         try
@@ -157,6 +189,7 @@ public partial class EquipmentIns : IDisposable
                 return;
 
             _model = model;
+            _confirmedOwnerId = model.OwnerId;
             ModelSource.Filter.EquipmentTypeId = model.EquipmentTypeId;
             ReceiptDocumentSource.PersonId = model.OwnerId;
             _selectedType = model.EquipmentTypeId is > 0
@@ -190,8 +223,17 @@ public partial class EquipmentIns : IDisposable
 
     private void OnTypeIdChanged(int? id)
     {
-        if (_model.EquipmentTypeId == id)
+        if (id is null)
+        {
+            _model.EquipmentTypeId = null;
             return;
+        }
+        if (_selectedType?.Id == id)
+        {
+            _model.EquipmentTypeId = id;
+            ModelSource.Filter.EquipmentTypeId = id;
+            return;
+        }
         _model.EquipmentTypeId = id;
         _model.ModelId = null;
         _selectedType = null;
@@ -213,11 +255,18 @@ public partial class EquipmentIns : IDisposable
 
     private void OnModelIdChanged(int? id)
     {
-        if (_model.ModelId == id)
+        if (id is null)
+        {
+            _model.ModelId = null;
             return;
+        }
+        if (_selectedModel?.Id == id)
+        {
+            _model.ModelId = id;
+            return;
+        }
         _model.ModelId = id;
         _selectedModel = null;
-        ClearHiddenFeatures();
     }
 
     private async Task OnModelChangedAsync(EquipmentModel? model)
@@ -238,9 +287,22 @@ public partial class EquipmentIns : IDisposable
 
     private async Task OnOwnerChangedAsync(int? id)
     {
-        if (_model.OwnerId == id)
+        if (id is null)
+        {
+            _ownerVersion++;
+            _shipperVersion++;
+            _model.OwnerId = null;
             return;
+        }
+        if (_confirmedOwnerId == id)
+        {
+            _model.OwnerId = id;
+            ReceiptDocumentSource.PersonId = id;
+            return;
+        }
         var version = ++_ownerVersion;
+        _shipperVersion++;
+        _confirmedOwnerId = id;
         _model.OwnerId = id;
         _model.DocumentReceiptOuId = null;
         _model.ShipperId = null;
@@ -249,8 +311,6 @@ public partial class EquipmentIns : IDisposable
         _model.IsAccounting = false;
         ClearAccountingValues();
         UpdateOptions();
-        if (id is null)
-            return;
         var available = await Service.CanUseAccountingAsync(id);
         if (_disposed || version != _ownerVersion || _model.OwnerId != id)
             return;
@@ -261,12 +321,21 @@ public partial class EquipmentIns : IDisposable
 
     private async Task OnReceiptDocumentChangedAsync(int? id)
     {
+        var version = ++_shipperVersion;
         _model.DocumentReceiptOuId = id;
         if (id is null || _model.OwnerId is null)
             return;
-        var shipperId = await ReceiptDocumentSource.GetSingleShipperIdAsync(id.Value, _model.OwnerId.Value);
-        if (!_disposed && _model.DocumentReceiptOuId == id && shipperId is not null)
+        var ownerId = _model.OwnerId.Value;
+        var shipperId = await ReceiptDocumentSource.GetSingleShipperIdAsync(id.Value, ownerId);
+        if (!_disposed && version == _shipperVersion && _model.DocumentReceiptOuId == id &&
+            _model.OwnerId == ownerId && shipperId is not null)
             _model.ShipperId = shipperId;
+    }
+
+    private void OnShipperChanged(int? id)
+    {
+        _shipperVersion++;
+        _model.ShipperId = id;
     }
 
     private void OnLocationChanged(int? id)
@@ -360,7 +429,23 @@ public partial class EquipmentIns : IDisposable
 
     private async Task SaveAsync(bool closeAfterSave)
     {
-        if (!_loaded || !_canEdit || _saving)
+        if (!_loaded || !_canEdit)
+            return;
+        if (_createdEquipmentId is int createdId)
+        {
+            if (_saving)
+                return;
+            if (closeAfterSave)
+                await CloseAsync();
+            else
+            {
+                _createdEditUrl ??= BuildEditUrl(GetConfiguredUrl("URI_equipment_form"), createdId);
+                _allowNavigation = true;
+                Navigation.NavigateTo(_createdEditUrl);
+            }
+            return;
+        }
+        if (_saving)
             return;
         if (!IsModified)
         {
@@ -375,6 +460,7 @@ public partial class EquipmentIns : IDisposable
         StateHasChanged();
         try
         {
+            var editFormUrl = closeAfterSave ? null : GetConfiguredUrl("URI_equipment_form");
             await Task.Delay(100);
             if (_form is not null)
             {
@@ -392,6 +478,10 @@ public partial class EquipmentIns : IDisposable
                 return;
             if (id <= 0)
                 throw new InvalidOperationException("База данных не вернула идентификатор созданного оборудования.");
+            _model.Id = id;
+            _createdEquipmentId = id;
+            _createdEditUrl = editFormUrl is null ? null : BuildEditUrl(editFormUrl, id);
+            _originalSnapshot = Snapshot();
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _pageCts.Token);
             if (!IsCurrent(version))
                 return;
@@ -401,7 +491,7 @@ public partial class EquipmentIns : IDisposable
                 return;
             }
             _allowNavigation = true;
-            Navigation.NavigateTo(BuildEditUrl(GetConfiguredUrl("URI_equipment_form"), id));
+            Navigation.NavigateTo(_createdEditUrl!);
         }
         catch (Microsoft.Data.SqlClient.SqlException)
         {
@@ -425,15 +515,12 @@ public partial class EquipmentIns : IDisposable
 
     private async Task<DateTime> ConvertReceiptTimeToUtcAsync()
     {
-        var local = _receiptDate!.Value.Date.Add(_receiptTime!.Value);
-        var wallTimeAsUtc = DateTime.SpecifyKind(local, DateTimeKind.Utc);
-        var offset = await JS.InvokeAsync<int>(
-            "clayGridTimeZone.getOffsetMinutes", _pageCts.Token, wallTimeAsUtc.ToString("O"));
-        return ApplyClientOffset(local, offset);
+        var milliseconds = await JS.InvokeAsync<long>(
+            "clayGridTimeZone.localDateTimeToUtcMilliseconds", _pageCts.Token,
+            _receiptDate!.Value.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+            _receiptTime!.Value.ToString(@"hh\:mm\:ss", System.Globalization.CultureInfo.InvariantCulture));
+        return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).UtcDateTime;
     }
-
-    internal static DateTime ApplyClientOffset(DateTime local, int offsetMinutes) =>
-        DateTime.SpecifyKind(local.AddMinutes(-offsetMinutes), DateTimeKind.Utc);
 
     internal static string BuildEditUrl(string url, int id) =>
         $"{url}{(url.Contains('?') ? '&' : '?')}id={id}";

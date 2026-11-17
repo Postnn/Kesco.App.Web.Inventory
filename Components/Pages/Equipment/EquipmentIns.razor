@@ -142,7 +142,8 @@
                                     DataSource="PersonSource"
                                     ValueSelector="@(item => (int?)item.Id)"
                                     TextSelector="@(item => item.Name)"
-                                    @bind-Value="_model.ShipperId"
+                                    Value="_model.ShipperId"
+                                    ValueChanged="OnShipperChanged"
                                     Options="_personOptions" />
                     </div>
 
