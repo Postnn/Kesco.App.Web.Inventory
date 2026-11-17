@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.JSInterop;
 using MudBlazor;
 
-namespace Kesco.App.Web.Inventory.Components.Pages;
+namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
 
 /// <summary>Отдельный редактор шаблона настройки IP-телефона.</summary>
 public partial class PhoneTemplateForm : IDisposable

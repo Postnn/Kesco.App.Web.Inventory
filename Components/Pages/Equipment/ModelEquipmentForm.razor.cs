@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.JSInterop;
 using MudBlazor;
 
-namespace Kesco.App.Web.Inventory.Components.Pages;
+namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
 
 /// <summary>Создание и редактирование модели оборудования.</summary>
 public partial class ModelEquipmentForm : IDisposable
@@ -378,7 +378,7 @@ public partial class ModelEquipmentForm : IDisposable
             {
                 _allowNavigation = true;
                 _loadedKey = (id, 0);
-                Navigation.NavigateTo($"/ModelEquipmentForm?id={id}", replace: true);
+                Navigation.NavigateTo($"/Equipment/ModelEquipmentForm?id={id}", replace: true);
             }
         }
         catch (Microsoft.Data.SqlClient.SqlException)
@@ -500,7 +500,7 @@ public partial class ModelEquipmentForm : IDisposable
     private async Task OpenPhoneTemplateAsync()
     {
         if (_model is not null)
-            await JS.InvokeVoidAsync("open", $"/PhoneTemplateForm?id={_model.Id}", "_blank");
+            await JS.InvokeVoidAsync("open", $"/Equipment/PhoneTemplateForm?id={_model.Id}", "_blank");
     }
 
     private string GetConfiguredUrl(string key) => Configuration[key] is { Length: > 0 } url
