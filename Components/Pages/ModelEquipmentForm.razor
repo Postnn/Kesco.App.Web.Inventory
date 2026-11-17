@@ -20,6 +20,7 @@
 <NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
 <ClayEntityForm Options="_entityFormOptions">
+    <ChildContent>
     <ClayToolbar>
         <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
         <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
@@ -175,10 +176,13 @@
         </MudForm>
     }
 
-    <ClayChanged ChangedById="_model?.ChangedById"
-                 ChangedByName="@_model?.ChangedByName"
-                 ChangedAt="_model?.ChangedAt"
-                 ChangedByUrl="@ChangedByUrl" />
+    </ChildContent>
+    <Footer>
+        <ClayChanged ChangedById="_model?.ChangedById"
+                     ChangedByName="@_model?.ChangedByName"
+                     ChangedAt="_model?.ChangedAt"
+                     ChangedByUrl="@ChangedByUrl" />
+    </Footer>
 </ClayEntityForm>
 
 <MudOverlay Visible="@(_loading || _saving)" DarkBackground="true">
