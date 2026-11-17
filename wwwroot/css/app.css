@@ -58,3 +58,45 @@
     font-family: monospace;
     font-size: 14px;
 }
+
+/* Компактная форма модели: высота общих полей совпадает с ClaySelect (32px). */
+.model-equipment-form .model-equipment-fields {
+    gap: 6px;
+}
+
+.model-equipment-form .mud-input-control.mud-input-control-margin-dense {
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.model-equipment-form .mud-input-control:has(input) .mud-input {
+    height: 32px;
+    min-height: 32px;
+    box-sizing: border-box;
+}
+
+.model-equipment-form .mud-input-control:has(input) .mud-input-root {
+    padding-top: 4px;
+    padding-bottom: 4px;
+}
+
+.model-equipment-form .mud-input-control-helper-container {
+    min-height: 0;
+    padding: 0;
+}
+
+.model-equipment-form .model-equipment-label {
+    padding-top: 0;
+}
+
+.model-equipment-form .model-equipment-row-top .model-equipment-label {
+    padding-top: 8px;
+}
+
+.model-equipment-form .clay-form-toolbar {
+    margin-bottom: 12px;
+}
+
+.model-equipment-form .clay-form-toolbar-bar {
+    min-height: 38px;
+}

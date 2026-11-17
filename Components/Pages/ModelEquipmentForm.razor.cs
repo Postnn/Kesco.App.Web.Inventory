@@ -39,7 +39,7 @@ public partial class ModelEquipmentForm : IDisposable
     private readonly ClayTextBoxOptions _networkNameOptions = new() { MaxLength = 50 };
     private readonly ClayTextBoxOptions _lifeTimeOptions = new() { MaxLength = 50 };
     private readonly ClayTextAreaOptions _driverOptions = new() { MaxLength = 300, Lines = 3 };
-    private readonly ClayTextAreaOptions _descriptionOptions = new() { MaxLength = 300, Lines = 3 };
+    private readonly ClayTextAreaOptions _descriptionOptions = new() { MaxLength = 300, Lines = 2 };
     private readonly ClayNumberOptions _monitorSizeOptions = new() { Precision = 1, Min = 0, Step = 0.1m };
     private readonly ClayNumberOptions _memoryBanksOptions = new() { Precision = 0, Min = 0 };
     private readonly ClayDropDownListOptions _networkSelectOptions = new();
