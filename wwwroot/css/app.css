@@ -124,7 +124,7 @@
 
 .equipment-ins-date {
     display: grid;
-    grid-template-columns: minmax(160px, 220px) 120px;
+    grid-template-columns: minmax(160px, 220px) 150px;
     gap: 8px;
 }
 
@@ -146,9 +146,9 @@
     font-size: var(--clay-font-size);
 }
 
-.equipment-ins-caption {
-    display: block;
-    margin: 6px 0 4px;
+.equipment-ins-note-row {
+    margin-top: 8px;
+    grid-template-columns: 190px minmax(0, 1fr);
 }
 
 .equipment-ins-accounting-row {

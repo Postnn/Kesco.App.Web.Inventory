@@ -53,15 +53,30 @@ public partial class EquipmentIns : IDisposable
     {
         Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца",
     };
-    private readonly ClaySelectOptions _personOptions = new() { AutoSelectSingle = true };
-    private readonly ClaySelectOptions _documentOptions = new() { AutoSelectSingle = true };
+    private readonly ClaySelectOptions _personOptions = new()
+    {
+        AutoSelectSingle = true, Placeholder = "Введите поставщика",
+    };
+    private readonly ClaySelectOptions _documentOptions = new()
+    {
+        AutoSelectSingle = true, Placeholder = "Введите документ поступления",
+    };
     private readonly ClaySelectOptions _locationOptions = new()
     {
         Required = true, AutoSelectSingle = true, Placeholder = "Введите расположение",
     };
-    private readonly ClaySelectOptions _responsibleOptions = new() { AutoSelectSingle = true };
-    private readonly ClaySelectOptions _accountingDocumentOptions = new() { AutoSelectSingle = true };
-    private readonly ClaySelectOptions _tenantOptions = new() { AutoSelectSingle = true };
+    private readonly ClaySelectOptions _responsibleOptions = new()
+    {
+        AutoSelectSingle = true, Placeholder = "Введите сотрудника",
+    };
+    private readonly ClaySelectOptions _accountingDocumentOptions = new()
+    {
+        AutoSelectSingle = true, Placeholder = "Введите документ поступления",
+    };
+    private readonly ClaySelectOptions _tenantOptions = new()
+    {
+        AutoSelectSingle = true, Placeholder = "Введите арендатора",
+    };
     private readonly ClayDatePickerOptions _dateOptions = new() { Required = true, Clearable = false };
     private readonly ClayTimeOptions _timeOptions = new() { Required = true, Clearable = false };
     private readonly ClayTextBoxOptions _snOptions = new() { MaxLength = 50 };

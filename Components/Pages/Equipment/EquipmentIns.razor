@@ -155,8 +155,10 @@
                                     Value="_model.LocationId"
                                     ValueChanged="OnLocationChanged"
                                     Options="_locationOptions" />
-                        <span class="equipment-ins-caption">Примечание расположения:</span>
-                        <ClayTextBox @bind-Value="_model.LocationDescription" Options="_locationDescriptionOptions" />
+                        <div class="equipment-ins-row equipment-ins-note-row">
+                            <span class="equipment-ins-label">Примечание расположения:</span>
+                            <ClayTextBox @bind-Value="_model.LocationDescription" Options="_locationDescriptionOptions" />
+                        </div>
                     </fieldset>
 
                     <fieldset class="equipment-ins-fieldset">
@@ -167,8 +169,10 @@
                                     TextSelector="@(item => item.Name)"
                                     @bind-Value="_model.EmployeeId"
                                     Options="_responsibleOptions" />
-                        <span class="equipment-ins-caption">Примечание ответственного:</span>
-                        <ClayTextBox @bind-Value="_model.EmployeeDescription" Options="_responsibleDescriptionOptions" />
+                        <div class="equipment-ins-row equipment-ins-note-row">
+                            <span class="equipment-ins-label">Примечание ответственного:</span>
+                            <ClayTextBox @bind-Value="_model.EmployeeDescription" Options="_responsibleDescriptionOptions" />
+                        </div>
                     </fieldset>
 
                     @if (_accountingAvailable)
