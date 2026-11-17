@@ -18,6 +18,7 @@ public partial class ModelEquipmentForm : IDisposable
     private const int PhoneEquipmentTypeId = 30;
 
     private readonly CancellationTokenSource _pageCts = new();
+    private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "model-equipment-form" };
     private readonly ClaySelectOptions _typeOptions = new()
     {
         Required = true,

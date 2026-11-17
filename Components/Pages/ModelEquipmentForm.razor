@@ -19,7 +19,7 @@
 <PageTitle>@Title</PageTitle>
 <NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
-<MudPaper Class="pa-3 model-equipment-form" MaxWidth="760px">
+<ClayEntityForm Options="_entityFormOptions">
     <ClayToolbar>
         <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
         <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
@@ -179,7 +179,7 @@
                  ChangedByName="@_model?.ChangedByName"
                  ChangedAt="_model?.ChangedAt"
                  ChangedByUrl="@ChangedByUrl" />
-</MudPaper>
+</ClayEntityForm>
 
 <MudOverlay Visible="@(_loading || _saving)" DarkBackground="true">
     <div class="clay-busy">
