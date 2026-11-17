@@ -148,12 +148,23 @@
 
 .equipment-ins-note-row {
     margin-top: 8px;
-    grid-template-columns: 210px minmax(0, 1fr);
+    grid-template-columns: 1fr;
+    gap: 4px;
 }
 
 .equipment-ins-accounting-row {
-    margin-top: 6px;
-    grid-template-columns: 140px minmax(0, 1fr);
+    margin-top: 8px;
+    grid-template-columns: 1fr;
+    gap: 4px;
+}
+
+.equipment-ins-description {
+    grid-template-columns: 1fr;
+    gap: 4px;
+}
+
+.equipment-ins-description .equipment-ins-label {
+    padding-top: 0;
 }
 
 @media (max-width: 600px) {
