@@ -100,3 +100,7 @@
 .model-equipment-form .clay-form-toolbar-bar {
     min-height: 38px;
 }
+
+.entity-form-main {
+    padding-top: 8px !important;
+}

@@ -1,4 +1,5 @@
 @page "/ModelEquipmentForm"
+@layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Select
 @using Clayzor.Lib.Web.DBSelect.Equipment
@@ -18,9 +19,7 @@
 <PageTitle>@Title</PageTitle>
 <NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
-<MudPaper Class="pa-4 model-equipment-form" MaxWidth="760px">
-    <MudText Typo="Typo.h5" Class="mb-3">@Title</MudText>
-
+<MudPaper Class="pa-3 model-equipment-form" MaxWidth="760px">
     <ClayToolbar>
         <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
         <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />

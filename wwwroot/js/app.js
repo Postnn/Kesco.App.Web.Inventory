@@ -32,7 +32,6 @@ window.clayModelEquipmentForm = {
         try {
             if (!window.opener || window.opener.closed) return;
             if (typeof window.opener.refresh === "function") window.opener.refresh();
-            else window.opener.location.reload();
         } catch (_) {
             // Родительское окно может быть в другом origin; его обновление необязательно.
         }

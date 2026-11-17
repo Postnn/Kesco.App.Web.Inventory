@@ -1,4 +1,5 @@
 @page "/PhoneTemplateForm"
+@layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
 @using Clayzor.Lib.Entities.Inventory
 @using Kesco.App.Web.Inventory.Services
 @implements IDisposable
@@ -11,8 +12,7 @@
 <PageTitle>@Title</PageTitle>
 <NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
-<MudPaper Class="pa-4 model-equipment-form" MaxWidth="960px">
-    <MudText Typo="Typo.h5" Class="mb-3">@Title</MudText>
+<MudPaper Class="pa-3 model-equipment-form" MaxWidth="960px">
     <ClayToolbar>
         <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
         <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
