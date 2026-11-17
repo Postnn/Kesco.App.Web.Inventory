@@ -15,6 +15,7 @@ var builder = WebApplication.CreateBuilder(args);
 // Конфигурация: appsettings.json + web.config
 builder.Configuration.AddWebConfig();
 builder.Configuration["URI_user_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_user_form");
+builder.Configuration["URI_model_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_model_form");
 builder.Configuration["URI_user_search"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_user_search");
 builder.Configuration["URI_resource_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_resource_form");
 builder.Configuration["URI_resource_search"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_resource_search");
