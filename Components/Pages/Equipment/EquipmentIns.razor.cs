@@ -125,18 +125,10 @@ public partial class EquipmentIns : IDisposable
     private int MacCount => Math.Min(3, _selectedModel?.NetworkInterfaces ?? 0);
 
     /// <inheritdoc />
-    protected override async Task OnParametersSetAsync()
+    protected override void OnInitialized()
     {
-        var sourceKey = SourceKey;
-        if (_sourceKey is null)
-        {
-            _sourceKey = sourceKey;
-            return;
-        }
-        if (!_initialRenderCompleted || _sourceKey == sourceKey)
-            return;
-        _sourceKey = sourceKey;
-        await LoadAsync();
+        _sourceKey = SourceKey;
+        Navigation.LocationChanged += OnNavigationLocationChanged;
     }
 
     /// <inheritdoc />
@@ -148,6 +140,19 @@ public partial class EquipmentIns : IDisposable
             _sourceKey = SourceKey;
             await LoadAsync();
         }
+    }
+
+    private async void OnNavigationLocationChanged(object? sender, LocationChangedEventArgs args)
+    {
+        if (_disposed || !string.Equals(new Uri(args.Location).AbsolutePath.TrimEnd('/'),
+                "/Equipment/EquipmentIns", StringComparison.OrdinalIgnoreCase))
+            return;
+        var sourceKey = SourceKey;
+        if (_sourceKey == sourceKey)
+            return;
+        _sourceKey = sourceKey;
+        if (_initialRenderCompleted)
+            await InvokeAsync(LoadAsync);
     }
 
     private string SourceKey => $"{QueryInt("copyId")}:{QueryInt("codetype")}";
@@ -188,24 +193,30 @@ public partial class EquipmentIns : IDisposable
             if (!IsCurrent(version))
                 return;
 
-            _model = model;
-            _confirmedOwnerId = model.OwnerId;
-            ModelSource.Filter.EquipmentTypeId = model.EquipmentTypeId;
-            ReceiptDocumentSource.PersonId = model.OwnerId;
-            _selectedType = model.EquipmentTypeId is > 0
+            var selectedType = model.EquipmentTypeId is > 0
                 ? await EquipmentTypeSource.GetByIdAsync(model.EquipmentTypeId, _pageCts.Token)
                 : null;
-            _selectedModel = model.ModelId is > 0
+            if (!IsCurrent(version))
+                return;
+            var selectedModel = model.ModelId is > 0
                 ? await ModelSource.GetByIdAsync(model.ModelId, _pageCts.Token)
                 : null;
             if (!IsCurrent(version))
                 return;
+            var accountingAvailable = await Service.CanUseAccountingAsync(model.OwnerId);
+            if (!IsCurrent(version))
+                return;
+
+            _model = model;
+            _confirmedOwnerId = model.OwnerId;
+            ModelSource.Filter.EquipmentTypeId = model.EquipmentTypeId;
+            ReceiptDocumentSource.PersonId = model.OwnerId;
+            _selectedType = selectedType;
+            _selectedModel = selectedModel;
             _receiptDate = DateTime.UtcNow.AddMinutes(localOffset).Date;
             _receiptTime = TimeSpan.Zero;
             _canEdit = canEdit;
-            _accountingAvailable = await Service.CanUseAccountingAsync(model.OwnerId);
-            if (!IsCurrent(version))
-                return;
+            _accountingAvailable = accountingAvailable;
             UpdateOptions();
             _validationMessage = null;
             _loaded = true;
@@ -298,9 +309,10 @@ public partial class EquipmentIns : IDisposable
         {
             _model.OwnerId = id;
             ReceiptDocumentSource.PersonId = id;
+            if (!_accountingAvailable)
+                await RefreshAccountingAsync(id.Value);
             return;
         }
-        var version = ++_ownerVersion;
         _shipperVersion++;
         _confirmedOwnerId = id;
         _model.OwnerId = id;
@@ -311,8 +323,14 @@ public partial class EquipmentIns : IDisposable
         _model.IsAccounting = false;
         ClearAccountingValues();
         UpdateOptions();
-        var available = await Service.CanUseAccountingAsync(id);
-        if (_disposed || version != _ownerVersion || _model.OwnerId != id)
+        await RefreshAccountingAsync(id.Value);
+    }
+
+    private async Task RefreshAccountingAsync(int personId)
+    {
+        var version = ++_ownerVersion;
+        var available = await Service.CanUseAccountingAsync(personId);
+        if (_disposed || version != _ownerVersion || _confirmedOwnerId != personId || _model.OwnerId != personId)
             return;
         _accountingAvailable = available;
         UpdateOptions();
@@ -591,6 +609,7 @@ public partial class EquipmentIns : IDisposable
     /// <summary>Освобождает ресурсы страницы и отменяет ожидания.</summary>
     public void Dispose()
     {
+        Navigation.LocationChanged -= OnNavigationLocationChanged;
         _disposed = true;
         _operationVersion++;
         _ownerVersion++;
