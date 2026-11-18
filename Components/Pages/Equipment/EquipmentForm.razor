@@ -44,6 +44,10 @@
             {
                 <ClayToolbarButton Options="_phoneConfigOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="OpenPhoneConfigAsync" />
             }
+            @if (ShowNetworkName)
+            {
+                <ClayToolbarButton Options="_networkHistoryOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="OpenNetworkNameHistoryAsync" />
+            }
         </ClayToolbar>
     </Toolbar>
     <ChildContent>

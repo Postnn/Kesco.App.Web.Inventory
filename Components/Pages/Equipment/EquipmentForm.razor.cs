@@ -159,8 +159,10 @@ public partial class EquipmentForm : IDisposable
     private readonly ClayToolbarButtonOptions _attachOptions = new() { Text = "Подключить сеть", Icon = Icons.Material.Filled.Link, Title = "Подключить оборудование к рабочей сети" };
     private readonly ClayToolbarButtonOptions _detachOptions = new() { Text = "Отключить сеть", Icon = Icons.Material.Filled.LinkOff, Title = "Отключить оборудование от рабочей сети" };
     private readonly ClayToolbarButtonOptions _phoneConfigOptions = new() { Text = "Конфигурация", Icon = Icons.Material.Filled.SettingsPhone, Title = "Открыть конфигурацию IP-телефона" };
+    private readonly ClayToolbarButtonOptions _networkHistoryOptions = new() { Text = "История имён", Icon = Icons.Material.Filled.History, Title = "Показать историю сетевых имён" };
     private int _networkAttachmentCount;
     private int _networkVersion;
+    private IReadOnlyList<EquipmentNetworkNameHistory> _networkNameHistory = [];
 
     private MudForm? _form;
     private EquipmentEntity? _model;
@@ -364,6 +366,9 @@ public partial class EquipmentForm : IDisposable
             var upsLinks = await Service.GetUpsLinksAsync(id);
             var lastInventory = await Service.GetLastInventoryAsync(id);
             var networkAttachmentCount = await Service.GetNetworkAttachmentCountAsync(id);
+            var networkNameHistory = selectedType?.HasNetworkName > 0
+                ? await Service.GetNetworkNameHistoryAsync(id)
+                : (IReadOnlyList<EquipmentNetworkNameHistory>)[];
             if (!IsCurrent(version, id))
                 return;
             DateTime? localWriteOff = null;
@@ -398,6 +403,7 @@ public partial class EquipmentForm : IDisposable
             _upsLinks = upsLinks.ToList();
             _lastInventory = lastInventory;
             _networkAttachmentCount = networkAttachmentCount;
+            _networkNameHistory = networkNameHistory;
             await RefreshLocationDisplayDatesAsync();
             _phoneToAdd = null;
             _phoneVersion++;
@@ -1538,6 +1544,19 @@ public partial class EquipmentForm : IDisposable
         await JS.InvokeVoidAsync("open", $"/Equipment/PhoneConfigHandler.ashx?mac={Uri.EscapeDataString(_model.MacAddress!)}", "_blank");
     }
 
+    private async Task OpenNetworkNameHistoryAsync()
+    {
+        if (_model is null || !ShowNetworkName)
+            return;
+        var parameters = new DialogParameters<EquipmentNetworkNameHistoryDialog>
+        {
+            { dialog => dialog.Items, _networkNameHistory },
+            { dialog => dialog.FormatDate, utc => FormatDisplayDate(utc, true) },
+        };
+        await DialogService.ShowAsync<EquipmentNetworkNameHistoryDialog>(
+            "История сетевых имён", parameters, new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true });
+    }
+
     private async Task SetNetworkAttachmentAsync(bool attach)
     {
         if (_model is null || !_canEdit || _saving)
@@ -1753,6 +1772,7 @@ public partial class EquipmentForm : IDisposable
         var dates = _locations.SelectMany(item => new[] { item.FromUtc, item.ChangedAtUtc })
             .Concat(_responsibles.SelectMany(item => new[] { item.FromUtc, item.ToUtc ?? default, item.ChangedAtUtc }))
             .Concat(_simCards.SelectMany(item => new[] { item.ActivatedAtUtc, item.ChangedAt }))
+            .Concat(_networkNameHistory.Select(item => item.ChangedAtUtc))
             .Concat(_lastInventory is null ? Array.Empty<DateTime>() : new[] { _lastInventory.CheckedAt, _lastInventory.ChangedAt })
             .Where(item => item != default)
             .Distinct();

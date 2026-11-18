@@ -308,6 +308,11 @@ public class EquipmentFormService
         await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_ТекущийПользовательИмеетРольПоЛицу,
             new { RoleId = roleId, PersonId = personId }, commandType: CommandType.Text) == 1;
 
+    /// <summary>Загружает историю сетевых имён от новых записей к старым.</summary>
+    public virtual async Task<IReadOnlyList<EquipmentNetworkNameHistory>> GetNetworkNameHistoryAsync(int equipmentId) =>
+        (await _db.QueryAsync<EquipmentNetworkNameHistory>(
+            SQLQueries.SELECT_ОборудованиеСетевыеИмена, new { EquipmentId = equipmentId })).ToList();
+
     /// <summary>Загружает историю дневных конфигураций компьютера.</summary>
     public virtual async Task<IReadOnlyList<EquipmentComputerSnapshot>> GetComputerHistoryAsync(int equipmentId)
     {

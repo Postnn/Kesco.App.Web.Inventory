@@ -1,0 +1,39 @@
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Detail
+
+<MudDialog>
+    <TitleContent>История сетевых имён</TitleContent>
+    <DialogContent>
+        <ClayDetailGrid TItem="EquipmentNetworkNameHistory"
+                        Title="Сетевые имена"
+                        Items="Items"
+                        Columns="_columns"
+                        Options="_gridOptions" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Закрыть</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private readonly ClayDetailGridOptions _gridOptions = new() { EmptyText = "История сетевых имён отсутствует" };
+    private IReadOnlyList<ClayDetailColumn<EquipmentNetworkNameHistory>> _columns = null!;
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+
+    /// <summary>Записи истории, отсортированные от новых к старым.</summary>
+    [Parameter] public IReadOnlyList<EquipmentNetworkNameHistory> Items { get; set; } = [];
+
+    /// <summary>Преобразование UTC даты в отображаемое локальное время.</summary>
+    [Parameter] public Func<DateTime, string> FormatDate { get; set; } = value => value.ToString("dd.MM.yyyy HH:mm:ss");
+
+    /// <inheritdoc />
+    protected override void OnInitialized() => _columns =
+    [
+        new() { Title = "Сетевое имя", TextSelector = item => item.NetworkName },
+        new() { Title = "Изменено", TextSelector = item => FormatDate(item.ChangedAtUtc) },
+        new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
+    ];
+
+    private void Close() => Dialog.Cancel();
+}
