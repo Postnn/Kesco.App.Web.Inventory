@@ -18,6 +18,7 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
 public partial class EquipmentForm : IDisposable
 {
     private const int InventorySpecialistRoleId = 43;
+    private const int SimSpecialistRoleId = 42;
     private const int SimEquipmentTypeId = 27;
     private const int OnHandsLocationId = 55;
 
@@ -63,6 +64,9 @@ public partial class EquipmentForm : IDisposable
     ];
     private List<EquipmentComputerSnapshot> _computerHistory = [];
     private IReadOnlyList<StandardConfiguration> _standardConfigurations = [];
+    private readonly ClayDetailGridOptions _simGridOptions = new() { EmptyText = "Нет сведений SIM", AddTooltip = "Добавить сведения SIM" };
+    private IReadOnlyList<ClayDetailColumn<EquipmentSimCard>> _simColumns = null!;
+    private List<EquipmentSimCard> _simCards = [];
     private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
     private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Введите документ поступления" };
     private readonly ClaySelectOptions _writeOffDocumentOptions = new() { Placeholder = "Введите документ списания" };
@@ -91,11 +95,13 @@ public partial class EquipmentForm : IDisposable
     private int _locationVersion;
     private int _accountVersion;
     private int _computerVersion;
+    private int _simVersion;
     private string? _warningMessage;
     private DateTime? _writeOffDate;
     private TimeSpan? _writeOffTime;
     private bool _sortTypesByName;
     private bool _canEdit;
+    private bool _canEditSim;
     private bool _loading = true;
     private bool _saving;
     private bool _loaded;
@@ -124,6 +130,7 @@ public partial class EquipmentForm : IDisposable
     private bool ShowPhonePool => _selectedType?.HasPhoneNumber > 0;
     private bool ShowPhones => _selectedType?.HasPhoneNumber > 0;
     private bool ShowComputer => _selectedType?.HasComputerCharacteristics > 0;
+    private bool ShowSim => _selectedType?.HasSimCharacteristics > 0;
     private bool PhonesModified => JsonSerializer.Serialize(_phones) != JsonSerializer.Serialize(_originalPhones);
     private bool ShowCamera => _selectedType?.HasMonitorCharacteristics > 0;
     private int MacCount => Math.Min(3, _selectedModel?.NetworkInterfaces ?? 0);
@@ -153,6 +160,14 @@ public partial class EquipmentForm : IDisposable
             new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
             new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAtUtc, true) },
         ];
+        _simColumns =
+        [
+            new() { Title = "Номер", TextSelector = item => item.PhoneNumber },
+            new() { Title = "Активация", TextSelector = item => FormatDisplayDate(item.ActivatedAtUtc, true) },
+            new() { Title = "Договор", TextSelector = item => item.ContractName },
+            new() { Title = "Лицо ПДн", TextSelector = item => item.PersonalDataPersonName },
+            new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
+        ];
     }
 
     /// <inheritdoc />
@@ -172,6 +187,7 @@ public partial class EquipmentForm : IDisposable
         _shipperVersion++;
         _accountVersion++;
         _computerVersion++;
+        _simVersion++;
         _loading = true;
         _loaded = false;
         _notFound = false;
@@ -195,6 +211,10 @@ public partial class EquipmentForm : IDisposable
             var selectedType = model.EquipmentTypeId is > 0
                 ? await EquipmentTypeSource.GetByIdAsync(model.EquipmentTypeId, _pageCts.Token)
                 : null;
+            if (!IsCurrent(version, id))
+                return;
+            var canEditSim = selectedType?.HasSimCharacteristics > 0 &&
+                             await Service.HasRoleAsync(SimSpecialistRoleId);
             if (!IsCurrent(version, id))
                 return;
             var selectedModel = model.ModelId is > 0
@@ -222,6 +242,9 @@ public partial class EquipmentForm : IDisposable
             var configurations = selectedType?.HasComputerCharacteristics > 0
                 ? await Service.GetStandardConfigurationsAsync()
                 : (IReadOnlyList<StandardConfiguration>)[];
+            var simCards = selectedType?.HasSimCharacteristics > 0
+                ? await Service.GetSimCardsAsync(id)
+                : (IReadOnlyList<EquipmentSimCard>)[];
             if (!IsCurrent(version, id))
                 return;
             DateTime? localWriteOff = null;
@@ -244,6 +267,7 @@ public partial class EquipmentForm : IDisposable
             _accounts = accounts.ToList();
             _computerHistory = computerHistory.ToList();
             _standardConfigurations = configurations;
+            _simCards = simCards.ToList();
             await RefreshLocationDisplayDatesAsync();
             _phoneToAdd = null;
             _phoneVersion++;
@@ -254,6 +278,7 @@ public partial class EquipmentForm : IDisposable
             _writeOffDate = localWriteOff?.Date;
             _writeOffTime = localWriteOff?.TimeOfDay;
             _canEdit = canEdit;
+            _canEditSim = canEditSim;
             _loaded = true;
             UpdateOptions();
             _originalSnapshot = Snapshot();
@@ -876,11 +901,134 @@ public partial class EquipmentForm : IDisposable
         _computerHistory = history.ToList();
     }
 
+    private async Task OpenSimDialogAsync()
+    {
+        if (_model is null || !_canEditSim || _saving)
+            return;
+        var existing = _simCards.SingleOrDefault();
+        DateTime? localActivation = null;
+        if (existing is not null)
+        {
+            var utc = DateTime.SpecifyKind(existing.ActivatedAtUtc, DateTimeKind.Utc);
+            var offset = await JS.InvokeAsync<int>("clayGridTimeZone.getOffsetMinutes", utc.ToString("O"));
+            localActivation = utc.AddMinutes(offset);
+        }
+        var parameters = new DialogParameters<EquipmentSimDialog>
+        {
+            { dialog => dialog.EquipmentId, _model.Id },
+            { dialog => dialog.HasExisting, existing is not null },
+            { dialog => dialog.PhoneNumber, existing?.PhoneNumber ?? string.Empty },
+            { dialog => dialog.ActivatedDate, localActivation?.Date },
+            { dialog => dialog.ActivatedTime, localActivation?.TimeOfDay },
+            { dialog => dialog.ContractId, existing?.ContractId },
+            { dialog => dialog.PersonalDataPersonId, existing?.PersonalDataPersonId },
+            { dialog => dialog.CurrentEmployeeId, _responsibles.LastOrDefault(item => item.ToUtc is null)?.EmployeeId },
+        };
+        var dialog = await DialogService.ShowAsync<EquipmentSimDialog>("SIM-карта", parameters);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not EquipmentSimDialogResult value)
+            return;
+        var version = ++_simVersion;
+        var equipmentId = _model.Id;
+        var duplicateId = await Service.GetDuplicateSimIdAsync(equipmentId, value.PhoneNumber);
+        if (_disposed || version != _simVersion || _model.Id != equipmentId)
+            return;
+        if (duplicateId is not null &&
+            !await ConfirmAsync("Другая SIM с тем же номером",
+                $"Списать SIM #{duplicateId} с тем же номером на момент активации текущей?"))
+            return;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        try
+        {
+            var activatedUtc = await ConvertLocalToUtcAsync(value.ActivatedLocal);
+            if (_disposed || version != _simVersion || _model.Id != equipmentId)
+                return;
+            await Service.SaveSimAsync(new EquipmentSimCard
+            {
+                EquipmentId = equipmentId,
+                PhoneNumber = value.PhoneNumber,
+                ActivatedAtUtc = activatedUtc,
+                ContractId = value.ContractId,
+                PersonalDataPersonId = value.PersonalDataPersonId,
+                Secrets = value.Secrets,
+            }, duplicateId);
+            if (_disposed || version != _simVersion || _model.Id != equipmentId)
+                return;
+            await RefreshSimAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _simVersion)
+                _validationMessage = "Сведения SIM не сохранены. Подробности — в сообщении базы данных.";
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (!_disposed && version == _simVersion)
+                _validationMessage = ex.Message;
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task DeleteSimAsync()
+    {
+        if (_model is null || !_canEditSim || _saving ||
+            !await ConfirmAsync("Удаление сведений SIM", "Удалить сведения SIM без удаления самого оборудования?"))
+            return;
+        var version = ++_simVersion;
+        var equipmentId = _model.Id;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        try
+        {
+            await Service.DeleteSimAsync(equipmentId);
+            if (_disposed || version != _simVersion || _model.Id != equipmentId)
+                return;
+            await RefreshSimAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _simVersion)
+                _validationMessage = "Сведения SIM не удалены. Подробности — в сообщении базы данных.";
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task RefreshSimAsync()
+    {
+        if (_model is null)
+            return;
+        var version = _simVersion;
+        var equipmentId = _model.Id;
+        var simCards = await Service.GetSimCardsAsync(equipmentId);
+        if (_disposed || version != _simVersion || _model.Id != equipmentId)
+            return;
+        _simCards = simCards.ToList();
+        await RefreshLocationDisplayDatesAsync();
+    }
+
     private async Task RefreshLocationDisplayDatesAsync()
     {
         _localDates.Clear();
         var dates = _locations.SelectMany(item => new[] { item.FromUtc, item.ChangedAtUtc })
             .Concat(_responsibles.SelectMany(item => new[] { item.FromUtc, item.ToUtc ?? default, item.ChangedAtUtc }))
+            .Concat(_simCards.SelectMany(item => new[] { item.ActivatedAtUtc, item.ChangedAt }))
             .Where(item => item != default)
             .Distinct();
         foreach (var utc in dates)

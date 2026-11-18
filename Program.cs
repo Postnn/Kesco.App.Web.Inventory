@@ -46,6 +46,8 @@ builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.EquipmentModelSele
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.PhonePoolSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.PhoneNumberSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.MemoryTypeSelectDataSource>();
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.MobileContractSelectDataSource>();
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.PersonalDataPersonSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Employees.EmployeeSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Locations.LocationSelectDataSource>();
 builder.Services.AddScoped(sp =>

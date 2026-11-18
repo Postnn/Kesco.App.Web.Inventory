@@ -1,0 +1,182 @@
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Form
+@using Clayzor.Lib.Web.Controls.Components.Select
+@using Clayzor.Lib.Web.DBSelect.Equipment
+@inject MobileContractSelectDataSource ContractSource
+@inject PersonalDataPersonSelectDataSource PersonalDataSource
+@inject Kesco.App.Web.Inventory.Services.EquipmentFormService Service
+@inject IConfiguration Configuration
+
+<MudDialog>
+    <TitleContent>SIM-карта</TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Error">@_error</MudAlert>
+        }
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Номер телефона:</span>
+            <ClayTextBox @bind-Value="PhoneNumber" Options="_phoneOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Активация:</span>
+            <div class="equipment-ins-date">
+                <ClayDatePicker @bind-Value="ActivatedDate" Options="_activationDateOptions" />
+                <ClayTime @bind-Value="ActivatedTime" Options="_activationTimeOptions" />
+            </div>
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Договор:</span>
+            <ClaySelect TItem="MobileContractLookup" TValue="int?"
+                        DataSource="ContractSource"
+                        ValueSelector="@(item => (int?)item.Id)"
+                        TextSelector="@(item => item.Name)"
+                        @bind-Value="ContractId"
+                        SelectedItemChanged="OnContractChanged"
+                        Options="_contractOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Лицо ПДн:</span>
+            <ClaySelect TItem="PersonLookup" TValue="int?"
+                        DataSource="PersonalDataSource"
+                        ValueSelector="@(item => (int?)item.Id)"
+                        TextSelector="@(item => item.Name)"
+                        @bind-Value="PersonalDataPersonId"
+                        Options="_personOptions" />
+            <MudButton OnClick="FillPersonalDataAsync" Disabled="@(CurrentEmployeeId is null)">Заполнить</MudButton>
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">PIN:</span>
+            <ClayTextBox @bind-Value="Secrets.Pin" Options="_pinOptions" />
+            <span class="equipment-ins-label">PIN2:</span>
+            <ClayTextBox @bind-Value="Secrets.Pin2" Options="_pin2Options" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">PUK:</span>
+            <ClayTextBox @bind-Value="Secrets.Puk" Options="_pukOptions" />
+            <span class="equipment-ins-label">PUK2:</span>
+            <ClayTextBox @bind-Value="Secrets.Puk2" Options="_pukOptions" />
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Отмена</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply" Disabled="_loading">OK</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private readonly ClayTextBoxOptions _phoneOptions = new() { Required = true, MaxLength = 50 };
+    private readonly ClayDatePickerOptions _activationDateOptions = new() { Required = true };
+    private readonly ClayTimeOptions _activationTimeOptions = new() { Required = true };
+    private readonly ClaySelectOptions _contractOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите договор" };
+    private readonly ClaySelectOptions _personOptions = new() { AutoSelectSingle = true, Placeholder = "Введите лицо персональных данных" };
+    private readonly ClayTextBoxOptions _pinOptions = new() { MaxLength = 4, InputType = InputType.Password };
+    private readonly ClayTextBoxOptions _pin2Options = new() { MaxLength = 8, InputType = InputType.Password };
+    private readonly ClayTextBoxOptions _pukOptions = new() { MaxLength = 8, InputType = InputType.Password };
+    private bool _loading = true;
+    private bool _ready;
+    private string? _error;
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+
+    /// <summary>Идентификатор оборудования.</summary>
+    [Parameter] public int EquipmentId { get; set; }
+
+    /// <summary>Признак существующей SIM.</summary>
+    [Parameter] public bool HasExisting { get; set; }
+
+    /// <summary>Номер телефона.</summary>
+    [Parameter] public string PhoneNumber { get; set; } = string.Empty;
+
+    /// <summary>Дата активации.</summary>
+    [Parameter] public DateTime? ActivatedDate { get; set; }
+
+    /// <summary>Время активации.</summary>
+    [Parameter] public TimeSpan? ActivatedTime { get; set; }
+
+    /// <summary>Договор связи.</summary>
+    [Parameter] public int? ContractId { get; set; }
+
+    /// <summary>Лицо ПДн.</summary>
+    [Parameter] public int? PersonalDataPersonId { get; set; }
+
+    /// <summary>Текущий ответственный сотрудник.</summary>
+    [Parameter] public int? CurrentEmployeeId { get; set; }
+
+    /// <summary>Секретные коды, не передаваемые из общего списка.</summary>
+    public EquipmentSimSecrets Secrets { get; } = new();
+
+    /// <inheritdoc />
+    protected override void OnParametersSet()
+    {
+        PersonalDataSource.EquipmentId = EquipmentId;
+        PersonalDataSource.ContractId = ContractId;
+        PersonalDataSource.TechnicalTariffs = Configuration["technicalTariffs"] ?? string.Empty;
+    }
+
+    /// <inheritdoc />
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+        if (HasExisting)
+        {
+            try
+            {
+                var secrets = await Service.GetSimSecretsAsync(EquipmentId);
+                Secrets.Pin = secrets.Pin;
+                Secrets.Pin2 = secrets.Pin2;
+                Secrets.Puk = secrets.Puk;
+                Secrets.Puk2 = secrets.Puk2;
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _error = ex.Message;
+            }
+        }
+        _loading = false;
+        _ready = true;
+        StateHasChanged();
+    }
+
+    private void OnContractChanged(MobileContractLookup? contract)
+    {
+        PersonalDataSource.CustomerType = contract?.CustomerType ?? 0;
+        PersonalDataSource.ContractId = ContractId;
+        if (_ready)
+            PersonalDataPersonId = null;
+    }
+
+    private async Task FillPersonalDataAsync()
+    {
+        if (CurrentEmployeeId is null)
+            return;
+        PersonalDataPersonId = await Service.GetEmployeePersonIdAsync(CurrentEmployeeId.Value);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void Cancel() => Dialog.Cancel();
+
+    private void Apply()
+    {
+        if (_error is not null)
+            return;
+        if (ActivatedDate is null || ActivatedTime is null)
+        {
+            _error = "Укажите дату и время активации.";
+            return;
+        }
+        var candidate = new EquipmentSimCard
+        {
+            PhoneNumber = PhoneNumber?.Trim() ?? string.Empty,
+            ContractId = ContractId,
+            ActivatedAtUtc = ActivatedDate.Value.Date.Add(ActivatedTime.Value),
+            Secrets = Secrets,
+        };
+        _error = candidate.Validate();
+        if (_error is not null)
+            return;
+        Dialog.Close(DialogResult.Ok(new EquipmentSimDialogResult(
+            candidate.PhoneNumber, candidate.ActivatedAtUtc, ContractId, PersonalDataPersonId, Secrets)));
+    }
+}

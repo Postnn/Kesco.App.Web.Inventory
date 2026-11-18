@@ -93,6 +93,44 @@ public class EquipmentFormService
     /// <summary>Удаляет учётную запись.</summary>
     public virtual Task DeleteAccountAsync(EquipmentAccount account) => account.DeleteAsync(_db);
 
+    /// <summary>Загружает сведения SIM без PIN/PUK.</summary>
+    public virtual async Task<IReadOnlyList<EquipmentSimCard>> GetSimCardsAsync(int equipmentId) =>
+        (await _db.QueryAsync<EquipmentSimCard>(
+            SQLQueries.SELECT_SIMКарты_КодОборудования, new { EquipmentId = equipmentId })).ToList();
+
+    /// <summary>Загружает PIN/PUK после серверной проверки роли.</summary>
+    public virtual async Task<EquipmentSimSecrets> GetSimSecretsAsync(int equipmentId)
+    {
+        if (!await HasRoleAsync(42))
+            throw new UnauthorizedAccessException("Недостаточно прав для просмотра кодов SIM.");
+        return (await _db.QueryAsync<EquipmentSimSecrets>(
+            SQLQueries.SELECT_SIMКарта_Секреты, new { EquipmentId = equipmentId })).SingleOrDefault()
+            ?? new EquipmentSimSecrets();
+    }
+
+    /// <summary>Ищет другую активную SIM с тем же номером.</summary>
+    public virtual async Task<int?> GetDuplicateSimIdAsync(int equipmentId, string phoneNumber) =>
+        await _db.ExecuteScalarAsync<int?>(SQLQueries.SELECT_SimКарты_Другая_С_Тем_Же_Номером,
+            new { EquipmentId = equipmentId, PhoneNumber = phoneNumber }, commandType: CommandType.Text);
+
+    /// <summary>Атомарно списывает подтверждённый дубликат и сохраняет SIM.</summary>
+    public virtual Task SaveSimAsync(EquipmentSimCard sim, int? duplicateEquipmentId = null)
+    {
+        var validation = sim.Validate();
+        if (validation is not null)
+            throw new InvalidOperationException(validation);
+        return sim.SaveAsync(_db, duplicateEquipmentId);
+    }
+
+    /// <summary>Удаляет только сведения SIM.</summary>
+    public virtual Task DeleteSimAsync(int equipmentId) => _db.ExecuteAsync(
+        SQLQueries.DELETE_ID_SIMКарты, new { EquipmentId = equipmentId }, commandType: CommandType.Text);
+
+    /// <summary>Возвращает лицо сотрудника для заполнения ПДн.</summary>
+    public virtual async Task<int?> GetEmployeePersonIdAsync(int employeeId) =>
+        await _db.ExecuteScalarAsync<int?>(SQLQueries.SELECT_ЛицоСотрудника,
+            new { EmployeeId = employeeId }, commandType: CommandType.Text);
+
     /// <summary>Загружает историю дневных конфигураций компьютера.</summary>
     public virtual async Task<IReadOnlyList<EquipmentComputerSnapshot>> GetComputerHistoryAsync(int equipmentId)
     {

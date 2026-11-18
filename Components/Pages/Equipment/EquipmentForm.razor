@@ -287,6 +287,24 @@
                                 AddDisabled="@(!_canEdit || _saving)"
                                 ReadOnly="@(!_canEdit)" />
             }
+            @if (ShowSim)
+            {
+                <ClayDetailGrid TItem="EquipmentSimCard"
+                                Title="SIM-карта"
+                                Items="_simCards"
+                                Columns="_simColumns"
+                                Options="_simGridOptions"
+                                OnAdd="OpenSimDialogAsync"
+                                AddDisabled="@(!_canEditSim || _saving)"
+                                ReadOnly="@(!_canEditSim)">
+                    <Actions Context="item">
+                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить сведения SIM"
+                                    Disabled="@(!_canEditSim || _saving)" OnClick="OpenSimDialogAsync" />
+                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить сведения SIM"
+                                    Disabled="@(!_canEditSim || _saving)" OnClick="DeleteSimAsync" />
+                    </Actions>
+                </ClayDetailGrid>
+            }
         }
     </ChildContent>
     <Footer>
