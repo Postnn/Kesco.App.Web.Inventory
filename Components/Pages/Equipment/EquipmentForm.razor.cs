@@ -63,11 +63,7 @@ public partial class EquipmentForm : IDisposable
     private EquipmentRouterInfo? _routerInfo;
     private readonly ClayGridOptions _routerGridOptions = new() { EmptyText = "Нет данных маршрутизатора", ShowAddButton = false };
     private List<EquipmentRouterInventoryItem> _routerInventory = [];
-    private readonly ClayGridOptions _upsGridOptions = new() { EmptyText = "Нет подключённых UPS", ShowAddButton = false };
     private List<UpsServerLink> _upsLinks = [];
-    private int? _upsToAdd;
-    private readonly ClaySelectOptions _upsSelectOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите UPS" };
-    private readonly ClayToolbarButtonOptions _upsAddButtonOptions = new() { Text = "Подключить" };
     private EquipmentActualInventory? _lastInventory;
     private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
     private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Введите документ поступления" };
@@ -85,8 +81,7 @@ public partial class EquipmentForm : IDisposable
     private readonly ClayToolbarButtonOptions _refreshOptions = new() { Text = "Обновить", Icon = Icons.Material.Filled.Refresh, Title = "Загрузить запись повторно" };
     private readonly ClayToolbarButtonOptions _cancelOptions = new() { Text = "Отмена", Icon = Icons.Material.Filled.Close, Title = "Закрыть форму" };
     private readonly ClayToolbarButtonOptions _copyOptions = new() { Text = "Копировать", Icon = Icons.Material.Filled.ContentCopy, Title = "Создать оборудование копированием" };
-    private readonly ClayToolbarButtonOptions _attachOptions = new() { Text = "Подключить сеть", Icon = Icons.Material.Filled.Link, Title = "Подключить оборудование к рабочей сети" };
-    private readonly ClayToolbarButtonOptions _detachOptions = new() { Text = "Отключить сеть", Icon = Icons.Material.Filled.LinkOff, Title = "Отключить оборудование от рабочей сети" };
+    private readonly ClayToolbarButtonOptions _operationsOptions = new() { Text = "Операции", Icon = Icons.Material.Filled.ArrowDropDown, Title = "Операции с оборудованием" };
     private readonly ClayToolbarButtonOptions _phoneConfigOptions = new() { Text = "Конфигурация", Icon = Icons.Material.Filled.SettingsPhone, Title = "Открыть конфигурацию IP-телефона" };
     private readonly ClayToolbarButtonOptions _networkHistoryOptions = new() { Text = "История имён", Icon = Icons.Material.Filled.History, Title = "Показать историю сетевых имён" };
     private int _networkAttachmentCount;
@@ -151,6 +146,7 @@ public partial class EquipmentForm : IDisposable
     private bool CanSave => IsModified && _canEdit && !_loading && !_saving;
     private bool HasSelectedModel => _model?.ModelId is > 0 && _selectedModel is not null;
     private bool ShowNetworkName => HasSelectedModel && _selectedType?.HasNetworkName > 0;
+    private bool ShowOperations => _canManageUps || _canChangeNetwork;
     private bool ShowPhones => HasSelectedModel && _selectedType?.HasPhoneNumber > 0;
     private bool ShowHotelPhoneWarning => _hotelPhoneCount > 1;
     private bool ShowPhonePool => ShowPhones && _selectedType?.Id == 30;
@@ -182,7 +178,6 @@ public partial class EquipmentForm : IDisposable
         ConfigureSectionGrid(_softwareGridOptions, "equipment-software");
         ConfigureSectionGrid(_accountingGridOptions, "equipment-accounting");
         ConfigureSectionGrid(_routerGridOptions, "equipment-router");
-        ConfigureSectionGrid(_upsGridOptions, "equipment-ups");
     }
 
     private static void ConfigureSectionGrid(ClayGridOptions options, string id)
@@ -1729,13 +1724,23 @@ public partial class EquipmentForm : IDisposable
 
     private UpsEquipmentSelectDataSource UpsSource => Services.GetRequiredKeyedService<UpsEquipmentSelectDataSource>("ups");
 
-    private async Task AddUpsLinkAsync()
+    private async Task OpenUpsLinkDialogAsync()
     {
-        if (_model is null || _upsToAdd is null || !_canManageUps || _saving)
+        if (_model is null || !_canManageUps || _saving)
+            return;
+        var result = await ShowDialogAsync<EquipmentUpsLinkDialog>(
+            "Подключение UPS", new DialogParameters<EquipmentUpsLinkDialog>());
+        if (result is null || result.Canceled || result.Data is not int upsId)
+            return;
+        await AddUpsLinkAsync(upsId);
+    }
+
+    private async Task AddUpsLinkAsync(int upsId)
+    {
+        if (_model is null || !_canManageUps || _saving)
             return;
         var version = ++_upsVersion;
         var equipmentId = _model.Id;
-        var upsId = _upsToAdd.Value;
         _saving = true;
         _validationMessage = null;
         StateHasChanged();
@@ -1744,45 +1749,12 @@ public partial class EquipmentForm : IDisposable
             await Service.AddUpsLinkAsync(upsId, equipmentId);
             if (_disposed || version != _upsVersion || _model.Id != equipmentId)
                 return;
-            _upsToAdd = null;
             await RefreshUpsLinksAsync();
         }
         catch (Microsoft.Data.SqlClient.SqlException)
         {
             if (!_disposed && version == _upsVersion)
                 _validationMessage = "UPS не подключён. Подробности — в сообщении базы данных.";
-        }
-        finally
-        {
-            if (!_disposed)
-            {
-                _saving = false;
-                StateHasChanged();
-            }
-        }
-    }
-
-    private async Task DeleteUpsLinkAsync(UpsServerLink link)
-    {
-        if (_model is null || !_canManageUps || _saving ||
-            !await ConfirmAsync("Удаление связи UPS", $"Удалить связь с UPS #{link.UpsEquipmentId}?"))
-            return;
-        var version = ++_upsVersion;
-        var equipmentId = _model.Id;
-        _saving = true;
-        _validationMessage = null;
-        StateHasChanged();
-        try
-        {
-            await Service.DeleteUpsLinkAsync(link.UpsEquipmentId, equipmentId);
-            if (_disposed || version != _upsVersion || _model.Id != equipmentId)
-                return;
-            await RefreshUpsLinksAsync();
-        }
-        catch (Microsoft.Data.SqlClient.SqlException)
-        {
-            if (!_disposed && version == _upsVersion)
-                _validationMessage = "Связь UPS не удалена. Подробности — в сообщении базы данных.";
         }
         finally
         {

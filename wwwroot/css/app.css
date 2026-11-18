@@ -199,27 +199,14 @@
     font-size: var(--clay-font-size-small);
 }
 
-.equipment-form-summary {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 8px;
-    margin-bottom: 8px;
-}
-
-.equipment-form-summary .equipment-last-inventory,
 .equipment-ups-summary {
-    padding: 6px 8px;
-    border: 1px solid var(--mud-palette-lines-default);
-    background: var(--mud-palette-background-gray);
-}
-
-.equipment-form-summary h3 {
-    margin: 0 0 4px;
-    font-size: var(--clay-font-size-base);
+    margin: 0 0 5px;
+    font-size: var(--clay-font-size-small);
+    text-align: right;
 }
 
 .equipment-detail-grid {
-    margin-top: 8px;
+    margin: 5px 0 0;
     padding: 0;
     border: 0 !important;
     box-shadow: none !important;
@@ -275,15 +262,24 @@
     background: var(--mud-palette-background-gray);
 }
 
+.equipment-form-ownership .equipment-form-pair {
+    grid-template-columns: 170px minmax(0, 1fr) 140px minmax(0, 1fr);
+}
+
 @media (max-width: 1100px) {
     .equipment-form-pair {
         grid-template-columns: 140px minmax(0, 1fr);
+    }
+
+    .equipment-form-ownership .equipment-form-pair {
+        grid-template-columns: 170px minmax(0, 1fr);
     }
 }
 
 @media (max-width: 600px) {
     .equipment-form-pair,
-    .equipment-form-single {
+    .equipment-form-single,
+    .equipment-form-ownership .equipment-form-pair {
         grid-template-columns: minmax(0, 1fr);
         gap: 2px;
     }

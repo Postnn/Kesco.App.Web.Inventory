@@ -32,16 +32,24 @@
             <ClayToolbarButton Options="_copyOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="CopyAsync" />
             <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="RefreshAsync" />
             <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
-            @if (_canChangeNetwork)
+            @if (ShowOperations)
             {
-                if (_networkAttachmentCount == 0)
-                {
-                    <ClayToolbarButton Options="_attachOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="@(() => SetNetworkAttachmentAsync(true))" />
-                }
-                else
-                {
-                    <ClayToolbarButton Options="_detachOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="@(() => SetNetworkAttachmentAsync(false))" />
-                }
+                <ClayMenu Icon="@Icons.Material.Filled.ArrowDropDown" ButtonOptions="_operationsOptions"
+                          Disabled="@(_loading || _saving || !_loaded)">
+                    @if (_canManageUps)
+                    {
+                        <MudMenuItem Icon="@Icons.Material.Filled.Power" OnClick="OpenUpsLinkDialogAsync">
+                            Подключить к UPS
+                        </MudMenuItem>
+                    }
+                    @if (_canChangeNetwork)
+                    {
+                        <MudMenuItem Icon="@(_networkAttachmentCount == 0 ? Icons.Material.Filled.Link : Icons.Material.Filled.LinkOff)"
+                                     OnClick="@(() => SetNetworkAttachmentAsync(_networkAttachmentCount == 0))">
+                            @(_networkAttachmentCount == 0 ? "Подключить к локальной сети" : "Отключить от локальной сети")
+                        </MudMenuItem>
+                    }
+                </ClayMenu>
             }
             @if (ShowPhoneConfig)
             {
@@ -73,23 +81,30 @@
 
             @if (_upsLinks.Count > 0)
             {
-                <div class="equipment-form-summary">
-                    <section class="equipment-ups-summary">
-                        <h3>Подключённые UPS</h3>
-                        @foreach (var ups in _upsLinks)
+                <div class="equipment-ups-summary">
+                    Подключено к:
+                    @for (var index = 0; index < _upsLinks.Count; index++)
+                    {
+                        var ups = _upsLinks[index];
+                        if (index > 0)
                         {
-                            <div>
-                                @if (EquipmentUrl(ups.UpsEquipmentId) is string upsUrl)
-                                {
-                                    <a href="@upsUrl" target="_blank" rel="noopener">@ups.EquipmentName</a>
-                                }
-                                else
-                                {
-                                    @ups.EquipmentName
-                                }
-                            </div>
+                            <text>; </text>
                         }
-                    </section>
+                        if (_canManageUps)
+                        {
+                            <a href="#ups-@ups.UpsEquipmentId"
+                               title="Нажмите, чтобы посмотреть другие подключения к этому UPS"
+                               @onclick="@(() => OpenUpsDialogAsync(ups))" @onclick:preventDefault="true">@ups.EquipmentName</a>
+                        }
+                        else if (EquipmentUrl(ups.UpsEquipmentId) is string upsUrl)
+                        {
+                            <a href="@upsUrl" target="_blank" rel="noopener">@ups.EquipmentName</a>
+                        }
+                        else
+                        {
+                            @ups.EquipmentName
+                        }
+                    }
                 </div>
             }
 
@@ -742,35 +757,6 @@
                 </ClayGrid>
             }
             </MudForm>
-            @if (_canManageUps)
-            {
-                <div class="equipment-ins-row">
-                    <span class="equipment-ins-label">Подключить UPS:</span>
-                    <ClaySelect TItem="UpsEquipmentLookup" TValue="int?"
-                                DataSource="UpsSource"
-                                ValueSelector="@(item => (int?)item.Id)"
-                                TextSelector="@(item => item.Name)"
-                                @bind-Value="_upsToAdd"
-                                Options="_upsSelectOptions" />
-                    <ClayToolbarButton Options="_upsAddButtonOptions" OnClick="AddUpsLinkAsync" Disabled="@(_upsToAdd is null || _saving)" />
-                </div>
-            }
-            <ClayGrid TEntity="UpsServerLink" Items="_upsLinks" Options="_upsGridOptions">
-                <ColumnDefs>
-                    <ClayColumnDef ColumnId="1" SqlName="Ups" DisplayName="UPS" />
-                </ColumnDefs>
-                <Columns>
-                    <ClayColumn TEntity="UpsServerLink" ColumnId="1">
-                        <CellTemplate>@RenderLink(EquipmentUrl(context.Item.UpsEquipmentId), context.Item.EquipmentName, "Открыть карточку UPS")</CellTemplate>
-                    </ClayColumn>
-                </Columns>
-                <RowActions Context="item">
-                    <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Серверы и тесты UPS"
-                                Disabled="@(!_canManageUps || _saving)" OnClick="@(() => OpenUpsDialogAsync(item))" />
-                    <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить связь UPS"
-                                Disabled="@(!_canManageUps || _saving)" OnClick="@(() => DeleteUpsLinkAsync(item))" />
-                </RowActions>
-            </ClayGrid>
         }
     </ChildContent>
     <Footer>

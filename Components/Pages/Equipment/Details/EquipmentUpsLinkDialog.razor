@@ -1,0 +1,40 @@
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Form
+@using Clayzor.Lib.Web.Controls.Components.Select
+@using Clayzor.Lib.Web.DBSelect.Equipment
+@inject IServiceProvider Services
+
+<MudDialog>
+    <TitleContent>Подключение UPS</TitleContent>
+    <DialogContent>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">UPS:</span>
+            <ClaySelect TItem="UpsEquipmentLookup" TValue="int?"
+                        DataSource="UpsSource"
+                        ValueSelector="@(item => (int?)item.Id)"
+                        TextSelector="@(item => item.Name)"
+                        @bind-Value="Value"
+                        Options="_upsOptions" />
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
+        <ClayToolbarButton Options="_okButtonOptions" Disabled="@(Value is null)" OnClick="Apply" />
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
+    private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "Подключить", Color = Color.Primary, Variant = Variant.Filled };
+    private readonly ClaySelectOptions _upsOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите UPS" };
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+
+    /// <summary>Выбранный идентификатор UPS.</summary>
+    [Parameter] public int? Value { get; set; }
+
+    private UpsEquipmentSelectDataSource UpsSource => Services.GetRequiredKeyedService<UpsEquipmentSelectDataSource>("ups");
+
+    private void Cancel() => Dialog.Cancel();
+    private void Apply() => Dialog.Close(DialogResult.Ok(Value));
+}
