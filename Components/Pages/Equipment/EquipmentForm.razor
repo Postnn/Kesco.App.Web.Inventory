@@ -32,13 +32,16 @@
             <ClayToolbarButton Options="_copyOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="CopyAsync" />
             <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="RefreshAsync" />
             <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
-            @if (_networkAttachmentCount == 0)
+            @if (_canChangeNetwork)
             {
-                <ClayToolbarButton Options="_attachOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SetNetworkAttachmentAsync(true))" />
-            }
-            else
-            {
-                <ClayToolbarButton Options="_detachOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SetNetworkAttachmentAsync(false))" />
+                if (_networkAttachmentCount == 0)
+                {
+                    <ClayToolbarButton Options="_attachOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="@(() => SetNetworkAttachmentAsync(true))" />
+                }
+                else
+                {
+                    <ClayToolbarButton Options="_detachOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="@(() => SetNetworkAttachmentAsync(false))" />
+                }
             }
             @if (ShowPhoneConfig)
             {
@@ -316,21 +319,24 @@
                     }
                 </Actions>
             </ClayDetailGrid>
-            <ClayDetailGrid TItem="EquipmentAccount"
-                            Title="Учётные записи"
-                            Items="_accounts"
-                            Columns="_accountColumns"
-                            Options="_accountGridOptions"
-                            OnAdd="@(() => OpenAccountDialogAsync(null))"
-                            AddDisabled="@(!_canEdit || _saving)"
-                            ReadOnly="@(!_canEdit)">
-                <Actions Context="item">
-                    <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить учётную запись"
-                                Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenAccountDialogAsync(item))" />
-                    <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить учётную запись"
-                                Disabled="@(!_canEdit || _saving)" OnClick="@(() => DeleteAccountAsync(item))" />
-                </Actions>
-            </ClayDetailGrid>
+            @if (ShowAccounts)
+            {
+                <ClayDetailGrid TItem="EquipmentAccount"
+                                Title="Учётные записи"
+                                Items="_accounts"
+                                Columns="_accountColumns"
+                                Options="_accountGridOptions"
+                                OnAdd="@(() => OpenAccountDialogAsync(null))"
+                                AddDisabled="@(!_canEdit || _saving)"
+                                ReadOnly="@(!_canEdit)">
+                    <Actions Context="item">
+                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить учётную запись"
+                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenAccountDialogAsync(item))" />
+                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить учётную запись"
+                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => DeleteAccountAsync(item))" />
+                    </Actions>
+                </ClayDetailGrid>
+            }
             @if (ShowComputer)
             {
                 <ClayDetailGrid TItem="EquipmentComputerSnapshot"
@@ -350,7 +356,7 @@
                                 Columns="_simColumns"
                                 Options="_simGridOptions"
                                 OnAdd="OpenSimDialogAsync"
-                                AddDisabled="@(!_canEditSim || _saving)"
+                                AddDisabled="@(!_canEditSim || _simCards.Count > 0 || _saving)"
                                 ReadOnly="@(!_canEditSim)">
                     <Actions Context="item">
                         <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить сведения SIM"
@@ -385,13 +391,16 @@
                                 Columns="_licenseColumns"
                                 Options="_licenseGridOptions"
                                 OnAdd="OpenLicenseDialogAsync"
-                                AddDisabled="@(!_canEditLicense || _saving)"
+                                AddDisabled="@(!_canEditLicense || _licenses.Count > 0 || _saving)"
                                 ReadOnly="@(!_canEditLicense)">
                     <Actions Context="item">
                         <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить лицензию"
                                     Disabled="@(!_canEditLicense || _saving)" OnClick="OpenLicenseDialogAsync" />
                     </Actions>
                 </ClayDetailGrid>
+            }
+            @if (ShowComputer)
+            {
                 <ClayDetailGrid TItem="EquipmentSoftwareInstallation"
                                 Title="Установленное ПО"
                                 Items="_softwareInstallations"
@@ -406,27 +415,24 @@
                     </Actions>
                 </ClayDetailGrid>
             }
-            @if (_canUseAccounting)
-            {
-                <ClayDetailGrid TItem="EquipmentAccounting"
-                                Title="Бухгалтерский учёт"
-                                Items="_accounting"
-                                Columns="_accountingColumns"
-                                Options="_accountingGridOptions"
-                                OnAdd="@(() => OpenAccountingDialogAsync(null))"
-                                AddDisabled="_saving"
-                                ReadOnly="false">
-                    <Actions Context="item">
-                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить запись бухгалтерского учёта"
-                                    Disabled="_saving" OnClick="@(() => OpenAccountingDialogAsync(item))" />
-                        @if (_accounting.LastOrDefault()?.Id == item.Id)
-                        {
-                            <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить последнюю запись бухгалтерского учёта"
-                                        Disabled="_saving" OnClick="@(() => DeleteAccountingAsync(item))" />
-                        }
-                    </Actions>
-                </ClayDetailGrid>
-            }
+            <ClayDetailGrid TItem="EquipmentAccounting"
+                            Title="Бухгалтерский учёт"
+                            Items="_accounting"
+                            Columns="_accountingColumns"
+                            Options="_accountingGridOptions"
+                            OnAdd="@(() => OpenAccountingDialogAsync(null))"
+                            AddDisabled="@(!_canUseAccounting || _saving)"
+                            ReadOnly="@(!_canUseAccounting)">
+                <Actions Context="item">
+                    <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить запись бухгалтерского учёта"
+                                Disabled="@(!_canUseAccounting || _saving)" OnClick="@(() => OpenAccountingDialogAsync(item))" />
+                    @if (_accounting.LastOrDefault()?.Id == item.Id)
+                    {
+                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить последнюю запись бухгалтерского учёта"
+                                    Disabled="@(!_canUseAccounting || _saving)" OnClick="@(() => DeleteAccountingAsync(item))" />
+                    }
+                </Actions>
+            </ClayDetailGrid>
             @if (ShowRouter)
             {
                 @if (!string.IsNullOrWhiteSpace(_routerInfo?.Description))
@@ -440,27 +446,30 @@
                                 Options="_routerGridOptions"
                                 ReadOnly="true" />
             }
-            <div class="equipment-ins-row">
-                <span class="equipment-ins-label">Подключить UPS:</span>
-                <ClaySelect TItem="UpsEquipmentLookup" TValue="int?"
-                            DataSource="UpsSource"
-                            ValueSelector="@(item => (int?)item.Id)"
-                            TextSelector="@(item => item.Name)"
-                            @bind-Value="_upsToAdd"
-                            Options="_upsSelectOptions" />
-                <ClayToolbarButton Options="_upsAddButtonOptions" OnClick="AddUpsLinkAsync" Disabled="@(!_canEdit || _upsToAdd is null || _saving)" />
-            </div>
+            @if (_canManageUps)
+            {
+                <div class="equipment-ins-row">
+                    <span class="equipment-ins-label">Подключить UPS:</span>
+                    <ClaySelect TItem="UpsEquipmentLookup" TValue="int?"
+                                DataSource="UpsSource"
+                                ValueSelector="@(item => (int?)item.Id)"
+                                TextSelector="@(item => item.Name)"
+                                @bind-Value="_upsToAdd"
+                                Options="_upsSelectOptions" />
+                    <ClayToolbarButton Options="_upsAddButtonOptions" OnClick="AddUpsLinkAsync" Disabled="@(_upsToAdd is null || _saving)" />
+                </div>
+            }
             <ClayDetailGrid TItem="UpsServerLink"
                             Title="Подключённые UPS"
                             Items="_upsLinks"
                             Columns="_upsColumns"
                             Options="_upsGridOptions"
-                            ReadOnly="@(!_canEdit)">
+                            ReadOnly="@(!_canManageUps)">
                 <Actions Context="item">
                     <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Серверы и тесты UPS"
-                                Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenUpsDialogAsync(item))" />
+                                Disabled="@(!_canManageUps || _saving)" OnClick="@(() => OpenUpsDialogAsync(item))" />
                     <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить связь UPS"
-                                Disabled="@(!_canEdit || _saving)" OnClick="@(() => DeleteUpsLinkAsync(item))" />
+                                Disabled="@(!_canManageUps || _saving)" OnClick="@(() => DeleteUpsLinkAsync(item))" />
                 </Actions>
             </ClayDetailGrid>
             @if (_lastInventory is not null)

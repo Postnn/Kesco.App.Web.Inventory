@@ -21,6 +21,8 @@ public partial class EquipmentForm : IDisposable
     private const int InventorySpecialistRoleId = 43;
     private const int SimSpecialistRoleId = 42;
     private const int LicenseSpecialistRoleId = 44;
+    private const int DutyEngineerRoleId = 102;
+    private const int SupportSpecialistRoleId = 103;
     private const int SimEquipmentTypeId = 27;
     private const int OnHandsLocationId = 55;
 
@@ -190,6 +192,9 @@ public partial class EquipmentForm : IDisposable
     private bool _canEditSim;
     private bool _canEditLicense;
     private bool _canViewPhoneConfig;
+    private bool _canViewAccounts;
+    private bool _canManageUps;
+    private bool _canChangeNetwork;
     private bool _loading = true;
     private bool _saving;
     private bool _loaded;
@@ -224,6 +229,7 @@ public partial class EquipmentForm : IDisposable
     private bool ShowPhonePool => ShowPhones && _selectedType?.Id == 30;
     private bool ShowPhoneConfig => _selectedType?.Id == 30;
     private bool ShowComputer => _selectedType?.HasComputerCharacteristics > 0;
+    private bool ShowAccounts => _canViewAccounts && _selectedType?.MacAddressCount > 0;
     private bool ShowSim => _selectedType?.HasSimCharacteristics > 0;
     private bool ShowLicense => _selectedType?.HasSoftwareCharacteristics > 0;
     private bool ShowRouter => _routerInfo is not null || _routerInventory.Count > 0;
@@ -321,7 +327,12 @@ public partial class EquipmentForm : IDisposable
                                  (await Service.HasRoleForPersonAsync(LicenseSpecialistRoleId, model.OwnerId) ||
                                   model.TenantId is not null && model.TenantId != model.OwnerId &&
                                   await Service.HasRoleForPersonAsync(LicenseSpecialistRoleId, model.TenantId));
-            var canViewPhoneConfig = selectedType?.Id == 30 && await Service.HasRoleAsync(102);
+            var canViewPhoneConfig = selectedType?.Id == 30 && await Service.HasRoleAsync(DutyEngineerRoleId);
+            var canViewAccounts = selectedType?.MacAddressCount > 0 && await Service.HasRoleAsync(DutyEngineerRoleId);
+            var canManageUps = model.EquipmentTypeId is < 100 && selectedType?.HasSimCharacteristics == 0 &&
+                               await Service.HasRoleForPersonAsync(InventorySpecialistRoleId, model.OwnerId);
+            var canChangeNetwork = selectedType?.HasComputerCharacteristics > 0 &&
+                                   await Service.HasRoleAsync(SupportSpecialistRoleId);
             var canUseAccounting = await Service.CanUseAccountingAsync(model.OwnerId);
             if (!IsCurrent(version, id))
                 return;
@@ -341,7 +352,9 @@ public partial class EquipmentForm : IDisposable
             var responsibles = await Service.GetResponsiblesAsync(id);
             if (!IsCurrent(version, id))
                 return;
-            var accounts = await Service.GetAccountsAsync(id);
+            var accounts = canViewAccounts
+                ? await Service.GetAccountsAsync(id)
+                : (IReadOnlyList<EquipmentAccount>)[];
             if (!IsCurrent(version, id))
                 return;
             var computerHistory = selectedType?.HasComputerCharacteristics > 0
@@ -431,7 +444,11 @@ public partial class EquipmentForm : IDisposable
             _canEditSim = canEditSim;
             _canEditLicense = canEditLicense;
             _canViewPhoneConfig = canViewPhoneConfig;
+            _canViewAccounts = canViewAccounts;
+            _canManageUps = canManageUps;
+            _canChangeNetwork = canChangeNetwork;
             _canUseAccounting = canUseAccounting;
+            UpsSource.LocationId = model.LocationId;
             SetAccountingBaseline();
             _loaded = true;
             UpdateOptions();
@@ -541,6 +558,8 @@ public partial class EquipmentForm : IDisposable
             _accountingVersion++;
             _model.OwnerId = null;
             _canUseAccounting = false;
+            _canEditLicense = false;
+            SetDocumentOwner(null);
             return;
         }
         if (_confirmedOwnerId == id)
@@ -548,6 +567,7 @@ public partial class EquipmentForm : IDisposable
             _model.OwnerId = id;
             SetDocumentOwner(id);
             await RefreshAccountingAccessAsync(id);
+            await RefreshLicenseAccessAsync();
             return;
         }
         _ownerVersion++;
@@ -559,6 +579,7 @@ public partial class EquipmentForm : IDisposable
         _model.ShipperId = null;
         SetDocumentOwner(id);
         await RefreshAccountingAccessAsync(id);
+        await RefreshLicenseAccessAsync();
     }
 
     private async Task RefreshAccountingAccessAsync(int? personId)
@@ -568,6 +589,23 @@ public partial class EquipmentForm : IDisposable
         if (_disposed || version != _accountingVersion || _model?.OwnerId != personId)
             return;
         _canUseAccounting = available;
+    }
+
+    private async Task RefreshLicenseAccessAsync()
+    {
+        if (_model is null)
+            return;
+        var model = _model;
+        var version = _ownerVersion;
+        var ownerId = model.OwnerId;
+        var tenantId = model.TenantId;
+        var available = _selectedType?.HasSoftwareCharacteristics > 0 &&
+                        (await Service.HasRoleForPersonAsync(LicenseSpecialistRoleId, ownerId) ||
+                         tenantId is not null && tenantId != ownerId &&
+                         await Service.HasRoleForPersonAsync(LicenseSpecialistRoleId, tenantId));
+        if (!_disposed && version == _ownerVersion && ReferenceEquals(model, _model) &&
+            model.OwnerId == ownerId && model.TenantId == tenantId)
+            _canEditLicense = available;
     }
 
     private void SetDocumentOwner(int? id) => ReceiptDocumentSource.PersonId = WriteOffDocumentSource.PersonId = id;
@@ -924,7 +962,7 @@ public partial class EquipmentForm : IDisposable
 
     private async Task OpenAccountDialogAsync(EquipmentAccount? existing)
     {
-        if (_model is null || !_canEdit || _saving)
+        if (_model is null || !_canEdit || !ShowAccounts || _saving)
             return;
         var equipmentId = _model.Id;
         var operationVersion = _operationVersion;
@@ -980,7 +1018,7 @@ public partial class EquipmentForm : IDisposable
 
     private async Task DeleteAccountAsync(EquipmentAccount account)
     {
-        if (_model is null || !_canEdit || _saving ||
+        if (_model is null || !_canEdit || !ShowAccounts || _saving ||
             !await ConfirmAsync("Удаление учётной записи", $"Удалить учётную запись «{account.Login}»?"))
             return;
         var version = ++_accountVersion;
@@ -1619,7 +1657,7 @@ public partial class EquipmentForm : IDisposable
 
     private async Task SetNetworkAttachmentAsync(bool attach)
     {
-        if (_model is null || !_canEdit || _saving)
+        if (_model is null || !_canChangeNetwork || _saving)
             return;
         if (!attach && !await ConfirmAsync("Отключение сети", "Отключить оборудование от рабочей сети?"))
             return;
@@ -1666,7 +1704,7 @@ public partial class EquipmentForm : IDisposable
 
     private async Task AddUpsLinkAsync()
     {
-        if (_model is null || _upsToAdd is null || !_canEdit || _saving)
+        if (_model is null || _upsToAdd is null || !_canManageUps || _saving)
             return;
         var version = ++_upsVersion;
         var equipmentId = _model.Id;
@@ -1699,7 +1737,7 @@ public partial class EquipmentForm : IDisposable
 
     private async Task DeleteUpsLinkAsync(UpsServerLink link)
     {
-        if (_model is null || !_canEdit || _saving ||
+        if (_model is null || !_canManageUps || _saving ||
             !await ConfirmAsync("Удаление связи UPS", $"Удалить связь с UPS #{link.UpsEquipmentId}?"))
             return;
         var version = ++_upsVersion;
@@ -1731,7 +1769,7 @@ public partial class EquipmentForm : IDisposable
 
     private async Task OpenUpsDialogAsync(UpsServerLink link)
     {
-        if (_model is null || !_canEdit || _saving)
+        if (_model is null || !_canManageUps || _saving)
             return;
         var version = ++_upsVersion;
         var equipmentId = _model.Id;
@@ -1903,6 +1941,7 @@ public partial class EquipmentForm : IDisposable
         _snOptions.Required = HasSelectedModel && _selectedType?.IsSerialNumberRequired > 0;
         foreach (var options in new[] { _typeOptions, _modelOptions, _phonePoolOptions, _phoneOptions, _ownerOptions, _receiptDocumentOptions, _writeOffDocumentOptions, _shipperOptions, _tenantOptions })
             options.ReadOnly = !_canEdit;
+        _tenantOptions.ReadOnly = true;
         foreach (var options in new ClayInputOptions[] { _writeOffDateOptions, _writeOffTimeOptions, _snOptions, _networkNameOptions, _macOptions, _descriptionOptions })
             options.ReadOnly = !_canEdit;
     }

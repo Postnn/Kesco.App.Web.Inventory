@@ -18,8 +18,12 @@ public class EquipmentFormService
         (await _db.QueryAsync<Equipment>(SQLQueries.SELECT_ID_Оборудование, new { Id = id }))
             .SingleOrDefault();
 
-    /// <summary>Сохраняет 15 основных полей существующего оборудования.</summary>
-    public virtual Task UpdateAsync(Equipment equipment) => equipment.UpdateAsync(_db);
+    /// <summary>Проверяет роль 43 и сохраняет 15 основных полей существующего оборудования.</summary>
+    public virtual async Task UpdateAsync(Equipment equipment)
+    {
+        await EnsureInventoryEditAsync();
+        await equipment.UpdateAsync(_db);
+    }
 
     /// <summary>Загружает телефонные связи оборудования.</summary>
     public virtual async Task<IReadOnlyList<EquipmentPhoneLink>> GetPhonesAsync(int equipmentId) =>
@@ -42,56 +46,88 @@ public class EquipmentFormService
             SQLQueries.SELECT_ОборудованиеЕстьТекущийОтветственный,
             new { EquipmentId = equipmentId }, commandType: CommandType.Text) > 0;
 
-    /// <summary>Добавляет расположение и при необходимости ответственного.</summary>
-    public virtual Task AddLocationAsync(
+    /// <summary>Проверяет роль 43 и добавляет расположение и при необходимости ответственного.</summary>
+    public virtual async Task AddLocationAsync(
         EquipmentLocationPeriod location,
-        EquipmentResponsiblePeriod? responsible = null) =>
-        location.InsertAsync(_db, responsible);
+        EquipmentResponsiblePeriod? responsible = null)
+    {
+        await EnsureInventoryEditAsync();
+        await location.InsertAsync(_db, responsible);
+    }
 
-    /// <summary>Обновляет срок возврата и примечания расположения.</summary>
-    public virtual Task UpdateLocationAsync(EquipmentLocationPeriod location) => location.UpdateAsync(_db);
+    /// <summary>Проверяет роль 43 и обновляет срок возврата и примечания расположения.</summary>
+    public virtual async Task UpdateLocationAsync(EquipmentLocationPeriod location)
+    {
+        await EnsureInventoryEditAsync();
+        await location.UpdateAsync(_db);
+    }
 
     /// <summary>Загружает историю ответственных сотрудников.</summary>
     public virtual async Task<IReadOnlyList<EquipmentResponsiblePeriod>> GetResponsiblesAsync(int equipmentId) =>
         (await _db.QueryAsync<EquipmentResponsiblePeriod>(
             SQLQueries.SELECT_ОборудованиеСотрудники, new { EquipmentId = equipmentId })).ToList();
 
-    /// <summary>Добавляет нового ответственного.</summary>
-    public virtual Task IssueResponsibleAsync(EquipmentResponsiblePeriod responsible) => responsible.InsertAsync(_db);
+    /// <summary>Проверяет роль 43 и добавляет нового ответственного.</summary>
+    public virtual async Task IssueResponsibleAsync(EquipmentResponsiblePeriod responsible)
+    {
+        await EnsureInventoryEditAsync();
+        await responsible.InsertAsync(_db);
+    }
 
-    /// <summary>Обновляет срок возврата, примечания и окончание ответственного.</summary>
-    public virtual Task UpdateResponsibleAsync(EquipmentResponsiblePeriod responsible) => responsible.UpdateAsync(_db);
+    /// <summary>Проверяет роль 43 и обновляет срок возврата, примечания и окончание ответственного.</summary>
+    public virtual async Task UpdateResponsibleAsync(EquipmentResponsiblePeriod responsible)
+    {
+        await EnsureInventoryEditAsync();
+        await responsible.UpdateAsync(_db);
+    }
 
-    /// <summary>Изымает оборудование и атомарно сохраняет связанные записи.</summary>
-    public virtual Task WithdrawResponsibleAsync(
+    /// <summary>Проверяет роль 43 и атомарно сохраняет изъятие и связанные записи.</summary>
+    public virtual async Task WithdrawResponsibleAsync(
         EquipmentResponsiblePeriod current,
         EquipmentResponsiblePeriod? next,
-        EquipmentLocationPeriod? location) =>
-        current.WithdrawAsync(_db, next, location);
+        EquipmentLocationPeriod? location)
+    {
+        await EnsureInventoryEditAsync();
+        await current.WithdrawAsync(_db, next, location);
+    }
 
-    /// <summary>Загружает учётные записи без паролей.</summary>
-    public virtual async Task<IReadOnlyList<EquipmentAccount>> GetAccountsAsync(int equipmentId) =>
-        (await _db.QueryAsync<EquipmentAccount>(
+    /// <summary>Загружает учётные записи без паролей после проверки роли 102.</summary>
+    public virtual async Task<IReadOnlyList<EquipmentAccount>> GetAccountsAsync(int equipmentId)
+    {
+        await EnsureAccountAccessAsync(false);
+        return (await _db.QueryAsync<EquipmentAccount>(
             SQLQueries.SELECT_ОборудованиеУчётныеЗаписи, new { EquipmentId = equipmentId })).ToList();
+    }
 
-    /// <summary>Загружает пароль одной записи после серверной проверки роли.</summary>
+    /// <summary>Загружает пароль одной записи после серверной проверки роли 102.</summary>
     public virtual async Task<string> GetAccountPasswordAsync(int equipmentId, string login)
     {
-        if (!await HasRoleAsync(43))
-            throw new UnauthorizedAccessException("Недостаточно прав для просмотра пароля.");
+        await EnsureAccountAccessAsync(false);
         return await _db.ExecuteScalarAsync<string>(
             SQLQueries.SELECT_ОборудованиеУчётнаяЗаписьПароль,
             new { EquipmentId = equipmentId, Login = login }, commandType: CommandType.Text) ?? string.Empty;
     }
 
-    /// <summary>Добавляет учётную запись.</summary>
-    public virtual Task AddAccountAsync(EquipmentAccount account) => account.InsertAsync(_db);
+    /// <summary>Добавляет учётную запись после проверки ролей 102 и 43.</summary>
+    public virtual async Task AddAccountAsync(EquipmentAccount account)
+    {
+        await EnsureAccountAccessAsync(true);
+        await account.InsertAsync(_db);
+    }
 
-    /// <summary>Обновляет учётную запись.</summary>
-    public virtual Task UpdateAccountAsync(EquipmentAccount account) => account.UpdateAsync(_db);
+    /// <summary>Обновляет учётную запись после проверки ролей 102 и 43.</summary>
+    public virtual async Task UpdateAccountAsync(EquipmentAccount account)
+    {
+        await EnsureAccountAccessAsync(true);
+        await account.UpdateAsync(_db);
+    }
 
-    /// <summary>Удаляет учётную запись.</summary>
-    public virtual Task DeleteAccountAsync(EquipmentAccount account) => account.DeleteAsync(_db);
+    /// <summary>Удаляет учётную запись после проверки ролей 102 и 43.</summary>
+    public virtual async Task DeleteAccountAsync(EquipmentAccount account)
+    {
+        await EnsureAccountAccessAsync(true);
+        await account.DeleteAsync(_db);
+    }
 
     /// <summary>Загружает сведения SIM без PIN/PUK.</summary>
     public virtual async Task<IReadOnlyList<EquipmentSimCard>> GetSimCardsAsync(int equipmentId) =>
@@ -113,18 +149,25 @@ public class EquipmentFormService
         await _db.ExecuteScalarAsync<int?>(SQLQueries.SELECT_SimКарты_Другая_С_Тем_Же_Номером,
             new { EquipmentId = equipmentId, PhoneNumber = phoneNumber }, commandType: CommandType.Text);
 
-    /// <summary>Атомарно списывает подтверждённый дубликат и сохраняет SIM.</summary>
-    public virtual Task SaveSimAsync(EquipmentSimCard sim, int? duplicateEquipmentId = null)
+    /// <summary>Проверяет роль 42 и атомарно списывает подтверждённый дубликат и сохраняет SIM.</summary>
+    public virtual async Task SaveSimAsync(EquipmentSimCard sim, int? duplicateEquipmentId = null)
     {
+        if (!await HasRoleAsync(42))
+            throw new UnauthorizedAccessException("Недостаточно прав для изменения SIM.");
         var validation = sim.Validate();
         if (validation is not null)
             throw new InvalidOperationException(validation);
-        return sim.SaveAsync(_db, duplicateEquipmentId);
+        await sim.SaveAsync(_db, duplicateEquipmentId);
     }
 
-    /// <summary>Удаляет только сведения SIM.</summary>
-    public virtual Task DeleteSimAsync(int equipmentId) => _db.ExecuteAsync(
-        SQLQueries.DELETE_ID_SIMКарты, new { EquipmentId = equipmentId }, commandType: CommandType.Text);
+    /// <summary>Проверяет роль 42 и удаляет только сведения SIM.</summary>
+    public virtual async Task DeleteSimAsync(int equipmentId)
+    {
+        if (!await HasRoleAsync(42))
+            throw new UnauthorizedAccessException("Недостаточно прав для удаления SIM.");
+        await _db.ExecuteAsync(
+            SQLQueries.DELETE_ID_SIMКарты, new { EquipmentId = equipmentId }, commandType: CommandType.Text);
+    }
 
     /// <summary>Возвращает лицо сотрудника для заполнения ПДн.</summary>
     public virtual async Task<int?> GetEmployeePersonIdAsync(int employeeId) =>
@@ -141,13 +184,15 @@ public class EquipmentFormService
     public virtual async Task<IReadOnlyList<SimServiceType>> GetSimServiceTypesAsync() =>
         (await _db.QueryAsync<SimServiceType>(SQLQueries.SELECT_ТипыДопУслугСотОператора)).ToList();
 
-    /// <summary>Проверяет и сохраняет дополнительную услугу SIM.</summary>
-    public virtual Task SaveSimServiceAsync(EquipmentSimService service)
+    /// <summary>Проверяет роль 42, валидацию и сохраняет дополнительную услугу SIM.</summary>
+    public virtual async Task SaveSimServiceAsync(EquipmentSimService service)
     {
+        if (!await HasRoleAsync(42))
+            throw new UnauthorizedAccessException("Недостаточно прав для изменения дополнительной услуги SIM.");
         var validation = service.Validate(DateTime.Today);
         if (validation is not null)
             throw new InvalidOperationException(validation);
-        return service.SaveAsync(_db);
+        await service.SaveAsync(_db);
     }
 
     /// <summary>Возвращает конфигурацию IP-телефона после проверки роли 102.</summary>
@@ -168,30 +213,44 @@ public class EquipmentFormService
         await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_ID_ConnectedWorkNet,
             new { EquipmentId = equipmentId }, commandType: CommandType.Text);
 
-    /// <summary>Подключает оборудование к рабочей сети.</summary>
-    public virtual Task AttachNetworkAsync(int equipmentId) => _db.ExecuteAsync(
-        SQLQueries.INSERT_Net, new { КодОборудования = equipmentId }, commandType: CommandType.Text);
+    /// <summary>Проверяет компьютерный тип и роль 103, затем подключает оборудование к рабочей сети.</summary>
+    public virtual async Task AttachNetworkAsync(int equipmentId)
+    {
+        await EnsureNetworkAccessAsync(equipmentId);
+        await _db.ExecuteAsync(
+            SQLQueries.INSERT_Net, new { КодОборудования = equipmentId }, commandType: CommandType.Text);
+    }
 
-    /// <summary>Отключает оборудование от рабочей сети.</summary>
-    public virtual Task DetachNetworkAsync(int equipmentId) => _db.ExecuteAsync(
-        SQLQueries.UPDATE_Net, new { КодОборудования = equipmentId }, commandType: CommandType.Text);
+    /// <summary>Проверяет компьютерный тип и роль 103, затем отключает оборудование от рабочей сети.</summary>
+    public virtual async Task DetachNetworkAsync(int equipmentId)
+    {
+        await EnsureNetworkAccessAsync(equipmentId);
+        await _db.ExecuteAsync(
+            SQLQueries.UPDATE_Net, new { КодОборудования = equipmentId }, commandType: CommandType.Text);
+    }
 
     /// <summary>Загружает UPS, подключённые к серверу.</summary>
     public virtual async Task<IReadOnlyList<UpsServerLink>> GetUpsLinksAsync(int serverEquipmentId) =>
         (await _db.QueryAsync<UpsServerLink>(
             SQLQueries.SELECT_ID_vwПодключенияUPS, new { ServerEquipmentId = serverEquipmentId })).ToList();
 
-    /// <summary>Быстро подключает UPS к серверу.</summary>
-    public virtual Task AddUpsLinkAsync(int upsEquipmentId, int serverEquipmentId) =>
-        _db.ExecuteAsync(SQLQueries.INSERT_СерверПодключенияUPSОборудование,
+    /// <summary>Проверяет роль по владельцу и быстро подключает UPS к серверу.</summary>
+    public virtual async Task AddUpsLinkAsync(int upsEquipmentId, int serverEquipmentId)
+    {
+        await EnsureUpsAccessAsync(serverEquipmentId);
+        await _db.ExecuteAsync(SQLQueries.INSERT_СерверПодключенияUPSОборудование,
             new { КодОборудованияUPS = upsEquipmentId, КодОборудованияСервера = serverEquipmentId },
             commandType: CommandType.Text);
+    }
 
-    /// <summary>Удаляет связь UPS и сервера.</summary>
-    public virtual Task DeleteUpsLinkAsync(int upsEquipmentId, int serverEquipmentId) =>
-        _db.ExecuteAsync(SQLQueries.DELETE_СерверПодключенияUPS,
+    /// <summary>Проверяет роль по владельцу и удаляет связь UPS и сервера.</summary>
+    public virtual async Task DeleteUpsLinkAsync(int upsEquipmentId, int serverEquipmentId)
+    {
+        await EnsureUpsAccessAsync(serverEquipmentId);
+        await _db.ExecuteAsync(SQLQueries.DELETE_СерверПодключенияUPS,
             new { КодОборудованияUPS = upsEquipmentId, КодОборудованияСервера = serverEquipmentId },
             commandType: CommandType.Text);
+    }
 
     /// <summary>Загружает серверы выбранного UPS.</summary>
     public virtual async Task<IReadOnlyList<UpsServerLink>> GetUpsServersAsync(int upsEquipmentId) =>
@@ -203,8 +262,8 @@ public class EquipmentFormService
         (await _db.QueryAsync<UpsTest>(
             SQLQueries.SELECT_ID_ТестыПодключенияUPS, new { UpsEquipmentId = upsEquipmentId })).ToList();
 
-    /// <summary>Сохраняет diff серверов и тестов одной транзакцией.</summary>
-    public virtual Task SaveUpsDetailsAsync(
+    /// <summary>Проверяет роль по владельцу и сохраняет diff серверов и тестов одной транзакцией.</summary>
+    public virtual async Task SaveUpsDetailsAsync(
         int upsEquipmentId,
         IReadOnlyCollection<UpsServerLink> originalServers,
         IReadOnlyCollection<UpsServerLink> currentServers,
@@ -213,7 +272,13 @@ public class EquipmentFormService
     {
         if (upsEquipmentId <= 0)
             throw new InvalidOperationException("Подключение UPS отсутствует в БД.");
-        return UpsServerLink.SaveDetailsAsync(
+        var serverEquipmentId = originalServers.Select(item => item.ServerEquipmentId)
+            .Concat(currentServers.Select(item => item.ServerEquipmentId))
+            .FirstOrDefault(id => id > 0);
+        if (serverEquipmentId <= 0)
+            throw new InvalidOperationException("Не указан сервер подключения UPS.");
+        await EnsureUpsAccessAsync(serverEquipmentId);
+        await UpsServerLink.SaveDetailsAsync(
             _db, upsEquipmentId, originalServers, currentServers, originalTests, currentTests);
     }
 
@@ -276,13 +341,14 @@ public class EquipmentFormService
         (await _db.QueryAsync<EquipmentSoftwareInstallation>(
             SQLQueries.SELECT_ПО_КодОборудования, new { EquipmentId = equipmentId })).ToList();
 
-    /// <summary>Проверяет и сохраняет установку ПО.</summary>
-    public virtual Task SaveSoftwareInstallationAsync(EquipmentSoftwareInstallation installation)
+    /// <summary>Проверяет роль 43, валидацию и сохраняет установку ПО.</summary>
+    public virtual async Task SaveSoftwareInstallationAsync(EquipmentSoftwareInstallation installation)
     {
+        await EnsureInventoryEditAsync();
         var validation = installation.Validate();
         if (validation is not null)
             throw new InvalidOperationException(validation);
-        return installation.SaveAsync(_db);
+        await installation.SaveAsync(_db);
     }
 
     /// <summary>Загружает лицензию оборудования.</summary>
@@ -294,13 +360,14 @@ public class EquipmentFormService
     public virtual async Task<IReadOnlyList<LicenseType>> GetLicenseTypesAsync() =>
         (await _db.QueryAsync<LicenseType>(SQLQueries.SELECT_ТипыЛицензирования)).ToList();
 
-    /// <summary>Проверяет и сохраняет лицензию.</summary>
-    public virtual Task SaveLicenseAsync(EquipmentLicense license, LicenseType? type)
+    /// <summary>Проверяет роль 44 по владельцу/арендатору и сохраняет лицензию.</summary>
+    public virtual async Task SaveLicenseAsync(EquipmentLicense license, LicenseType? type)
     {
+        await EnsureLicenseAccessAsync(license.EquipmentId);
         var validation = license.Validate(type);
         if (validation is not null)
             throw new InvalidOperationException(validation);
-        return license.SaveAsync(_db);
+        await license.SaveAsync(_db);
     }
 
     /// <summary>Проверяет роль текущего пользователя по конкретному лицу.</summary>
@@ -327,15 +394,22 @@ public class EquipmentFormService
     public virtual async Task<IReadOnlyList<StandardConfiguration>> GetStandardConfigurationsAsync() =>
         (await _db.QueryAsync<StandardConfiguration>(SQLQueries.SELECT_СтандартныеКонфигурации)).ToList();
 
-    /// <summary>Добавляет или обновляет дневной снимок компьютера.</summary>
-    public virtual Task SaveComputerAsync(EquipmentComputerSnapshot snapshot) => snapshot.SaveAsync(_db);
+    /// <summary>Проверяет роль 43 и добавляет или обновляет дневной снимок компьютера.</summary>
+    public virtual async Task SaveComputerAsync(EquipmentComputerSnapshot snapshot)
+    {
+        await EnsureInventoryEditAsync();
+        await snapshot.SaveAsync(_db);
+    }
 
-    /// <summary>Атомарно сохраняет основную запись и телефонный diff.</summary>
-    public virtual Task UpdateWithPhonesAsync(
+    /// <summary>Проверяет роль 43 и атомарно сохраняет основную запись и телефонный diff.</summary>
+    public virtual async Task UpdateWithPhonesAsync(
         Equipment equipment,
         IReadOnlyCollection<EquipmentPhoneLink> original,
-        IReadOnlyCollection<EquipmentPhoneLink> current) =>
-        equipment.UpdateWithPhonesAsync(_db, original, current);
+        IReadOnlyCollection<EquipmentPhoneLink> current)
+    {
+        await EnsureInventoryEditAsync();
+        await equipment.UpdateWithPhonesAsync(_db, original, current);
+    }
 
     /// <summary>Синхронизирует изменённые номера и оборудование с подтверждёнными АТС.</summary>
     public virtual async Task<IReadOnlyList<string>> SynchronizePhonesAsync(
@@ -401,6 +475,58 @@ public class EquipmentFormService
             }
         }
         return errors;
+    }
+
+    private async Task EnsureInventoryEditAsync()
+    {
+        if (!await HasRoleAsync(43))
+            throw new UnauthorizedAccessException("Недостаточно прав для изменения оборудования.");
+    }
+
+    private async Task EnsureAccountAccessAsync(bool write)
+    {
+        if (!await HasRoleAsync(102) || write && !await HasRoleAsync(43))
+            throw new UnauthorizedAccessException("Недостаточно прав для работы с учётными записями оборудования.");
+    }
+
+    private async Task<EquipmentType> GetRequiredTypeAsync(Equipment equipment)
+    {
+        if (equipment.EquipmentTypeId is null)
+            throw new InvalidOperationException("Для оборудования не указан тип.");
+        return (await _db.QueryAsync<EquipmentType>(SQLQueries.SELECT_ТипОборудованияПоИдентификатору,
+            new { Id = equipment.EquipmentTypeId.Value })).SingleOrDefault()
+            ?? throw new InvalidOperationException("Тип оборудования не найден.");
+    }
+
+    private async Task EnsureNetworkAccessAsync(int equipmentId)
+    {
+        var equipment = await GetAsync(equipmentId) ??
+                        throw new InvalidOperationException("Оборудование не найдено.");
+        var type = await GetRequiredTypeAsync(equipment);
+        if (type.HasComputerCharacteristics == 0 || !await HasRoleAsync(103))
+            throw new UnauthorizedAccessException("Недостаточно прав для изменения подключения рабочей сети.");
+    }
+
+    private async Task EnsureUpsAccessAsync(int serverEquipmentId)
+    {
+        var equipment = await GetAsync(serverEquipmentId) ??
+                        throw new InvalidOperationException("Оборудование не найдено.");
+        var type = await GetRequiredTypeAsync(equipment);
+        if (equipment.EquipmentTypeId is not < 100 || type.HasSimCharacteristics != 0 ||
+            !await HasRoleForPersonAsync(43, equipment.OwnerId))
+            throw new UnauthorizedAccessException("Недостаточно прав для изменения подключений UPS.");
+    }
+
+    private async Task EnsureLicenseAccessAsync(int equipmentId)
+    {
+        var equipment = await GetAsync(equipmentId) ??
+                        throw new InvalidOperationException("Оборудование не найдено.");
+        var type = await GetRequiredTypeAsync(equipment);
+        var hasRole = await HasRoleForPersonAsync(44, equipment.OwnerId) ||
+                      equipment.TenantId is not null && equipment.TenantId != equipment.OwnerId &&
+                      await HasRoleForPersonAsync(44, equipment.TenantId);
+        if (type.HasSoftwareCharacteristics == 0 || !hasRole)
+            throw new UnauthorizedAccessException("Недостаточно прав для изменения лицензии.");
     }
 
     /// <summary>Проверяет роль текущего пользователя с учётом замещений.</summary>
