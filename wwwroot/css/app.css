@@ -182,6 +182,13 @@
     min-width: 180px;
 }
 
+.equipment-writeoff-acts {
+    margin-top: 4px;
+    color: var(--mud-palette-warning);
+    font-size: var(--clay-font-size-small);
+    text-align: left;
+}
+
 .equipment-form-mac {
     display: flex;
     flex-wrap: wrap;

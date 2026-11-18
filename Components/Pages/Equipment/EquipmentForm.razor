@@ -129,6 +129,12 @@
                                             Options="_writeOffDocumentOptions" />
                             </div>
                         </div>
+                        @if (_model.DocumentWriteOffId is null && _writeOffActs.Count > 0)
+                        {
+                            <div class="equipment-writeoff-acts">
+                                Оборудование добавлено в: @string.Join(", ", _writeOffActs.Select(item => item.DisplayName))
+                            </div>
+                        }
                     </div>
                     <div class="equipment-form-pair">
                         <span class="equipment-form-label">Тип:</span>
@@ -141,6 +147,7 @@
                                         ValueChanged="OnTypeIdChanged"
                                         SelectedItem="_selectedType"
                                         SelectedItemChanged="OnTypeChanged"
+                                        Cleared="OnTypeClearConfirmed"
                                         Options="_typeOptions" />
                             <ClayCheckbox State="_sortTypesByName" StateChanged="OnTypeSortChanged"
                                           Label="сортировать типы в списке по алфавиту" />
@@ -259,9 +266,9 @@
                                         </Columns>
                                         <RowActions Context="item">
                                             <ClayButton Icon="@Icons.Material.Filled.Schedule" Text="Изменить срок возврата"
-                                                        Disabled="@(!_canEdit || _saving)" OnClick="@(() => EditPhoneReturnAsync(item))" />
+                                                        Disabled="@(!CanEditPhones || _saving)" OnClick="@(() => EditPhoneReturnAsync(item))" />
                                             <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить связь с номером"
-                                                        Disabled="@(!_canEdit || _saving)" OnClick="@(() => RemovePhoneAsync(item))" />
+                                                        Disabled="@(!CanEditPhones || _saving)" OnClick="@(() => RemovePhoneAsync(item))" />
                                         </RowActions>
                                     </ClayGrid>
                                 }
@@ -353,7 +360,7 @@
                 else
                 {
                     <ClayGrid TEntity="EquipmentAccount" Items="_accounts" Options="_accountGridOptions"
-                              OnAdd="@(() => OpenAccountDialogAsync(null))" AddDisabled="@(!_canEdit || _saving)">
+                              OnAdd="@(() => OpenAccountDialogAsync(null))" AddDisabled="@(!CanEditAccounts || _saving)">
                         <ColumnDefs>
                             <ClayColumnDef ColumnId="1" SqlName="Login" DisplayName="Логин" />
                             <ClayColumnDef ColumnId="2" SqlName="Password" DisplayName="Пароль" />
@@ -368,9 +375,9 @@
                         </Columns>
                         <RowActions Context="item">
                             <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить учётную запись"
-                                        Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenAccountDialogAsync(item))" />
+                                        Disabled="@(!CanEditAccounts || _saving)" OnClick="@(() => OpenAccountDialogAsync(item))" />
                             <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить учётную запись"
-                                        Disabled="@(!_canEdit || _saving)" OnClick="@(() => DeleteAccountAsync(item))" />
+                                        Disabled="@(!CanEditAccounts || _saving)" OnClick="@(() => DeleteAccountAsync(item))" />
                         </RowActions>
                     </ClayGrid>
                 }
@@ -395,7 +402,7 @@
             @if (ShowSim)
             {
                 <ClayGrid TEntity="EquipmentSimCard" Items="_simCards" Options="_simGridOptions"
-                          OnAdd="OpenSimDialogAsync" AddDisabled="@(!_canEditSim || _simCards.Count > 0 || _saving)">
+                          OnAdd="OpenSimDialogAsync" AddDisabled="@(!CanEditSim || _simCards.Count > 0 || _saving)">
                     <ColumnDefs>
                         <ClayColumnDef ColumnId="1" SqlName="PhoneNumber" DisplayName="НомерТелефона" />
                         <ClayColumnDef ColumnId="2" SqlName="ActivatedAt" DisplayName="Активация" />
@@ -414,16 +421,16 @@
                     </Columns>
                     <RowActions Context="item">
                         <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить сведения SIM"
-                                    Disabled="@(!_canEditSim || _saving)" OnClick="OpenSimDialogAsync" />
+                                    Disabled="@(!CanEditSim || _saving)" OnClick="OpenSimDialogAsync" />
                         <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить сведения SIM"
-                                    Disabled="@(!_canEditSim || _saving)" OnClick="DeleteSimAsync" />
+                                    Disabled="@(!CanEditSim || _saving)" OnClick="DeleteSimAsync" />
                     </RowActions>
                 </ClayGrid>
             }
             @if (ShowLicense)
             {
                 <ClayGrid TEntity="EquipmentLicense" Items="_licenses" Options="_licenseGridOptions"
-                          OnAdd="OpenLicenseDialogAsync" AddDisabled="@(!_canEditLicense || _licenses.Count > 0 || _saving)">
+                          OnAdd="OpenLicenseDialogAsync" AddDisabled="@(!CanEditLicense || _licenses.Count > 0 || _saving)">
                     <ColumnDefs>
                         <ClayColumnDef ColumnId="1" SqlName="LicenseType" DisplayName="Тип лицензирования" />
                         <ClayColumnDef ColumnId="2" SqlName="LicenseeNumber" DisplayName="Номер лицензиата" />
@@ -450,7 +457,7 @@
                     </Columns>
                     <RowActions Context="item">
                         <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить лицензию"
-                                    Disabled="@(!_canEditLicense || _saving)" OnClick="OpenLicenseDialogAsync" />
+                                    Disabled="@(!CanEditLicense || _saving)" OnClick="OpenLicenseDialogAsync" />
                     </RowActions>
                 </ClayGrid>
             }
@@ -647,7 +654,7 @@
                     </Columns>
                     <RowActions Context="item">
                         <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить установленное ПО"
-                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenSoftwareDialogAsync(item))" />
+                                    Disabled="@(!CanEditComputer || _saving)" OnClick="@(() => OpenSoftwareDialogAsync(item))" />
                     </RowActions>
                 </ClayGrid>
             }
@@ -729,7 +736,7 @@
                 <ClayGrid TEntity="EquipmentSimService" @key="_showCompanyRequiredServices"
                           Items="_simServices" Options="_simServiceGridOptions"
                           RowClass="@(item => item.IsTariffPlan > 0 ? "equipment-recommended" : null)"
-                          OnAdd="@(() => OpenSimServiceDialogAsync(null))" AddDisabled="@(!_canEditSim || _simCards.Count == 0 || _saving)">
+                          OnAdd="@(() => OpenSimServiceDialogAsync(null))" AddDisabled="@(!CanEditSim || _simCards.Count == 0 || _saving)">
                     <ColumnDefs>
                         <ClayColumnDef ColumnId="1" SqlName="Period" DisplayName="Срок оказания услуги" />
                         <ClayColumnDef ColumnId="2" SqlName="ServiceType" DisplayName="Код услуги" />
@@ -758,7 +765,7 @@
                     </Columns>
                     <RowActions Context="item">
                         <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить дополнительную услугу"
-                                    Disabled="@(!_canEditSim || _saving)" OnClick="@(() => OpenSimServiceDialogAsync(item))" />
+                                    Disabled="@(!CanEditSim || _saving)" OnClick="@(() => OpenSimServiceDialogAsync(item))" />
                     </RowActions>
                 </ClayGrid>
             }

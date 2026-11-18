@@ -516,13 +516,24 @@ public class EquipmentFormService
     {
         var errors = new List<string>();
         var currentIds = current.Select(item => item.PhoneId).ToHashSet();
-        var phones = original.Select(item => (item.PhoneId, Deleted: !currentIds.Contains(item.PhoneId)))
-            .Concat(current.Select(item => (item.PhoneId, Deleted: false)))
-            .GroupBy(item => item.PhoneId)
-            .Select(group => (PhoneId: group.Key, Deleted: group.Last().Deleted))
+        var originalIds = original.Select(item => item.PhoneId).ToHashSet();
+        var originalById = original.ToDictionary(item => item.PhoneId);
+        var added = current.Where(item => !originalIds.Contains(item.PhoneId)).ToList();
+        var deleted = original.Where(item => !currentIds.Contains(item.PhoneId)).ToList();
+        var changed = current.Where(item => originalById.TryGetValue(item.PhoneId, out var source) &&
+            (item.ConnectionEquipmentId != source.ConnectionEquipmentId ||
+             item.AutoDialNumber != source.AutoDialNumber ||
+             item.AutoDialDelay != source.AutoDialDelay ||
+             item.IsDefault != source.IsDefault)).ToList();
+        if (added.Count == 0 && deleted.Count == 0 && changed.Count == 0)
+            return errors;
+        var phones = deleted.Select(item => (item.PhoneId, Deleted: true))
+            .Concat(added.Concat(changed).Select(item => (item.PhoneId, Deleted: false)))
             .OrderBy(item => item.PhoneId);
-        var equipmentIds = original.Select(item => item.ConnectionEquipmentId)
-            .Concat(current.Select(item => item.ConnectionEquipmentId))
+        var changedIds = changed.Select(item => item.PhoneId).ToHashSet();
+        var equipmentIds = deleted.Concat(original.Where(item => changedIds.Contains(item.PhoneId)))
+            .Select(item => item.ConnectionEquipmentId)
+            .Concat(added.Concat(changed).Select(item => item.ConnectionEquipmentId))
             .Where(id => id is > 0)
             .Select(id => id!.Value)
             .Distinct()

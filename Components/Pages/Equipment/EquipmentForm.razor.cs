@@ -92,9 +92,11 @@ public partial class EquipmentForm : IDisposable
     private MudForm? _form;
     private EquipmentEntity? _model;
     private EquipmentType? _selectedType;
+    private EquipmentType? _persistedType;
     private EquipmentModel? _selectedModel;
     private List<EquipmentPhoneLink> _phones = [];
     private List<EquipmentPhoneLink> _originalPhones = [];
+    private PendingPhoneSync? _pendingPhoneSync;
     private int? _phoneToAdd;
     private int _phoneVersion;
     private int _locationVersion;
@@ -109,6 +111,7 @@ public partial class EquipmentForm : IDisposable
     private string? _warningMessage;
     private DateTime? _writeOffDate;
     private TimeSpan? _writeOffTime;
+    private IReadOnlyList<DocumentLookup> _writeOffActs = [];
     private bool _sortTypesByName;
     private bool _canEdit;
     private bool _canEditSim;
@@ -148,17 +151,28 @@ public partial class EquipmentForm : IDisposable
     private bool HasSelectedModel => _model?.ModelId is > 0 && _selectedModel is not null;
     private bool ShowNetworkName => HasSelectedModel && _selectedType?.HasNetworkName > 0;
     private bool ShowOperations => _canManageUps || _canChangeNetwork;
-    private bool ShowPhones => HasSelectedModel && _selectedType?.HasPhoneNumber > 0;
+    private bool ShowPhones => HasSelectedModel && _selectedType?.HasPhoneNumber > 0 ||
+                               _phones.Count > 0 && _persistedType?.HasPhoneNumber > 0;
     private bool ShowHotelPhoneWarning => _hotelPhoneCount > 1;
-    private bool ShowPhonePool => ShowPhones && _selectedType?.Id == 30;
+    private bool ShowPhonePool => HasSelectedModel && _selectedType?.HasPhoneNumber > 0 && _selectedType.Id == 30;
     private bool ShowPhoneConfig => _selectedType?.Id == 30;
-    private bool ShowComputer => _selectedType?.HasComputerCharacteristics > 0;
-    private bool ShowAccounts => _canViewAccounts && _selectedType?.MacAddressCount > 0;
-    private bool ShowSim => _selectedType?.HasSimCharacteristics > 0;
-    private bool ShowLicense => _selectedType?.HasSoftwareCharacteristics > 0;
+    private bool ShowComputer => _selectedType?.HasComputerCharacteristics > 0 ||
+                                 _persistedType?.HasComputerCharacteristics > 0 &&
+                                 (_computerHistory.Count > 0 || _softwareInstallations.Count > 0);
+    private bool ShowAccounts => _canViewAccounts && (_selectedType?.MacAddressCount > 0 ||
+                                 _persistedType?.MacAddressCount > 0 && _accounts.Count > 0);
+    private bool ShowSim => _selectedType?.HasSimCharacteristics > 0 ||
+                            _persistedType?.HasSimCharacteristics > 0 && _simCards.Count > 0;
+    private bool ShowLicense => _selectedType?.HasSoftwareCharacteristics > 0 ||
+                                _persistedType?.HasSoftwareCharacteristics > 0 && _licenses.Count > 0;
     private bool ShowRouter => _routerInfo is not null || _routerInventory.Count > 0;
     private bool PhonesModified => JsonSerializer.Serialize(_phones) != JsonSerializer.Serialize(_originalPhones);
-    private bool ShowCamera => ShowPhones && _selectedType?.Id == 30;
+    private bool ShowCamera => HasSelectedModel && _selectedType?.HasPhoneNumber > 0 && _selectedType.Id == 30;
+    private bool CanEditPhones => _canEdit && _selectedType?.HasPhoneNumber > 0;
+    private bool CanEditAccounts => _canEdit && _selectedType?.MacAddressCount > 0;
+    private bool CanEditComputer => _canEdit && _selectedType?.HasComputerCharacteristics > 0;
+    private bool CanEditSim => _canEditSim && _selectedType?.HasSimCharacteristics > 0;
+    private bool CanEditLicense => _canEditLicense && _selectedType?.HasSoftwareCharacteristics > 0;
     private int MacCount => HasSelectedModel ? Math.Min(3, _selectedModel!.NetworkInterfaces) : 0;
     private string? ChangedByUrl => _model?.ChangedById > 0 && !string.IsNullOrWhiteSpace(Configuration["URI_user_form"])
         ? EquipmentIns.BuildEditUrl(Configuration["URI_user_form"]!, _model.ChangedById)
@@ -279,6 +293,8 @@ public partial class EquipmentForm : IDisposable
 
     private async Task LoadCurrentAsync(int id)
     {
+        if (_pendingPhoneSync?.EquipmentId != id)
+            _pendingPhoneSync = null;
         var version = ++_operationVersion;
         _modelVersion++;
         _ownerVersion++;
@@ -338,6 +354,9 @@ public partial class EquipmentForm : IDisposable
                 : null;
             if (!IsCurrent(version, id))
                 return;
+            var writeOffActsTask = model.DocumentWriteOffId is null
+                ? WriteOffDocumentSource.GetWriteOffActsAsync(id, _pageCts.Token)
+                : Task.FromResult<IReadOnlyList<DocumentLookup>>([]);
             var details = await Service.GetFormDataAsync(new EquipmentFormReadRequest
             {
                 EquipmentId = id,
@@ -351,6 +370,7 @@ public partial class EquipmentForm : IDisposable
                 ShowServiceHistory = _showServiceHistory,
                 ShowCompanyRequiredServices = _showCompanyRequiredServices
             });
+            var writeOffActs = await writeOffActsTask;
             if (!IsCurrent(version, id))
                 return;
             var phones = details.Phones;
@@ -393,6 +413,7 @@ public partial class EquipmentForm : IDisposable
                 _localDates[item.Key] = item.Value;
             _model = model;
             _selectedType = selectedType;
+            _persistedType = selectedType;
             _selectedModel = selectedModel;
             _phones = phones.ToList();
             _originalPhones = ClonePhones(phones);
@@ -423,6 +444,7 @@ public partial class EquipmentForm : IDisposable
             WriteOffDocumentSource.PersonId = model.OwnerId;
             _writeOffDate = localWriteOff?.Date;
             _writeOffTime = localWriteOff?.TimeOfDay;
+            _writeOffActs = writeOffActs;
             _canEdit = canEdit;
             _canEditSim = canEditSim;
             _canEditLicense = canEditLicense;
@@ -474,7 +496,20 @@ public partial class EquipmentForm : IDisposable
         _selectedType = null;
         _selectedModel = null;
         ModelSource.Filter.EquipmentTypeId = id;
-        ClearHiddenFeatures();
+        UpdateOptions();
+    }
+
+    private void OnTypeClearConfirmed()
+    {
+        if (_model is null)
+            return;
+        _modelVersion++;
+        _phoneVersion++;
+        _model.EquipmentTypeId = null;
+        _model.ModelId = null;
+        _selectedType = null;
+        _selectedModel = null;
+        ModelSource.Filter.EquipmentTypeId = null;
         UpdateOptions();
     }
 
@@ -491,7 +526,6 @@ public partial class EquipmentForm : IDisposable
         _selectedType = type;
         _model.EquipmentTypeId = type.Id;
         ModelSource.Filter.EquipmentTypeId = type.Id;
-        ClearHiddenFeatures();
         UpdateOptions();
         await LoadPhonesForCurrentTypeAsync();
     }
@@ -524,7 +558,6 @@ public partial class EquipmentForm : IDisposable
                 return;
             _selectedType = selectedType;
         }
-        ClearHiddenFeatures();
         UpdateOptions();
         if (typeChanged)
             await LoadPhonesForCurrentTypeAsync();
@@ -717,9 +750,16 @@ public partial class EquipmentForm : IDisposable
 
     private async Task LoadPhonesForCurrentTypeAsync()
     {
-        if (_model is null || !ShowPhones)
+        if (_model is null)
             return;
         var version = ++_phoneVersion;
+        if (!ShowPhones)
+            return;
+        if (PhonesModified)
+        {
+            UpdatePhoneSourceFilters();
+            return;
+        }
         var id = _model.Id;
         var phones = await Service.GetPhonesAsync(id);
         if (_disposed || version != _phoneVersion || _model.Id != id)
@@ -728,6 +768,11 @@ public partial class EquipmentForm : IDisposable
         _originalPhones = ClonePhones(phones);
         UpdatePhoneSourceFilters();
     }
+
+    private sealed record PendingPhoneSync(
+        int EquipmentId,
+        List<EquipmentPhoneLink> Original,
+        List<EquipmentPhoneLink> Current);
 
     private static List<EquipmentPhoneLink> ClonePhones(IEnumerable<EquipmentPhoneLink> phones) =>
         phones.Select(item => new EquipmentPhoneLink
@@ -817,7 +862,7 @@ public partial class EquipmentForm : IDisposable
             if (!_disposed && version == _locationVersion)
                 _validationMessage = "Расположение не сохранено. Подробности — в сообщении базы данных.";
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
             if (!_disposed && version == _locationVersion)
                 _validationMessage = ex.Message;
@@ -947,7 +992,7 @@ public partial class EquipmentForm : IDisposable
             if (!_disposed && version == _locationVersion)
                 _validationMessage = "Ответственный не сохранён. Подробности — в сообщении базы данных.";
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
             if (!_disposed && version == _locationVersion)
                 _validationMessage = ex.Message;
@@ -1008,6 +1053,11 @@ public partial class EquipmentForm : IDisposable
             if (!_disposed && version == _accountVersion)
                 _validationMessage = "Учётная запись не сохранена. Подробности — в сообщении базы данных.";
         }
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+        {
+            if (!_disposed && version == _accountVersion)
+                _validationMessage = ex.Message;
+        }
         finally
         {
             if (!_disposed)
@@ -1039,6 +1089,11 @@ public partial class EquipmentForm : IDisposable
         {
             if (!_disposed && version == _accountVersion)
                 _validationMessage = "Учётная запись не удалена. Подробности — в сообщении базы данных.";
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            if (!_disposed && version == _accountVersion)
+                _validationMessage = ex.Message;
         }
         finally
         {
@@ -1105,7 +1160,7 @@ public partial class EquipmentForm : IDisposable
             if (!_disposed && version == _computerVersion)
                 _validationMessage = "Конфигурация компьютера не сохранена. Подробности — в сообщении базы данных.";
         }
-        catch (Exception ex) when (ex is FormatException or OverflowException)
+        catch (Exception ex) when (ex is FormatException or OverflowException or InvalidOperationException or UnauthorizedAccessException)
         {
             if (!_disposed && version == _computerVersion)
                 _validationMessage = ex.Message;
@@ -1134,7 +1189,7 @@ public partial class EquipmentForm : IDisposable
 
     private async Task OpenSimDialogAsync()
     {
-        if (_model is null || !_canEditSim || _saving)
+        if (_model is null || !CanEditSim || _saving)
             return;
         var equipmentId = _model.Id;
         var operationVersion = _operationVersion;
@@ -1198,7 +1253,7 @@ public partial class EquipmentForm : IDisposable
             if (!_disposed && version == _simVersion)
                 _validationMessage = "Сведения SIM не сохранены. Подробности — в сообщении базы данных.";
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
             if (!_disposed && version == _simVersion)
                 _validationMessage = ex.Message;
@@ -1215,7 +1270,7 @@ public partial class EquipmentForm : IDisposable
 
     private async Task DeleteSimAsync()
     {
-        if (_model is null || !_canEditSim || _saving ||
+        if (_model is null || !CanEditSim || _saving ||
             !await ConfirmAsync("Удаление сведений SIM", "Удалить сведения SIM без удаления самого оборудования?"))
             return;
         var version = ++_simVersion;
@@ -1234,6 +1289,11 @@ public partial class EquipmentForm : IDisposable
         {
             if (!_disposed && version == _simVersion)
                 _validationMessage = "Сведения SIM не удалены. Подробности — в сообщении базы данных.";
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            if (!_disposed && version == _simVersion)
+                _validationMessage = ex.Message;
         }
         finally
         {
@@ -1263,7 +1323,7 @@ public partial class EquipmentForm : IDisposable
     private async Task OpenSimServiceDialogAsync(EquipmentSimService? existing)
     {
         var sim = _simCards.SingleOrDefault();
-        if (_model is null || sim is null || !_canEditSim || _saving)
+        if (_model is null || sim is null || !CanEditSim || _saving)
             return;
         var value = existing is null
             ? new EquipmentSimService { EquipmentId = _model.Id, PhoneNumber = sim.PhoneNumber }
@@ -1307,7 +1367,7 @@ public partial class EquipmentForm : IDisposable
             if (!_disposed && version == _simServiceVersion)
                 _validationMessage = "Дополнительная услуга не сохранена. Подробности — в сообщении базы данных.";
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
             if (!_disposed && version == _simServiceVersion)
                 _validationMessage = ex.Message;
@@ -1389,7 +1449,7 @@ public partial class EquipmentForm : IDisposable
             if (!_disposed && version == _licenseVersion)
                 _validationMessage = "Лицензия не сохранена. Подробности — в сообщении базы данных.";
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
             if (!_disposed && version == _licenseVersion)
                 _validationMessage = ex.Message;
@@ -1457,7 +1517,7 @@ public partial class EquipmentForm : IDisposable
             if (!_disposed && version == _softwareVersion)
                 _validationMessage = "Установленное ПО не сохранено. Подробности — в сообщении базы данных.";
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
             if (!_disposed && version == _softwareVersion)
                 _validationMessage = ex.Message;
@@ -1694,6 +1754,11 @@ public partial class EquipmentForm : IDisposable
             if (!_disposed && version == _networkVersion)
                 _validationMessage = "Состояние сети не изменено. Подробности — в сообщении базы данных.";
         }
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+        {
+            if (!_disposed && version == _networkVersion)
+                _validationMessage = ex.Message;
+        }
         finally
         {
             if (!_disposed)
@@ -1737,6 +1802,11 @@ public partial class EquipmentForm : IDisposable
         {
             if (!_disposed && version == _upsVersion)
                 _validationMessage = "UPS не подключён. Подробности — в сообщении базы данных.";
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+        {
+            if (!_disposed && version == _upsVersion)
+                _validationMessage = ex.Message;
         }
         finally
         {
@@ -1796,7 +1866,7 @@ public partial class EquipmentForm : IDisposable
             if (!_disposed && version == _upsVersion)
                 _validationMessage = "Подключение UPS не сохранено. Подробности — в сообщении базы данных.";
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
             if (!_disposed && version == _upsVersion)
                 _validationMessage = ex.Message;
@@ -1916,18 +1986,6 @@ public partial class EquipmentForm : IDisposable
         return local.ToString(includeTime ? "dd.MM.yyyy HH:mm:ss" : "dd.MM.yyyy");
     }
 
-    private void ClearHiddenFeatures()
-    {
-        if (_model is null)
-            return;
-        if (!ShowNetworkName) _model.NetworkName = string.Empty;
-        if (MacCount < 1) _model.MacAddress = string.Empty;
-        if (MacCount < 2) _model.MacAddress2 = string.Empty;
-        if (MacCount < 3) _model.MacAddressIlo = string.Empty;
-        if (!ShowPhonePool) _model.PhonePoolId = null;
-        if (!ShowCamera) _model.CameraIsConnected = 0;
-    }
-
     private void UpdateOptions()
     {
         if (_model is null)
@@ -1936,16 +1994,18 @@ public partial class EquipmentForm : IDisposable
         foreach (var options in new[] { _typeOptions, _modelOptions, _phonePoolOptions, _phoneOptions, _ownerOptions, _receiptDocumentOptions, _writeOffDocumentOptions, _shipperOptions, _tenantOptions })
             options.ReadOnly = !_canEdit;
         _tenantOptions.ReadOnly = true;
+        _phoneOptions.ReadOnly = !CanEditPhones;
+        _phonePoolOptions.ReadOnly = !CanEditPhones;
         foreach (var options in new ClayInputOptions[] { _writeOffDateOptions, _writeOffTimeOptions, _snOptions, _networkNameOptions, _macOptions, _descriptionOptions })
             options.ReadOnly = !_canEdit;
         _locationGridOptions.ShowAddButton = _canEdit;
         _responsibleGridOptions.ShowAddButton = _canEdit;
-        _accountGridOptions.ShowAddButton = _canEdit;
-        _computerGridOptions.ShowAddButton = _canEdit;
-        _softwareGridOptions.ShowAddButton = _canEdit;
-        _simGridOptions.ShowAddButton = _canEditSim && _simCards.Count == 0;
-        _simServiceGridOptions.ShowAddButton = _canEditSim && _simCards.Count > 0;
-        _licenseGridOptions.ShowAddButton = _canEditLicense && _licenses.Count == 0;
+        _accountGridOptions.ShowAddButton = CanEditAccounts;
+        _computerGridOptions.ShowAddButton = CanEditComputer;
+        _softwareGridOptions.ShowAddButton = CanEditComputer;
+        _simGridOptions.ShowAddButton = CanEditSim && _simCards.Count == 0;
+        _simServiceGridOptions.ShowAddButton = CanEditSim && _simCards.Count > 0;
+        _licenseGridOptions.ShowAddButton = CanEditLicense && _licenses.Count == 0;
         _accountingGridOptions.ShowAddButton = _canUseAccounting;
         UpdatePhoneSourceFilters();
     }
@@ -1973,6 +2033,17 @@ public partial class EquipmentForm : IDisposable
     {
         if (_model is null || !_loaded || !_canEdit || _loading || _saving)
             return;
+        if (_pendingPhoneSync is not null)
+        {
+            if (!await RetryPendingPhoneSyncAsync())
+                return;
+            if (!IsModified)
+            {
+                if (closeAfterSave)
+                    await CloseAsync();
+                return;
+            }
+        }
         if (!IsModified)
         {
             if (closeAfterSave)
@@ -2000,7 +2071,7 @@ public partial class EquipmentForm : IDisposable
             model.WriteOffAtUtc = await ConvertWriteOffToUtcAsync();
             if (!IsCurrentSave(model, version))
                 return;
-            if (ShowPhones && phonesModified)
+            if (phonesModified)
                 await Service.UpdateWithPhonesAsync(model, _originalPhones, _phones);
             else
                 await Service.UpdateAsync(model);
@@ -2009,20 +2080,22 @@ public partial class EquipmentForm : IDisposable
             _originalSnapshot = Snapshot();
             SetAccountingBaseline();
             var warnings = new List<string>();
-            if (ShowPhones && phonesModified)
+            if (phonesModified)
             {
+                var pending = new PendingPhoneSync(model.Id, ClonePhones(_originalPhones), ClonePhones(_phones));
                 try
                 {
-                    warnings.AddRange(await Service.SynchronizePhonesAsync(model.Id, _originalPhones, _phones));
+                    warnings.AddRange(await Service.SynchronizePhonesAsync(model.Id, pending.Original, pending.Current));
                 }
                 catch (Microsoft.Data.SqlClient.SqlException)
                 {
                     warnings.Add("Синхронизация с АТС не выполнена. Подробности — в сообщении базы данных.");
                 }
-                catch (InvalidOperationException ex)
+                catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
                 {
                     warnings.Add($"Синхронизация с АТС не выполнена: {ex.Message}");
                 }
+                _pendingPhoneSync = warnings.Count > 0 ? pending : null;
             }
             _originalPhones = ClonePhones(_phones);
             if (!IsCurrentSave(model, version))
@@ -2047,10 +2120,63 @@ public partial class EquipmentForm : IDisposable
             if (IsCurrentSave(model, version))
                 _validationMessage = "Оборудование не сохранено. Подробности — в сообщении базы данных.";
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
             if (IsCurrentSave(model, version))
                 _validationMessage = ex.Message;
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task<bool> RetryPendingPhoneSyncAsync()
+    {
+        var pending = _pendingPhoneSync;
+        var model = _model;
+        if (pending is null)
+            return true;
+        if (model is null || pending.EquipmentId != model.Id)
+            return false;
+        var version = ++_operationVersion;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        try
+        {
+            await Task.Delay(100);
+            var warnings = await Service.SynchronizePhonesAsync(pending.EquipmentId, pending.Original, pending.Current);
+            if (!IsCurrentSave(model, version))
+                return false;
+            if (warnings.Count > 0)
+            {
+                _warningMessage = "Телефонные связи сохранены. " + string.Join(" ", warnings) + " Повторите синхронизацию через «Применить».";
+                return false;
+            }
+            _pendingPhoneSync = null;
+            _warningMessage = null;
+            return true;
+        }
+        catch (OperationCanceledException) when (_disposed || !IsCurrentSave(model, version))
+        {
+            return false;
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (IsCurrentSave(model, version))
+                _warningMessage = "Телефонные связи сохранены, синхронизация с АТС не выполнена. Повторите через «Применить».";
+            return false;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+        {
+            if (IsCurrentSave(model, version))
+                _warningMessage = $"Телефонные связи сохранены, синхронизация не выполнена: {ex.Message} Повторите через «Применить».";
+            return false;
         }
         finally
         {
