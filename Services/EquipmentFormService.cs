@@ -150,6 +150,19 @@ public class EquipmentFormService
         return service.SaveAsync(_db);
     }
 
+    /// <summary>Возвращает счётчик подключений рабочей сети.</summary>
+    public virtual async Task<int> GetNetworkAttachmentCountAsync(int equipmentId) =>
+        await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_ID_ConnectedWorkNet,
+            new { EquipmentId = equipmentId }, commandType: CommandType.Text);
+
+    /// <summary>Подключает оборудование к рабочей сети.</summary>
+    public virtual Task AttachNetworkAsync(int equipmentId) => _db.ExecuteAsync(
+        SQLQueries.INSERT_Net, new { КодОборудования = equipmentId }, commandType: CommandType.Text);
+
+    /// <summary>Отключает оборудование от рабочей сети.</summary>
+    public virtual Task DetachNetworkAsync(int equipmentId) => _db.ExecuteAsync(
+        SQLQueries.UPDATE_Net, new { КодОборудования = equipmentId }, commandType: CommandType.Text);
+
     /// <summary>Загружает UPS, подключённые к серверу.</summary>
     public virtual async Task<IReadOnlyList<UpsServerLink>> GetUpsLinksAsync(int serverEquipmentId) =>
         (await _db.QueryAsync<UpsServerLink>(

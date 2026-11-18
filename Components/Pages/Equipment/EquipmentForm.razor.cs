@@ -156,6 +156,10 @@ public partial class EquipmentForm : IDisposable
     private readonly ClayToolbarButtonOptions _refreshOptions = new() { Text = "Обновить", Icon = Icons.Material.Filled.Refresh, Title = "Загрузить запись повторно" };
     private readonly ClayToolbarButtonOptions _cancelOptions = new() { Text = "Отмена", Icon = Icons.Material.Filled.Close, Title = "Закрыть форму" };
     private readonly ClayToolbarButtonOptions _copyOptions = new() { Text = "Копировать", Icon = Icons.Material.Filled.ContentCopy, Title = "Создать оборудование копированием" };
+    private readonly ClayToolbarButtonOptions _attachOptions = new() { Text = "Подключить сеть", Icon = Icons.Material.Filled.Link, Title = "Подключить оборудование к рабочей сети" };
+    private readonly ClayToolbarButtonOptions _detachOptions = new() { Text = "Отключить сеть", Icon = Icons.Material.Filled.LinkOff, Title = "Отключить оборудование от рабочей сети" };
+    private int _networkAttachmentCount;
+    private int _networkVersion;
 
     private MudForm? _form;
     private EquipmentEntity? _model;
@@ -274,6 +278,7 @@ public partial class EquipmentForm : IDisposable
         _softwareVersion++;
         _accountingVersion++;
         _upsVersion++;
+        _networkVersion++;
         _loading = true;
         _loaded = false;
         _notFound = false;
@@ -356,6 +361,7 @@ public partial class EquipmentForm : IDisposable
             var routerInventory = await Service.GetRouterInventoryAsync(id);
             var upsLinks = await Service.GetUpsLinksAsync(id);
             var lastInventory = await Service.GetLastInventoryAsync(id);
+            var networkAttachmentCount = await Service.GetNetworkAttachmentCountAsync(id);
             if (!IsCurrent(version, id))
                 return;
             DateTime? localWriteOff = null;
@@ -389,6 +395,7 @@ public partial class EquipmentForm : IDisposable
             _routerInventory = routerInventory.ToList();
             _upsLinks = upsLinks.ToList();
             _lastInventory = lastInventory;
+            _networkAttachmentCount = networkAttachmentCount;
             await RefreshLocationDisplayDatesAsync();
             _phoneToAdd = null;
             _phoneVersion++;
@@ -1503,6 +1510,51 @@ public partial class EquipmentForm : IDisposable
             SetDocumentOwner(current.OwnerId);
         }
         _canUseAccounting = await Service.CanUseAccountingAsync(_model.OwnerId);
+    }
+
+    private async Task SetNetworkAttachmentAsync(bool attach)
+    {
+        if (_model is null || !_canEdit || _saving)
+            return;
+        if (!attach && !await ConfirmAsync("Отключение сети", "Отключить оборудование от рабочей сети?"))
+            return;
+        if (IsModified)
+        {
+            await SaveAsync(false);
+            if (IsModified)
+                return;
+        }
+        var version = ++_networkVersion;
+        var equipmentId = _model.Id;
+        _saving = true;
+        _validationMessage = null;
+        _warningMessage = null;
+        StateHasChanged();
+        try
+        {
+            if (attach)
+                await Service.AttachNetworkAsync(equipmentId);
+            else
+                await Service.DetachNetworkAsync(equipmentId);
+            var count = await Service.GetNetworkAttachmentCountAsync(equipmentId);
+            if (_disposed || version != _networkVersion || _model.Id != equipmentId)
+                return;
+            _networkAttachmentCount = count;
+            _warningMessage = attach ? "Оборудование подключено к рабочей сети." : "Оборудование отключено от рабочей сети.";
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _networkVersion)
+                _validationMessage = "Состояние сети не изменено. Подробности — в сообщении базы данных.";
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
     }
 
     private UpsEquipmentSelectDataSource UpsSource => Services.GetRequiredKeyedService<UpsEquipmentSelectDataSource>("ups");

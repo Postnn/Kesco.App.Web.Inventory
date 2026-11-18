@@ -32,6 +32,14 @@
             <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="RefreshAsync" />
             <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
             <ClayToolbarButton Options="_copyOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="CopyAsync" />
+            @if (_networkAttachmentCount == 0)
+            {
+                <ClayToolbarButton Options="_attachOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SetNetworkAttachmentAsync(true))" />
+            }
+            else
+            {
+                <ClayToolbarButton Options="_detachOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SetNetworkAttachmentAsync(false))" />
+            }
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
