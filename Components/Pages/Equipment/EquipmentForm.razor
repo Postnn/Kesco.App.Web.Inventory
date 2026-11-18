@@ -27,11 +27,6 @@
 <ClayEntityForm Options="_entityFormOptions">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
-            <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
-            <ClayToolbarButton Options="_copyOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="CopyAsync" />
-            <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="RefreshAsync" />
-            <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
             @if (ShowOperations)
             {
                 <ClayMenu Icon="@Icons.Material.Filled.ArrowDropDown" ButtonOptions="_operationsOptions"
@@ -51,6 +46,11 @@
                     }
                 </ClayMenu>
             }
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
+            <ClayToolbarButton Options="_copyOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="CopyAsync" />
+            <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
             @if (ShowPhoneConfig)
             {
                 <ClayToolbarButton Options="_phoneConfigOptions" Disabled="@(_loading || _saving || !_loaded || !_canViewPhoneConfig)" OnClick="OpenPhoneConfigAsync" />
@@ -716,7 +716,7 @@
             </div>
             @if (ShowSim)
             {
-                <div class="d-flex gap-4">
+                <div class="equipment-sim-service-filters">
                     <ClayCheckbox State="_showServiceHistory" StateChanged="value => _showServiceHistory = value == true" Label="Показать историю" OnToggle="OnSimServiceFiltersChangedAsync" />
                     <ClayCheckbox State="_showCompanyRequiredServices" StateChanged="value => _showCompanyRequiredServices = value == true" Label="Показать обязательные услуги" OnToggle="OnSimServiceFiltersChangedAsync" />
                 </div>

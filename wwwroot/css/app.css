@@ -59,28 +59,28 @@
     font-size: 14px;
 }
 
-/* Компактная форма модели: высота общих полей совпадает с ClaySelect (32px). */
+/* Компактные формы: высота однострочных полей совпадает с ClaySelect (32px). */
 .model-equipment-form .model-equipment-fields {
     gap: 6px;
 }
 
-.model-equipment-form .mud-input-control.mud-input-control-margin-dense {
+:is(.model-equipment-form, .equipment-form) .mud-input-control.mud-input-control-margin-dense {
     margin-top: 0;
     margin-bottom: 0;
 }
 
-.model-equipment-form .mud-input-control:has(input) .mud-input {
+:is(.model-equipment-form, .equipment-form) .mud-input-control:has(input) .mud-input {
     height: 32px;
     min-height: 32px;
     box-sizing: border-box;
 }
 
-.model-equipment-form .mud-input-control:has(input) .mud-input-root {
+:is(.model-equipment-form, .equipment-form) .mud-input-control:has(input) .mud-input-root {
     padding-top: 4px;
     padding-bottom: 4px;
 }
 
-.model-equipment-form .mud-input-control-helper-container {
+:is(.model-equipment-form, .equipment-form) .mud-input-control-helper-container {
     min-height: 0;
     padding: 0;
 }
@@ -207,7 +207,7 @@
 
 .equipment-detail-grid {
     margin: 5px 0 0;
-    padding: 0;
+    padding: 0 !important;
     border: 0 !important;
     box-shadow: none !important;
 }
@@ -222,6 +222,12 @@
 
 .equipment-detail-grid .mud-table-body .mud-table-row:last-child .mud-table-cell {
     border-bottom: 0 !important;
+}
+
+.equipment-sim-service-filters {
+    display: flex;
+    gap: 16px;
+    margin-top: 5px;
 }
 
 .equipment-phone-editor {
