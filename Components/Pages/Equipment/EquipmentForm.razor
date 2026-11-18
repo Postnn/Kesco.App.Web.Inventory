@@ -42,7 +42,7 @@
             }
             @if (ShowPhoneConfig)
             {
-                <ClayToolbarButton Options="_phoneConfigOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="OpenPhoneConfigAsync" />
+                <ClayToolbarButton Options="_phoneConfigOptions" Disabled="@(_loading || _saving || !_loaded || !_canViewPhoneConfig)" OnClick="OpenPhoneConfigAsync" />
             }
             @if (ShowNetworkName)
             {

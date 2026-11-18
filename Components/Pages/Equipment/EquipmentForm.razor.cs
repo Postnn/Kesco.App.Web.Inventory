@@ -189,6 +189,7 @@ public partial class EquipmentForm : IDisposable
     private bool _canEdit;
     private bool _canEditSim;
     private bool _canEditLicense;
+    private bool _canViewPhoneConfig;
     private bool _loading = true;
     private bool _saving;
     private bool _loaded;
@@ -201,6 +202,10 @@ public partial class EquipmentForm : IDisposable
     private int _ownerVersion;
     private int _shipperVersion;
     private int? _confirmedOwnerId;
+    private int? _originalOwnerId;
+    private int? _originalTenantId;
+    private int? _originalReceiptDocumentId;
+    private int? _originalWriteOffDocumentId;
     private string _originalSnapshot = string.Empty;
     private string? _validationMessage;
 
@@ -315,6 +320,7 @@ public partial class EquipmentForm : IDisposable
                                  (await Service.HasRoleForPersonAsync(LicenseSpecialistRoleId, model.OwnerId) ||
                                   model.TenantId is not null && model.TenantId != model.OwnerId &&
                                   await Service.HasRoleForPersonAsync(LicenseSpecialistRoleId, model.TenantId));
+            var canViewPhoneConfig = selectedType?.Id == 30 && await Service.HasRoleAsync(102);
             var canUseAccounting = await Service.CanUseAccountingAsync(model.OwnerId);
             if (!IsCurrent(version, id))
                 return;
@@ -381,7 +387,14 @@ public partial class EquipmentForm : IDisposable
                 if (!IsCurrent(version, id))
                     return;
             }
+            var localDates = await LoadLocalDatesAsync(GetDisplayDates(
+                locations, responsibles, simCards, networkNameHistory, lastInventory));
+            if (!IsCurrent(version, id))
+                return;
 
+            _localDates.Clear();
+            foreach (var item in localDates)
+                _localDates[item.Key] = item.Value;
             _model = model;
             _selectedType = selectedType;
             _selectedModel = selectedModel;
@@ -405,7 +418,6 @@ public partial class EquipmentForm : IDisposable
             _lastInventory = lastInventory;
             _networkAttachmentCount = networkAttachmentCount;
             _networkNameHistory = networkNameHistory;
-            await RefreshLocationDisplayDatesAsync();
             _phoneToAdd = null;
             _phoneVersion++;
             _confirmedOwnerId = model.OwnerId;
@@ -417,7 +429,9 @@ public partial class EquipmentForm : IDisposable
             _canEdit = canEdit;
             _canEditSim = canEditSim;
             _canEditLicense = canEditLicense;
+            _canViewPhoneConfig = canViewPhoneConfig;
             _canUseAccounting = canUseAccounting;
+            SetAccountingBaseline();
             _loaded = true;
             UpdateOptions();
             _originalSnapshot = Snapshot();
@@ -466,6 +480,12 @@ public partial class EquipmentForm : IDisposable
     {
         if (_model is null || type is null)
             return;
+        if (_selectedType?.Id == type.Id)
+        {
+            _model.EquipmentTypeId = type.Id;
+            ModelSource.Filter.EquipmentTypeId = type.Id;
+            return;
+        }
         _selectedType = type;
         _model.EquipmentTypeId = type.Id;
         ModelSource.Filter.EquipmentTypeId = type.Id;
@@ -548,6 +568,16 @@ public partial class EquipmentForm : IDisposable
 
     private void SetDocumentOwner(int? id) => ReceiptDocumentSource.PersonId = WriteOffDocumentSource.PersonId = id;
 
+    private void SetAccountingBaseline()
+    {
+        if (_model is null)
+            return;
+        _originalOwnerId = _model.OwnerId;
+        _originalTenantId = _model.TenantId;
+        _originalReceiptDocumentId = _model.DocumentReceiptOuId;
+        _originalWriteOffDocumentId = _model.DocumentWriteOffId;
+    }
+
     private async Task OnReceiptDocumentChangedAsync(int? id)
     {
         if (_model is null)
@@ -628,8 +658,7 @@ public partial class EquipmentForm : IDisposable
             { dialog => dialog.ReturnDate, item.ReturnDate },
             { dialog => dialog.Notes, item.Notes },
         };
-        var dialog = await DialogService.ShowAsync<EquipmentPhoneDialog>("Срок возврата", parameters);
-        var result = await dialog.Result;
+        var result = await ShowDialogAsync<EquipmentPhoneDialog>("Срок возврата", parameters);
         if (result is null || result.Canceled || result.Data is not EquipmentPhoneReturnResult value)
             return;
         item.ReturnDate = value.ReturnDate;
@@ -688,8 +717,7 @@ public partial class EquipmentForm : IDisposable
             { dialog => dialog.ReturnDate, existing?.ReturnDate },
             { dialog => dialog.Notes, existing?.Notes ?? string.Empty },
         };
-        var dialog = await DialogService.ShowAsync<EquipmentLocationDialog>("Расположение", parameters);
-        var result = await dialog.Result;
+        var result = await ShowDialogAsync<EquipmentLocationDialog>("Расположение", parameters);
         if (result is null || result.Canceled || result.Data is not EquipmentLocationDialogResult value)
             return;
         if (!isEdit && _locations.LastOrDefault()?.LocationId == value.LocationId)
@@ -804,8 +832,7 @@ public partial class EquipmentForm : IDisposable
             parameters.Add(dialog => dialog.FromDate, existing?.ToUtc?.Date);
             parameters.Add(dialog => dialog.FromTime, existing?.ToUtc?.TimeOfDay);
         }
-        var dialog = await DialogService.ShowAsync<EquipmentResponsibleDialog>("Ответственный", parameters);
-        var result = await dialog.Result;
+        var result = await ShowDialogAsync<EquipmentResponsibleDialog>("Ответственный", parameters);
         if (result is null || result.Canceled || result.Data is not EquipmentResponsibleDialogResult value)
             return;
         var version = ++_locationVersion;
@@ -833,13 +860,15 @@ public partial class EquipmentForm : IDisposable
             }
             else if (mode == EquipmentResponsibleDialogMode.Edit)
             {
-                existing!.ReturnDate = value.ReturnDate;
-                existing.Notes = value.Notes;
-                await Service.UpdateResponsibleAsync(existing);
+                var current = CloneResponsible(existing!);
+                current.ReturnDate = value.ReturnDate;
+                current.Notes = value.Notes;
+                await Service.UpdateResponsibleAsync(current);
             }
             else
             {
-                existing!.ToUtc = toUtc;
+                var current = CloneResponsible(existing!);
+                current.ToUtc = toUtc;
                 var next = value.EmployeeId is null ? null : new EquipmentResponsiblePeriod
                 {
                     EquipmentId = equipmentId,
@@ -856,7 +885,7 @@ public partial class EquipmentForm : IDisposable
                     ReturnDate = null,
                     Notes = string.Empty,
                 };
-                await Service.WithdrawResponsibleAsync(existing, next, location);
+                await Service.WithdrawResponsibleAsync(current, next, location);
             }
             if (_disposed || version != _locationVersion || _model.Id != equipmentId)
                 return;
@@ -887,9 +916,11 @@ public partial class EquipmentForm : IDisposable
     {
         if (_model is null || !_canEdit || _saving)
             return;
+        var equipmentId = _model.Id;
+        var operationVersion = _operationVersion;
         var parameters = new DialogParameters<EquipmentAccountDialog>
         {
-            { dialog => dialog.EquipmentId, _model.Id },
+            { dialog => dialog.EquipmentId, equipmentId },
             { dialog => dialog.OriginalLogin, existing?.Login },
             { dialog => dialog.Login, existing?.Login ?? string.Empty },
             { dialog => dialog.LimitedRights, existing?.LimitedRights > 0 },
@@ -897,10 +928,10 @@ public partial class EquipmentForm : IDisposable
         };
         var dialog = await DialogService.ShowAsync<EquipmentAccountDialog>("Учётная запись", parameters);
         var result = await dialog.Result;
-        if (result is null || result.Canceled || result.Data is not EquipmentAccountDialogResult value)
+        if (!IsCurrent(operationVersion, equipmentId) || _model?.Id != equipmentId ||
+            result is null || result.Canceled || result.Data is not EquipmentAccountDialogResult value)
             return;
         var version = ++_accountVersion;
-        var equipmentId = _model.Id;
         _saving = true;
         _validationMessage = null;
         StateHasChanged();
@@ -1002,8 +1033,7 @@ public partial class EquipmentForm : IDisposable
             { dialog => dialog.Notes, latest?.Notes ?? string.Empty },
             { dialog => dialog.Configurations, _standardConfigurations },
         };
-        var dialog = await DialogService.ShowAsync<EquipmentComputerDialog>("Компьютер", parameters);
-        var result = await dialog.Result;
+        var result = await ShowDialogAsync<EquipmentComputerDialog>("Компьютер", parameters);
         if (result is null || result.Canceled || result.Data is not EquipmentComputerSnapshot snapshot)
             return;
         var version = ++_computerVersion;
@@ -1056,6 +1086,8 @@ public partial class EquipmentForm : IDisposable
     {
         if (_model is null || !_canEditSim || _saving)
             return;
+        var equipmentId = _model.Id;
+        var operationVersion = _operationVersion;
         var existing = _simCards.SingleOrDefault();
         DateTime? localActivation = null;
         if (existing is not null)
@@ -1064,9 +1096,11 @@ public partial class EquipmentForm : IDisposable
             var offset = await JS.InvokeAsync<int>("clayGridTimeZone.getOffsetMinutes", utc.ToString("O"));
             localActivation = utc.AddMinutes(offset);
         }
+        if (!IsCurrent(operationVersion, equipmentId))
+            return;
         var parameters = new DialogParameters<EquipmentSimDialog>
         {
-            { dialog => dialog.EquipmentId, _model.Id },
+            { dialog => dialog.EquipmentId, equipmentId },
             { dialog => dialog.HasExisting, existing is not null },
             { dialog => dialog.PhoneNumber, existing?.PhoneNumber ?? string.Empty },
             { dialog => dialog.ActivatedDate, localActivation?.Date },
@@ -1077,10 +1111,10 @@ public partial class EquipmentForm : IDisposable
         };
         var dialog = await DialogService.ShowAsync<EquipmentSimDialog>("SIM-карта", parameters);
         var result = await dialog.Result;
-        if (result is null || result.Canceled || result.Data is not EquipmentSimDialogResult value)
+        if (!IsCurrent(operationVersion, equipmentId) || _model?.Id != equipmentId ||
+            result is null || result.Canceled || result.Data is not EquipmentSimDialogResult value)
             return;
         var version = ++_simVersion;
-        var equipmentId = _model.Id;
         var duplicateId = await Service.GetDuplicateSimIdAsync(equipmentId, value.PhoneNumber);
         if (_disposed || version != _simVersion || _model.Id != equipmentId)
             return;
@@ -1200,8 +1234,7 @@ public partial class EquipmentForm : IDisposable
             { dialog => dialog.Value, value },
             { dialog => dialog.Types, _simServiceTypes },
         };
-        var dialog = await DialogService.ShowAsync<EquipmentSimServiceDialog>("Дополнительная услуга SIM", parameters);
-        var result = await dialog.Result;
+        var result = await ShowDialogAsync<EquipmentSimServiceDialog>("Дополнительная услуга SIM", parameters);
         if (result is null || result.Canceled || result.Data is not EquipmentSimService service)
             return;
         var version = ++_simServiceVersion;
@@ -1283,8 +1316,7 @@ public partial class EquipmentForm : IDisposable
             { dialog => dialog.Value, value },
             { dialog => dialog.Types, _licenseTypes },
         };
-        var dialog = await DialogService.ShowAsync<EquipmentLicenseDialog>("Лицензия", parameters);
-        var result = await dialog.Result;
+        var result = await ShowDialogAsync<EquipmentLicenseDialog>("Лицензия", parameters);
         if (result is null || result.Canceled || result.Data is not EquipmentLicense license)
             return;
         var version = ++_licenseVersion;
@@ -1352,8 +1384,7 @@ public partial class EquipmentForm : IDisposable
                 Notes = existing.Notes,
             };
         var parameters = new DialogParameters<EquipmentSoftwareDialog> { { dialog => dialog.Value, value } };
-        var dialog = await DialogService.ShowAsync<EquipmentSoftwareDialog>("Установленное ПО", parameters);
-        var result = await dialog.Result;
+        var result = await ShowDialogAsync<EquipmentSoftwareDialog>("Установленное ПО", parameters);
         if (result is null || result.Canceled || result.Data is not EquipmentSoftwareInstallation installation)
             return;
         var version = ++_softwareVersion;
@@ -1424,8 +1455,7 @@ public partial class EquipmentForm : IDisposable
                 Notes = existing.Notes,
             };
         var parameters = new DialogParameters<EquipmentAccountingDialog> { { dialog => dialog.Value, value } };
-        var dialog = await DialogService.ShowAsync<EquipmentAccountingDialog>("Бухгалтерский учёт", parameters);
-        var result = await dialog.Result;
+        var result = await ShowDialogAsync<EquipmentAccountingDialog>("Бухгалтерский учёт", parameters);
         if (result is null || result.Canceled || result.Data is not EquipmentAccounting accounting)
             return;
         var version = ++_accountingVersion;
@@ -1511,19 +1541,38 @@ public partial class EquipmentForm : IDisposable
         var current = _accounting.LastOrDefault(item => item.DateTo is null) ?? _accounting.LastOrDefault();
         if (current is not null)
         {
-            _model.OwnerId = current.OwnerId;
-            _model.TenantId = current.TenantId;
-            _model.DocumentReceiptOuId = current.ReceiptDocumentId;
-            _model.DocumentWriteOffId = current.WriteOffDocumentId;
-            _confirmedOwnerId = current.OwnerId;
-            SetDocumentOwner(current.OwnerId);
+            if (_model.OwnerId == _originalOwnerId)
+            {
+                _model.OwnerId = current.OwnerId;
+                _originalOwnerId = current.OwnerId;
+            }
+            if (_model.TenantId == _originalTenantId)
+            {
+                _model.TenantId = current.TenantId;
+                _originalTenantId = current.TenantId;
+            }
+            if (_model.DocumentReceiptOuId == _originalReceiptDocumentId)
+            {
+                _model.DocumentReceiptOuId = current.ReceiptDocumentId;
+                _originalReceiptDocumentId = current.ReceiptDocumentId;
+            }
+            if (_model.DocumentWriteOffId == _originalWriteOffDocumentId)
+            {
+                _model.DocumentWriteOffId = current.WriteOffDocumentId;
+                _originalWriteOffDocumentId = current.WriteOffDocumentId;
+            }
+            _confirmedOwnerId = _model.OwnerId;
+            SetDocumentOwner(_model.OwnerId);
         }
-        _canUseAccounting = await Service.CanUseAccountingAsync(_model.OwnerId);
+        var canUseAccounting = await Service.CanUseAccountingAsync(_model.OwnerId);
+        if (_disposed || version != _accountingVersion || _model.Id != equipmentId)
+            return;
+        _canUseAccounting = canUseAccounting;
     }
 
     private async Task OpenPhoneConfigAsync()
     {
-        if (!ShowPhoneConfig || _model is null || _saving)
+        if (!ShowPhoneConfig || !_canViewPhoneConfig || _model is null || _saving)
             return;
         if (IsModified)
         {
@@ -1694,8 +1743,7 @@ public partial class EquipmentForm : IDisposable
             { dialog => dialog.Servers, dialogServers },
             { dialog => dialog.Tests, dialogTests },
         };
-        var dialog = await DialogService.ShowAsync<EquipmentUpsDialog>("Подключение UPS", parameters);
-        var result = await dialog.Result;
+        var result = await ShowDialogAsync<EquipmentUpsDialog>("Подключение UPS", parameters);
         if (result is null || result.Canceled || result.Data is not EquipmentUpsDialogResult value)
             return;
         _saving = true;
@@ -1769,22 +1817,44 @@ public partial class EquipmentForm : IDisposable
 
     private async Task RefreshLocationDisplayDatesAsync()
     {
+        var operationVersion = _operationVersion;
+        var equipmentId = _model?.Id;
+        var localDates = await LoadLocalDatesAsync(GetDisplayDates(
+            _locations, _responsibles, _simCards, _networkNameHistory, _lastInventory));
+        if (_disposed || operationVersion != _operationVersion ||
+            equipmentId is not null && _model?.Id != equipmentId)
+            return;
         _localDates.Clear();
-        var dates = _locations.SelectMany(item => new[] { item.FromUtc, item.ChangedAtUtc })
-            .Concat(_responsibles.SelectMany(item => new[] { item.FromUtc, item.ToUtc ?? default, item.ChangedAtUtc }))
-            .Concat(_simCards.SelectMany(item => new[] { item.ActivatedAtUtc, item.ChangedAt }))
-            .Concat(_networkNameHistory.Select(item => item.ChangedAtUtc))
-            .Concat(_lastInventory is null ? Array.Empty<DateTime>() : new[] { _lastInventory.CheckedAt, _lastInventory.ChangedAt })
+        foreach (var item in localDates)
+            _localDates[item.Key] = item.Value;
+    }
+
+    private static IEnumerable<DateTime> GetDisplayDates(
+        IEnumerable<EquipmentLocationPeriod> locations,
+        IEnumerable<EquipmentResponsiblePeriod> responsibles,
+        IEnumerable<EquipmentSimCard> simCards,
+        IEnumerable<EquipmentNetworkNameHistory> networkNameHistory,
+        EquipmentActualInventory? lastInventory) =>
+        locations.SelectMany(item => new[] { item.FromUtc, item.ChangedAtUtc })
+            .Concat(responsibles.SelectMany(item => new[] { item.FromUtc, item.ToUtc ?? default, item.ChangedAtUtc }))
+            .Concat(simCards.SelectMany(item => new[] { item.ActivatedAtUtc, item.ChangedAt }))
+            .Concat(networkNameHistory.Select(item => item.ChangedAtUtc))
+            .Concat(lastInventory is null ? Array.Empty<DateTime>() : new[] { lastInventory.CheckedAt, lastInventory.ChangedAt })
             .Where(item => item != default)
             .Distinct();
+
+    private async Task<Dictionary<DateTime, DateTime>> LoadLocalDatesAsync(IEnumerable<DateTime> dates)
+    {
+        var result = new Dictionary<DateTime, DateTime>();
         foreach (var utc in dates)
         {
             var offset = await JS.InvokeAsync<int>(
                 "clayGridTimeZone.getOffsetMinutes", DateTime.SpecifyKind(utc, DateTimeKind.Utc).ToString("O"));
             if (_disposed)
-                return;
-            _localDates[utc] = utc.AddMinutes(offset);
+                break;
+            result[utc] = utc.AddMinutes(offset);
         }
+        return result;
     }
 
     private async Task<DateTime> ConvertLocalToUtcAsync(DateTime local)
@@ -1884,6 +1954,7 @@ public partial class EquipmentForm : IDisposable
             if (!IsCurrentSave(model, version))
                 return;
             _originalSnapshot = Snapshot();
+            SetAccountingBaseline();
             var warnings = new List<string>();
             if (ShowPhones && phonesModified)
             {
@@ -1901,6 +1972,8 @@ public partial class EquipmentForm : IDisposable
                 }
             }
             _originalPhones = ClonePhones(_phones);
+            if (!IsCurrentSave(model, version))
+                return;
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _pageCts.Token);
             if (!IsCurrentSave(model, version))
                 return;
@@ -1912,6 +1985,9 @@ public partial class EquipmentForm : IDisposable
             await LoadCurrentAsync(Id);
             if (warnings.Count > 0 && !_disposed)
                 _warningMessage = "Основные данные и телефонные связи сохранены. " + string.Join(" ", warnings);
+        }
+        catch (OperationCanceledException) when (_disposed || !IsCurrentSave(model, version))
+        {
         }
         catch (Microsoft.Data.SqlClient.SqlException)
         {
@@ -2007,8 +2083,36 @@ public partial class EquipmentForm : IDisposable
         Navigation.NavigateTo(context.TargetLocation);
     }
 
+    private async Task<DialogResult?> ShowDialogAsync<T>(string title, DialogParameters<T> parameters) where T : IComponent
+    {
+        var equipmentId = _model?.Id;
+        var operationVersion = _operationVersion;
+        var dialog = await DialogService.ShowAsync<T>(title, parameters);
+        var result = await dialog.Result;
+        if (equipmentId is not null &&
+            (!IsCurrent(operationVersion, equipmentId.Value) || _model?.Id != equipmentId))
+            return null;
+        return result;
+    }
+
+    private static EquipmentResponsiblePeriod CloneResponsible(EquipmentResponsiblePeriod item) => new()
+    {
+        EquipmentId = item.EquipmentId,
+        FromUtc = item.FromUtc,
+        ToUtc = item.ToUtc,
+        EmployeeId = item.EmployeeId,
+        EmployeeName = item.EmployeeName,
+        ReturnDate = item.ReturnDate,
+        Notes = item.Notes,
+        ChangedById = item.ChangedById,
+        ChangedByName = item.ChangedByName,
+        ChangedAtUtc = item.ChangedAtUtc,
+    };
+
     private async Task<bool> ConfirmAsync(string title, string message)
     {
+        var equipmentId = _model?.Id;
+        var operationVersion = _operationVersion;
         var parameters = new DialogParameters<ConfirmDialog>
         {
             { dialog => dialog.Title, title },
@@ -2018,7 +2122,8 @@ public partial class EquipmentForm : IDisposable
         };
         var dialog = await DialogService.ShowAsync<ConfirmDialog>(title, parameters);
         var result = await dialog.Result;
-        return result is not null && !result.Canceled;
+        return result is not null && !result.Canceled &&
+               (equipmentId is null || IsCurrent(operationVersion, equipmentId.Value) && _model?.Id == equipmentId);
     }
 
     /// <summary>Отменяет незавершённые операции формы.</summary>

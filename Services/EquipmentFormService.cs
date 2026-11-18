@@ -354,9 +354,10 @@ public class EquipmentFormService
             .Concat(current.Select(item => item.ConnectionEquipmentId))
             .Where(id => id is > 0)
             .Select(id => id!.Value)
-            .Append(equipmentId)
             .Distinct()
             .ToList();
+        if (equipmentIds.Count == 0)
+            equipmentIds.Add(equipmentId);
         var needsCcm = false;
         foreach (var phone in phones)
         {
@@ -378,7 +379,7 @@ public class EquipmentFormService
                 commandType: CommandType.Text) > 0;
             if (hasDeletedParameter)
                 parameters.Add("@Удаление", phone.Deleted ? 1 : 0, DbType.Int32);
-            parameters.Add("@RETURN_VALUE", dbType: DbType.Int32, direction: ParameterDirection.ReturnValue);
+            parameters.Add("@RETURN_VALUE", value: 0, dbType: DbType.Int32, direction: ParameterDirection.ReturnValue);
             await _db.ExecuteAsync(SQLQueries.SP_PhoneSync_Xorcom, parameters);
             var returnCode = parameters.Get<int>("@RETURN_VALUE");
             if (returnCode != 0)
@@ -390,7 +391,7 @@ public class EquipmentFormService
             {
                 var parameters = new Dapper.DynamicParameters();
                 parameters.Add("@КодОборудования", id, DbType.Int32);
-                parameters.Add("@RETURN_VALUE", dbType: DbType.Int32, direction: ParameterDirection.ReturnValue);
+                parameters.Add("@RETURN_VALUE", value: 0, dbType: DbType.Int32, direction: ParameterDirection.ReturnValue);
                 await _db.ExecuteAsync(SQLQueries.SP_PhoneSync_Ccm, parameters);
                 var returnCode = parameters.Get<int>("@RETURN_VALUE");
                 if (returnCode != 0)

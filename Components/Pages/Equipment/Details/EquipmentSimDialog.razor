@@ -10,6 +10,10 @@
 <MudDialog>
     <TitleContent>SIM-карта</TitleContent>
     <DialogContent>
+        @if (!string.IsNullOrWhiteSpace(_loadError))
+        {
+            <MudAlert Severity="Severity.Error">@_loadError</MudAlert>
+        }
         @if (!string.IsNullOrWhiteSpace(_error))
         {
             <MudAlert Severity="Severity.Error">@_error</MudAlert>
@@ -60,7 +64,7 @@
     </DialogContent>
     <DialogActions>
         <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="_loading" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || _loadError is not null)" />
     </DialogActions>
 </MudDialog>
 
@@ -78,6 +82,7 @@
     private readonly ClayTextBoxOptions _pukOptions = new() { MaxLength = 8, InputType = InputType.Password };
     private bool _loading = true;
     private bool _ready;
+    private string? _loadError;
     private string? _error;
 
     [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
@@ -134,7 +139,7 @@
             }
             catch (UnauthorizedAccessException ex)
             {
-                _error = ex.Message;
+                _loadError = ex.Message;
             }
         }
         _loading = false;
@@ -162,8 +167,7 @@
 
     private void Apply()
     {
-        if (_error is not null)
-            return;
+        _error = null;
         if (ActivatedDate is null || ActivatedTime is null)
         {
             _error = "Укажите дату и время активации.";
