@@ -2,6 +2,7 @@ using System.Data;
 using Clayzor.Lib.DALC;
 using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.Inventory;
+using Dapper;
 
 namespace Kesco.App.Web.Inventory.Services;
 
@@ -12,6 +13,97 @@ public class EquipmentFormService
 
     /// <summary>Создаёт сервис с подключением текущего Blazor circuit.</summary>
     public EquipmentFormService(DbManager db) => _db = db;
+
+    /// <summary>Читает независимые секции формы одним SQL batch на соединении текущего circuit.</summary>
+    public virtual async Task<EquipmentFormReadResult> GetFormDataAsync(EquipmentFormReadRequest request)
+    {
+        if (request.IncludeAccounts)
+            await EnsureAccountAccessAsync(false);
+
+        var statements = new List<string>();
+        void Add(string sql) => statements.Add(sql.TrimEnd().TrimEnd(';') + ";");
+
+        if (request.IncludePhones) Add(SQLQueries.SELECT_ТелефонныеНомераОборудования);
+        if (request.IncludeHotelPhoneCount) Add(SQLQueries.SELECT_UniquePhoneNumberInHotel);
+        Add(SQLQueries.SELECT_ОборудованиеРасположение);
+        Add(SQLQueries.SELECT_ОборудованиеСотрудники);
+        if (request.IncludeAccounts) Add(SQLQueries.SELECT_ОборудованиеУчётныеЗаписи);
+        if (request.IncludeComputer)
+        {
+            Add(SQLQueries.SELECT_Компьютеры_КодОборудования);
+            Add(SQLQueries.SELECT_СтандартныеКонфигурации);
+        }
+        if (request.IncludeSim)
+        {
+            Add(SQLQueries.SELECT_SIMКарты_КодОборудования);
+            Add(SQLQueries.SELECT_SIMКартыДопУслугиСотОператора_КодОборудования);
+            Add(SQLQueries.SELECT_ТипыДопУслугСотОператора);
+        }
+        if (request.IncludeLicense)
+        {
+            Add(SQLQueries.SELECT_Soft_КодОборудования);
+            Add(SQLQueries.SELECT_ТипыЛицензирования);
+        }
+        if (request.IncludeComputer) Add(SQLQueries.SELECT_ПО_КодОборудования);
+        Add(SQLQueries.SELECT_ОборудованиеБухУчета_КодОборудования);
+        Add(SQLQueries.SELECT_Routers_КодОборудования);
+        Add(SQLQueries.SELECT_КодОборудования_RouterInventory);
+        Add(SQLQueries.SELECT_ID_vwПодключенияUPS);
+        Add(SQLQueries.SELECT_ID_РеальноеРасположениеОборудования_ПоследнееРасположение);
+        Add(SQLQueries.SELECT_ID_ConnectedWorkNet);
+        if (request.IncludeNetworkName) Add(SQLQueries.SELECT_ОборудованиеСетевыеИмена);
+
+        var parameters = new
+        {
+            EquipmentId = request.EquipmentId,
+            ServerEquipmentId = request.EquipmentId,
+            ShowHistory = request.ShowServiceHistory ? 1 : 0,
+            ShowRequired = request.ShowCompanyRequiredServices ? 1 : 0
+        };
+
+        return await _db.RunAsync(async connection =>
+        {
+            using var reader = await connection.QueryMultipleAsync(string.Join("\n", statements), parameters);
+            var result = new EquipmentFormReadResult();
+            if (request.IncludePhones)
+                result.Phones = (await reader.ReadAsync<EquipmentPhoneLink>()).ToList();
+            if (request.IncludeHotelPhoneCount)
+                result.HotelPhoneCount = await reader.ReadFirstOrDefaultAsync<int>();
+            result.Locations = (await reader.ReadAsync<EquipmentLocationPeriod>()).ToList();
+            result.Responsibles = (await reader.ReadAsync<EquipmentResponsiblePeriod>()).ToList();
+            if (request.IncludeAccounts)
+                result.Accounts = (await reader.ReadAsync<EquipmentAccount>()).ToList();
+            if (request.IncludeComputer)
+            {
+                result.ComputerHistory = (await reader.ReadAsync<EquipmentComputerSnapshot>()).ToList();
+                foreach (var snapshot in result.ComputerHistory)
+                    snapshot.ParseDetails();
+                result.Configurations = (await reader.ReadAsync<StandardConfiguration>()).ToList();
+            }
+            if (request.IncludeSim)
+            {
+                result.SimCards = (await reader.ReadAsync<EquipmentSimCard>()).ToList();
+                result.SimServices = (await reader.ReadAsync<EquipmentSimService>()).ToList();
+                result.SimServiceTypes = (await reader.ReadAsync<SimServiceType>()).ToList();
+            }
+            if (request.IncludeLicense)
+            {
+                result.Licenses = (await reader.ReadAsync<EquipmentLicense>()).ToList();
+                result.LicenseTypes = (await reader.ReadAsync<LicenseType>()).ToList();
+            }
+            if (request.IncludeComputer)
+                result.SoftwareInstallations = (await reader.ReadAsync<EquipmentSoftwareInstallation>()).ToList();
+            result.Accounting = (await reader.ReadAsync<EquipmentAccounting>()).ToList();
+            result.RouterInfo = await reader.ReadFirstOrDefaultAsync<EquipmentRouterInfo>();
+            result.RouterInventory = (await reader.ReadAsync<EquipmentRouterInventoryItem>()).ToList();
+            result.UpsLinks = (await reader.ReadAsync<UpsServerLink>()).ToList();
+            result.LastInventory = await reader.ReadFirstOrDefaultAsync<EquipmentActualInventory>();
+            result.NetworkAttachmentCount = await reader.ReadFirstOrDefaultAsync<int>();
+            if (request.IncludeNetworkName)
+                result.NetworkNameHistory = (await reader.ReadAsync<EquipmentNetworkNameHistory>()).ToList();
+            return result;
+        });
+    }
 
     /// <summary>Загружает основную запись оборудования для редактирования.</summary>
     public virtual async Task<Equipment?> GetAsync(int id) =>

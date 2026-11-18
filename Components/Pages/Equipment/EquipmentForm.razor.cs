@@ -7,6 +7,7 @@ using Clayzor.Lib.Web.Controls.Components.Select;
 using Clayzor.Lib.Web.DBSelect.Documents;
 using Clayzor.Lib.Web.DBSelect.Equipment;
 using Kesco.App.Web.Inventory.Components.Pages.Equipment.Details;
+using Kesco.App.Web.Inventory.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.JSInterop;
@@ -337,60 +338,41 @@ public partial class EquipmentForm : IDisposable
                 : null;
             if (!IsCurrent(version, id))
                 return;
-            var phones = selectedType?.HasPhoneNumber > 0
-                ? await Service.GetPhonesAsync(id)
-                : (IReadOnlyList<EquipmentPhoneLink>)[];
-            var hotelPhoneCount = selectedModel is not null && phones.Count > 0
-                ? await Service.GetHotelPhoneCountAsync(id)
-                : 0;
+            var details = await Service.GetFormDataAsync(new EquipmentFormReadRequest
+            {
+                EquipmentId = id,
+                IncludePhones = selectedType?.HasPhoneNumber > 0,
+                IncludeHotelPhoneCount = selectedModel is not null && selectedType?.HasPhoneNumber > 0,
+                IncludeAccounts = canViewAccounts,
+                IncludeComputer = selectedType?.HasComputerCharacteristics > 0,
+                IncludeSim = selectedType?.HasSimCharacteristics > 0,
+                IncludeLicense = selectedType?.HasSoftwareCharacteristics > 0,
+                IncludeNetworkName = selectedType?.HasNetworkName > 0,
+                ShowServiceHistory = _showServiceHistory,
+                ShowCompanyRequiredServices = _showCompanyRequiredServices
+            });
             if (!IsCurrent(version, id))
                 return;
-            var locations = await Service.GetLocationsAsync(id);
-            if (!IsCurrent(version, id))
-                return;
-            var responsibles = await Service.GetResponsiblesAsync(id);
-            if (!IsCurrent(version, id))
-                return;
-            var accounts = canViewAccounts
-                ? await Service.GetAccountsAsync(id)
-                : (IReadOnlyList<EquipmentAccount>)[];
-            if (!IsCurrent(version, id))
-                return;
-            var computerHistory = selectedType?.HasComputerCharacteristics > 0
-                ? await Service.GetComputerHistoryAsync(id)
-                : (IReadOnlyList<EquipmentComputerSnapshot>)[];
-            var configurations = selectedType?.HasComputerCharacteristics > 0
-                ? await Service.GetStandardConfigurationsAsync()
-                : (IReadOnlyList<StandardConfiguration>)[];
-            var simCards = selectedType?.HasSimCharacteristics > 0
-                ? await Service.GetSimCardsAsync(id)
-                : (IReadOnlyList<EquipmentSimCard>)[];
-            var simServices = selectedType?.HasSimCharacteristics > 0
-                ? await Service.GetSimServicesAsync(id, _showServiceHistory, _showCompanyRequiredServices)
-                : (IReadOnlyList<EquipmentSimService>)[];
-            var simServiceTypes = selectedType?.HasSimCharacteristics > 0
-                ? await Service.GetSimServiceTypesAsync()
-                : (IReadOnlyList<SimServiceType>)[];
-            var licenses = selectedType?.HasSoftwareCharacteristics > 0
-                ? await Service.GetLicensesAsync(id)
-                : (IReadOnlyList<EquipmentLicense>)[];
-            var licenseTypes = selectedType?.HasSoftwareCharacteristics > 0
-                ? await Service.GetLicenseTypesAsync()
-                : (IReadOnlyList<LicenseType>)[];
-            var softwareInstallations = selectedType?.HasComputerCharacteristics > 0
-                ? await Service.GetSoftwareInstallationsAsync(id)
-                : (IReadOnlyList<EquipmentSoftwareInstallation>)[];
-            var accounting = await Service.GetAccountingAsync(id);
-            var routerInfo = await Service.GetRouterInfoAsync(id);
-            var routerInventory = await Service.GetRouterInventoryAsync(id);
-            var upsLinks = await Service.GetUpsLinksAsync(id);
-            var lastInventory = await Service.GetLastInventoryAsync(id);
-            var networkAttachmentCount = await Service.GetNetworkAttachmentCountAsync(id);
-            var networkNameHistory = selectedType?.HasNetworkName > 0
-                ? await Service.GetNetworkNameHistoryAsync(id)
-                : (IReadOnlyList<EquipmentNetworkNameHistory>)[];
-            if (!IsCurrent(version, id))
-                return;
+            var phones = details.Phones;
+            var hotelPhoneCount = details.HotelPhoneCount;
+            var locations = details.Locations;
+            var responsibles = details.Responsibles;
+            var accounts = details.Accounts;
+            var computerHistory = details.ComputerHistory;
+            var configurations = details.Configurations;
+            var simCards = details.SimCards;
+            var simServices = details.SimServices;
+            var simServiceTypes = details.SimServiceTypes;
+            var licenses = details.Licenses;
+            var licenseTypes = details.LicenseTypes;
+            var softwareInstallations = details.SoftwareInstallations;
+            var accounting = details.Accounting;
+            var routerInfo = details.RouterInfo;
+            var routerInventory = details.RouterInventory;
+            var upsLinks = details.UpsLinks;
+            var lastInventory = details.LastInventory;
+            var networkAttachmentCount = details.NetworkAttachmentCount;
+            var networkNameHistory = details.NetworkNameHistory;
             DateTime? localWriteOff = null;
             if (model.WriteOffAtUtc is not null)
             {
