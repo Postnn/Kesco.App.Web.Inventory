@@ -117,9 +117,50 @@
                                         SelectedItemChanged="OnModelChangedAsync"
                                         ViewItem="ModelViewItem"
                                         Options="_modelOptions" />
-                            @if (!string.IsNullOrWhiteSpace(_selectedModel?.PartNumber))
+                            @if (_selectedModel is not null && _model.ModelId is not null)
                             {
-                                <div class="equipment-form-model-meta">PN: @_selectedModel.PartNumber</div>
+                                if (!string.IsNullOrWhiteSpace(_selectedModel.PartNumber))
+                                {
+                                    <div class="equipment-form-model-meta">PN: @_selectedModel.PartNumber</div>
+                                }
+                                if (_selectedModel.IsMultimedia)
+                                {
+                                    <div class="equipment-form-model-meta">Мультимедиа</div>
+                                }
+                                if (_selectedModel.MonitorSize > 0)
+                                {
+                                    <div class="equipment-form-model-meta">Диагональ: @_selectedModel.MonitorSize.ToString("0.0")</div>
+                                }
+                                if (!string.IsNullOrWhiteSpace(_selectedModel.Cpu))
+                                {
+                                    <div class="equipment-form-model-meta">CPU: @_selectedModel.Cpu</div>
+                                }
+                                if (_selectedModel.NetworkInterfaces > 0)
+                                {
+                                    <div class="equipment-form-model-meta">Net: @_selectedModel.NetworkInterfaces @_selectedModel.NetworkName</div>
+                                }
+                                if (_selectedModel.MemoryTypeId > 0 && !string.IsNullOrWhiteSpace(_selectedModel.MemoryTypeName))
+                                {
+                                    <div class="equipment-form-model-meta">
+                                        Тип памяти: @_selectedModel.MemoryTypeName
+                                        @if (_selectedModel.MemoryBanks > 0)
+                                        {
+                                            <text>; кол-во банков: @_selectedModel.MemoryBanks</text>
+                                        }
+                                    </div>
+                                }
+                                if (!string.IsNullOrWhiteSpace(_selectedModel.Driver))
+                                {
+                                    <div class="equipment-form-model-meta">Драйвер: @_selectedModel.Driver</div>
+                                }
+                                if (!string.IsNullOrWhiteSpace(_selectedModel.LifeTime))
+                                {
+                                    <div class="equipment-form-model-meta">Ресурс: @_selectedModel.LifeTime</div>
+                                }
+                                if (!string.IsNullOrWhiteSpace(_selectedModel.Description))
+                                {
+                                    <div class="equipment-form-model-meta">@_selectedModel.Description</div>
+                                }
                             }
                         </div>
                     </div>

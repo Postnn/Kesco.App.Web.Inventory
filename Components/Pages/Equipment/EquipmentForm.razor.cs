@@ -218,17 +218,18 @@ public partial class EquipmentForm : IDisposable
     private string Title => _model is null ? $"Оборудование #{Id}" : $"[{Id}] {_model.EquipmentTypeName} {_model.ModelName}";
     private bool IsModified => _loaded && _model is not null && Snapshot() != _originalSnapshot;
     private bool CanSave => IsModified && _canEdit && !_loading && !_saving;
-    private bool ShowNetworkName => _selectedType?.HasNetworkName > 0;
-    private bool ShowPhonePool => _selectedType?.HasPhoneNumber > 0;
-    private bool ShowPhones => _selectedType?.HasPhoneNumber > 0;
+    private bool HasSelectedModel => _model?.ModelId is > 0 && _selectedModel is not null;
+    private bool ShowNetworkName => HasSelectedModel && _selectedType?.HasNetworkName > 0;
+    private bool ShowPhones => HasSelectedModel && _selectedType?.HasPhoneNumber > 0;
+    private bool ShowPhonePool => ShowPhones && _selectedType?.Id == 30;
     private bool ShowPhoneConfig => _selectedType?.Id == 30;
     private bool ShowComputer => _selectedType?.HasComputerCharacteristics > 0;
     private bool ShowSim => _selectedType?.HasSimCharacteristics > 0;
     private bool ShowLicense => _selectedType?.HasSoftwareCharacteristics > 0;
     private bool ShowRouter => _routerInfo is not null || _routerInventory.Count > 0;
     private bool PhonesModified => JsonSerializer.Serialize(_phones) != JsonSerializer.Serialize(_originalPhones);
-    private bool ShowCamera => _selectedType?.HasMonitorCharacteristics > 0;
-    private int MacCount => Math.Min(3, _selectedModel?.NetworkInterfaces ?? 0);
+    private bool ShowCamera => ShowPhones && _selectedType?.Id == 30;
+    private int MacCount => HasSelectedModel ? Math.Min(3, _selectedModel!.NetworkInterfaces) : 0;
     private string? ChangedByUrl => _model?.ChangedById > 0 && !string.IsNullOrWhiteSpace(Configuration["URI_user_form"])
         ? EquipmentIns.BuildEditUrl(Configuration["URI_user_form"]!, _model.ChangedById)
         : null;
@@ -459,6 +460,7 @@ public partial class EquipmentForm : IDisposable
         if (id is null)
         {
             _model.EquipmentTypeId = null;
+            UpdateOptions();
             return;
         }
         if (_selectedType?.Id == id)
@@ -500,10 +502,9 @@ public partial class EquipmentForm : IDisposable
             return;
         _modelVersion++;
         _model.ModelId = id;
-        if (id is null)
-            return;
-        if (_selectedModel?.Id != id)
+        if (id is not null && _selectedModel?.Id != id)
             _selectedModel = null;
+        UpdateOptions();
     }
 
     private async Task OnModelChangedAsync(EquipmentModel? model)
@@ -513,7 +514,8 @@ public partial class EquipmentForm : IDisposable
         var version = ++_modelVersion;
         _selectedModel = model;
         _model.ModelId = model.Id;
-        if (_model.EquipmentTypeId != model.EquipmentTypeId)
+        var typeChanged = _model.EquipmentTypeId != model.EquipmentTypeId;
+        if (typeChanged)
         {
             _model.EquipmentTypeId = model.EquipmentTypeId;
             ModelSource.Filter.EquipmentTypeId = model.EquipmentTypeId;
@@ -524,6 +526,8 @@ public partial class EquipmentForm : IDisposable
         }
         ClearHiddenFeatures();
         UpdateOptions();
+        if (typeChanged)
+            await LoadPhonesForCurrentTypeAsync();
     }
 
     private async Task OnOwnerChangedAsync(int? id)
@@ -1896,7 +1900,7 @@ public partial class EquipmentForm : IDisposable
     {
         if (_model is null)
             return;
-        _snOptions.Required = _selectedType?.IsSerialNumberRequired > 0;
+        _snOptions.Required = HasSelectedModel && _selectedType?.IsSerialNumberRequired > 0;
         foreach (var options in new[] { _typeOptions, _modelOptions, _phonePoolOptions, _phoneOptions, _ownerOptions, _receiptDocumentOptions, _writeOffDocumentOptions, _shipperOptions, _tenantOptions })
             options.ReadOnly = !_canEdit;
         foreach (var options in new ClayInputOptions[] { _writeOffDateOptions, _writeOffTimeOptions, _snOptions, _networkNameOptions, _macOptions, _descriptionOptions })
