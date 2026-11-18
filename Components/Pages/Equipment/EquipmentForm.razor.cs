@@ -25,7 +25,7 @@ public partial class EquipmentForm : IDisposable
     private const int OnHandsLocationId = 55;
 
     private readonly CancellationTokenSource _pageCts = new();
-    private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "equipment-form" };
+    private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "equipment-form", MaxWidth = "100%" };
     private readonly ClaySelectOptions _typeOptions = new() { Required = true, AutoSelectSingle = true, MaxItems = 300, Placeholder = "Введите тип оборудования" };
     private readonly ClaySelectOptions _modelOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите модель" };
     private readonly ClaySelectOptions _phonePoolOptions = new() { AutoSelectSingle = true, Placeholder = "Введите телефонный пул" };
@@ -139,6 +139,7 @@ public partial class EquipmentForm : IDisposable
     private List<UpsServerLink> _upsLinks = [];
     private int? _upsToAdd;
     private readonly ClaySelectOptions _upsSelectOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите UPS" };
+    private readonly ClayToolbarButtonOptions _upsAddButtonOptions = new() { Text = "Подключить" };
     private EquipmentActualInventory? _lastInventory;
     private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
     private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Введите документ поступления" };
@@ -148,7 +149,7 @@ public partial class EquipmentForm : IDisposable
     private readonly ClayTextBoxOptions _snOptions = new() { MaxLength = 50 };
     private readonly ClayTextBoxOptions _networkNameOptions = new() { MaxLength = 50 };
     private readonly ClayTextBoxOptions _macOptions = new() { MaxLength = 17 };
-    private readonly ClayTextAreaOptions _descriptionOptions = new() { MaxLength = 300, Lines = 3 };
+    private readonly ClayTextAreaOptions _descriptionOptions = new() { MaxLength = 300, Lines = 2 };
     private readonly ClayDatePickerOptions _writeOffDateOptions = new();
     private readonly ClayTimeOptions _writeOffTimeOptions = new();
     private readonly ClayToolbarButtonOptions _okOptions = new() { Text = "OK", Icon = Icons.Material.Filled.Check, Title = "Сохранить и закрыть", Color = Color.Primary, Variant = Variant.Filled };

@@ -19,7 +19,7 @@
                         <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить компонент RAM" OnClick="() => Ram.RemoveAt(index)" />
                     </div>
                 }
-                <MudButton OnClick="() => Ram.Add(0)">Добавить RAM</MudButton>
+                <ClayToolbarButton Options="_addRamButtonOptions" OnClick="() => Ram.Add(0)" />
             </div>
         </div>
         <div class="equipment-ins-row">
@@ -33,7 +33,7 @@
                         <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить компонент HD" OnClick="() => Hd.RemoveAt(index)" />
                     </div>
                 }
-                <MudButton OnClick="() => Hd.Add(0)">Добавить HD</MudButton>
+                <ClayToolbarButton Options="_addHdButtonOptions" OnClick="() => Hd.Add(0)" />
             </div>
         </div>
         <div class="equipment-ins-row">
@@ -47,7 +47,7 @@
                         <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить компонент SSD" OnClick="() => Ssd.RemoveAt(index)" />
                     </div>
                 }
-                <MudButton OnClick="() => Ssd.Add(0)">Добавить SSD</MudButton>
+                <ClayToolbarButton Options="_addSsdButtonOptions" OnClick="() => Ssd.Add(0)" />
             </div>
         </div>
         <div class="equipment-ins-row">
@@ -78,12 +78,17 @@
         </div>
     </DialogContent>
     <DialogActions>
-        <MudButton OnClick="Cancel">Отмена</MudButton>
-        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply">OK</MudButton>
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" />
     </DialogActions>
 </MudDialog>
 
 @code {
+    private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
+    private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
+    private readonly ClayToolbarButtonOptions _addRamButtonOptions = new() { Text = "Добавить RAM" };
+    private readonly ClayToolbarButtonOptions _addHdButtonOptions = new() { Text = "Добавить HD" };
+    private readonly ClayToolbarButtonOptions _addSsdButtonOptions = new() { Text = "Добавить SSD" };
     private readonly ClayNumberOptions _integerOptions = new() { Min = 0, Precision = 0 };
     private readonly ClayNumberOptions _diskOptions = new() { Min = 0, Precision = 2, Step = 0.5m };
     private readonly ClayTextBoxOptions _licenseOptions = new() { MaxLength = 50 };

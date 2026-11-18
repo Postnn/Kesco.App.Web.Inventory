@@ -104,14 +104,14 @@
                         <div class="equipment-ins-row">
                             <span class="equipment-ins-label">MAC:</span>
                             <div class="equipment-ins-mac">
-                                <ClayTextBox Value="_model.MacAddress" ValueChanged="@(value => OnMacChanged(value, 1))" Options="_macOptions" />
+                                <ClayTextBox Value="@_model.MacAddress" ValueChanged="@(value => OnMacChanged(value, 1))" Options="_macOptions" />
                                 @if (MacCount > 1)
                                 {
-                                    <ClayTextBox Value="_model.MacAddress2" ValueChanged="@(value => OnMacChanged(value, 2))" Options="_macOptions" />
+                                    <ClayTextBox Value="@_model.MacAddress2" ValueChanged="@(value => OnMacChanged(value, 2))" Options="_macOptions" />
                                 }
                                 @if (MacCount > 2)
                                 {
-                                    <ClayTextBox Value="_model.MacAddressIlo" ValueChanged="@(value => OnMacChanged(value, 3))" Options="_macOptions" />
+                                    <ClayTextBox Value="@_model.MacAddressIlo" ValueChanged="@(value => OnMacChanged(value, 3))" Options="_macOptions" />
                                 }
                             </div>
                         </div>

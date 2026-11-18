@@ -1,5 +1,6 @@
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Detail
+@using Clayzor.Lib.Web.Controls.Components.Form
 
 <MudDialog>
     <TitleContent>История сетевых имён</TitleContent>
@@ -11,11 +12,12 @@
                         Options="_gridOptions" />
     </DialogContent>
     <DialogActions>
-        <MudButton OnClick="Close">Закрыть</MudButton>
+        <ClayToolbarButton Options="_closeButtonOptions" OnClick="Close" />
     </DialogActions>
 </MudDialog>
 
 @code {
+    private readonly ClayToolbarButtonOptions _closeButtonOptions = new() { Text = "Закрыть" };
     private readonly ClayDetailGridOptions _gridOptions = new() { EmptyText = "История сетевых имён отсутствует" };
     private IReadOnlyList<ClayDetailColumn<EquipmentNetworkNameHistory>> _columns = null!;
 

@@ -29,9 +29,9 @@
         <ClayToolbar>
             <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
+            <ClayToolbarButton Options="_copyOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="CopyAsync" />
             <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="RefreshAsync" />
             <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
-            <ClayToolbarButton Options="_copyOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="CopyAsync" />
             @if (_networkAttachmentCount == 0)
             {
                 <ClayToolbarButton Options="_attachOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SetNetworkAttachmentAsync(true))" />
@@ -69,25 +69,29 @@
             }
 
             <MudForm @ref="_form">
-                <div class="equipment-ins-fields">
-                    <div class="equipment-ins-row">
-                        <span class="equipment-ins-label">Списано:</span>
-                        <div class="equipment-ins-date">
-                            <ClayDatePicker @bind-Value="_writeOffDate" Options="_writeOffDateOptions" />
+                <div class="equipment-form-fields">
+                    <div class="equipment-form-pair equipment-form-writeoff-row">
+                        <span class="equipment-form-label">SN:</span>
+                        <ClayTextBox @bind-Value="_model.SerialNumber" Options="_snOptions" />
+                        <span class="equipment-form-label">Списано:</span>
+                        <div class="equipment-form-writeoff">
+                            <div class="equipment-form-writeoff-date">
+                                <ClayDatePicker @bind-Value="_writeOffDate" Options="_writeOffDateOptions" />
+                            </div>
                             <ClayTime @bind-Value="_writeOffTime" Options="_writeOffTimeOptions" />
+                            <span class="equipment-form-label">№</span>
+                            <div class="equipment-form-writeoff-document">
+                                <ClaySelect TItem="DocumentLookup" TValue="int?"
+                                            DataSource="WriteOffDocumentSource"
+                                            ValueSelector="@(item => (int?)item.Id)"
+                                            TextSelector="@(item => item.DisplayName)"
+                                            @bind-Value="_model.DocumentWriteOffId"
+                                            Options="_writeOffDocumentOptions" />
+                            </div>
                         </div>
                     </div>
-                    <div class="equipment-ins-row">
-                        <span class="equipment-ins-label">Док-т списания:</span>
-                        <ClaySelect TItem="DocumentLookup" TValue="int?"
-                                    DataSource="WriteOffDocumentSource"
-                                    ValueSelector="@(item => (int?)item.Id)"
-                                    TextSelector="@(item => item.DisplayName)"
-                                    @bind-Value="_model.DocumentWriteOffId"
-                                    Options="_writeOffDocumentOptions" />
-                    </div>
-                    <div class="equipment-ins-row">
-                        <span class="equipment-ins-label">Тип:</span>
+                    <div class="equipment-form-pair">
+                        <span class="equipment-form-label">Тип:</span>
                         <div>
                             <ClaySelect TItem="EquipmentType" TValue="int?"
                                         DataSource="EquipmentTypeSource"
@@ -101,35 +105,61 @@
                             <ClayCheckbox State="_sortTypesByName" StateChanged="OnTypeSortChanged"
                                           Label="сортировать типы в списке по алфавиту" />
                         </div>
+                        <span class="equipment-form-label">Модель:</span>
+                        <div>
+                            <ClaySelect TItem="EquipmentModel" TValue="int?"
+                                        DataSource="ModelSource"
+                                        ValueSelector="@(item => (int?)item.Id)"
+                                        TextSelector="@(item => item.Name)"
+                                        Value="_model.ModelId"
+                                        ValueChanged="OnModelIdChanged"
+                                        SelectedItem="_selectedModel"
+                                        SelectedItemChanged="OnModelChangedAsync"
+                                        ViewItem="ModelViewItem"
+                                        Options="_modelOptions" />
+                            @if (!string.IsNullOrWhiteSpace(_selectedModel?.PartNumber))
+                            {
+                                <div class="equipment-form-model-meta">PN: @_selectedModel.PartNumber</div>
+                            }
+                        </div>
                     </div>
-                    <div class="equipment-ins-row">
-                        <span class="equipment-ins-label">Модель:</span>
-                        <ClaySelect TItem="EquipmentModel" TValue="int?"
-                                    DataSource="ModelSource"
-                                    ValueSelector="@(item => (int?)item.Id)"
-                                    TextSelector="@(item => item.Name)"
-                                    Value="_model.ModelId"
-                                    ValueChanged="OnModelIdChanged"
-                                    SelectedItem="_selectedModel"
-                                    SelectedItemChanged="OnModelChangedAsync"
-                                    ViewItem="ModelViewItem"
-                                    Options="_modelOptions" />
-                    </div>
-                    @if (!string.IsNullOrWhiteSpace(_selectedModel?.PartNumber))
+                    @if (ShowNetworkName || MacCount > 0)
                     {
-                        <div class="equipment-ins-row">
-                            <span class="equipment-ins-label">PN:</span>
-                            <span>@_selectedModel.PartNumber</span>
+                        <div class="equipment-form-pair">
+                            <span class="equipment-form-label">@(ShowNetworkName ? "Сетевое имя:" : string.Empty)</span>
+                            <div>
+                                @if (ShowNetworkName)
+                                {
+                                    <ClayTextBox @bind-Value="_model.NetworkName" Options="_networkNameOptions" />
+                                }
+                            </div>
+                            <span class="equipment-form-label">@(MacCount > 0 ? "MAC:" : string.Empty)</span>
+                            <div class="equipment-form-mac">
+                                @if (MacCount > 0)
+                                {
+                                    <ClayTextBox Value="@_model.MacAddress" ValueChanged="@(value => OnMacChanged(value, 1))" Options="_macOptions" />
+                                    @if (MacCount > 1)
+                                    {
+                                        <span class="equipment-form-label">MAC 2:</span>
+                                        <ClayTextBox Value="@_model.MacAddress2" ValueChanged="@(value => OnMacChanged(value, 2))" Options="_macOptions" />
+                                    }
+                                    @if (MacCount > 2)
+                                    {
+                                        <span class="equipment-form-label">MAC ILO:</span>
+                                        <ClayTextBox Value="@_model.MacAddressIlo" ValueChanged="@(value => OnMacChanged(value, 3))" Options="_macOptions" />
+                                    }
+                                }
+                            </div>
                         </div>
                     }
-                    <div class="equipment-ins-row">
-                        <span class="equipment-ins-label">SN:</span>
-                        <ClayTextBox @bind-Value="_model.SerialNumber" Options="_snOptions" />
+                    <div class="equipment-form-single equipment-form-top">
+                        <span class="equipment-form-label">Примечания:</span>
+                        <ClayTextArea @bind-Value="_model.Description" Options="_descriptionOptions" />
                     </div>
                     @if (ShowPhonePool)
                     {
-                        <div class="equipment-ins-row">
-                            <span class="equipment-ins-label">Телефонный пул:</span>
+                        <div class="equipment-form-single">
+                            <span class="equipment-form-label">Пул телефона:</span>
                             <ClaySelect TItem="PhonePoolLookup" TValue="int?"
                                         DataSource="PhonePoolSource"
                                         ValueSelector="@(item => (int?)item.Id)"
@@ -140,38 +170,14 @@
                     }
                     @if (ShowCamera)
                     {
-                        <div class="equipment-ins-row">
-                            <span class="equipment-ins-label">Камера:</span>
+                        <div class="equipment-form-single">
+                            <span class="equipment-form-label">Камера:</span>
                             <ClayCheckbox State="@(_model.CameraIsConnected != 0)" StateChanged="OnCameraChanged"
                                           ReadOnly="@(!_canEdit)" Label="подключена камера" />
                         </div>
                     }
-                    @if (ShowNetworkName)
-                    {
-                        <div class="equipment-ins-row">
-                            <span class="equipment-ins-label">Сетевое имя:</span>
-                            <ClayTextBox @bind-Value="_model.NetworkName" Options="_networkNameOptions" />
-                        </div>
-                    }
-                    @if (MacCount > 0)
-                    {
-                        <div class="equipment-ins-row">
-                            <span class="equipment-ins-label">MAC:</span>
-                            <div class="equipment-ins-mac">
-                                <ClayTextBox Value="_model.MacAddress" ValueChanged="@(value => OnMacChanged(value, 1))" Options="_macOptions" />
-                                @if (MacCount > 1)
-                                {
-                                    <ClayTextBox Value="_model.MacAddress2" ValueChanged="@(value => OnMacChanged(value, 2))" Options="_macOptions" />
-                                }
-                                @if (MacCount > 2)
-                                {
-                                    <ClayTextBox Value="_model.MacAddressIlo" ValueChanged="@(value => OnMacChanged(value, 3))" Options="_macOptions" />
-                                }
-                            </div>
-                        </div>
-                    }
-                    <div class="equipment-ins-row">
-                        <span class="equipment-ins-label">Владелец:</span>
+                    <div class="equipment-form-pair">
+                        <span class="equipment-form-label">Владелец:</span>
                         <ClaySelect TItem="PersonLookup" TValue="int?"
                                     DataSource="PersonSource"
                                     ValueSelector="@(item => (int?)item.Id)"
@@ -179,29 +185,7 @@
                                     Value="_model.OwnerId"
                                     ValueChanged="OnOwnerChangedAsync"
                                     Options="_ownerOptions" />
-                    </div>
-                    <div class="equipment-ins-row">
-                        <span class="equipment-ins-label">Док-т поступления:</span>
-                        <ClaySelect TItem="DocumentLookup" TValue="int?"
-                                    DataSource="ReceiptDocumentSource"
-                                    ValueSelector="@(item => (int?)item.Id)"
-                                    TextSelector="@(item => item.DisplayName)"
-                                    Value="_model.DocumentReceiptOuId"
-                                    ValueChanged="OnReceiptDocumentChangedAsync"
-                                    Options="_receiptDocumentOptions" />
-                    </div>
-                    <div class="equipment-ins-row">
-                        <span class="equipment-ins-label">Поставщик:</span>
-                        <ClaySelect TItem="PersonLookup" TValue="int?"
-                                    DataSource="PersonSource"
-                                    ValueSelector="@(item => (int?)item.Id)"
-                                    TextSelector="@(item => item.Name)"
-                                    Value="_model.ShipperId"
-                                    ValueChanged="OnShipperChanged"
-                                    Options="_shipperOptions" />
-                    </div>
-                    <div class="equipment-ins-row">
-                        <span class="equipment-ins-label">Арендатор:</span>
+                        <span class="equipment-form-label">Арендатор:</span>
                         <ClaySelect TItem="PersonLookup" TValue="int?"
                                     DataSource="PersonSource"
                                     ValueSelector="@(item => (int?)item.Id)"
@@ -209,9 +193,23 @@
                                     @bind-Value="_model.TenantId"
                                     Options="_tenantOptions" />
                     </div>
-                    <div class="equipment-ins-row equipment-ins-row-top equipment-ins-description">
-                        <span class="equipment-ins-label">Примечание оборудования:</span>
-                        <ClayTextArea @bind-Value="_model.Description" Options="_descriptionOptions" />
+                    <div class="equipment-form-pair">
+                        <span class="equipment-form-label">Документ поступления:</span>
+                        <ClaySelect TItem="DocumentLookup" TValue="int?"
+                                    DataSource="ReceiptDocumentSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.DisplayName)"
+                                    Value="_model.DocumentReceiptOuId"
+                                    ValueChanged="OnReceiptDocumentChangedAsync"
+                                    Options="_receiptDocumentOptions" />
+                        <span class="equipment-form-label">Поставщик:</span>
+                        <ClaySelect TItem="PersonLookup" TValue="int?"
+                                    DataSource="PersonSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.Name)"
+                                    Value="_model.ShipperId"
+                                    ValueChanged="OnShipperChanged"
+                                    Options="_shipperOptions" />
                     </div>
                 </div>
             </MudForm>
@@ -409,7 +407,7 @@
                             TextSelector="@(item => item.Name)"
                             @bind-Value="_upsToAdd"
                             Options="_upsSelectOptions" />
-                <MudButton OnClick="AddUpsLinkAsync" Disabled="@(!_canEdit || _upsToAdd is null || _saving)">Подключить</MudButton>
+                <ClayToolbarButton Options="_upsAddButtonOptions" OnClick="AddUpsLinkAsync" Disabled="@(!_canEdit || _upsToAdd is null || _saving)" />
             </div>
             <ClayDetailGrid TItem="UpsServerLink"
                             Title="Подключённые UPS"
@@ -446,7 +444,10 @@
         }
     </ChildContent>
     <Footer>
-        <ClayChanged ChangedById="_model?.ChangedById" ChangedAt="_model?.ChangedAtUtc" ChangedByUrl="ChangedByUrl" />
+        <ClayChanged ChangedById="_model?.ChangedById"
+                     ChangedByName="@_model?.ChangedByName"
+                     ChangedAt="_model?.ChangedAtUtc"
+                     ChangedByUrl="@ChangedByUrl" />
     </Footer>
 </ClayEntityForm>
 

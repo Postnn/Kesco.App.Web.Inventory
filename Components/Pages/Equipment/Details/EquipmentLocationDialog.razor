@@ -5,6 +5,8 @@
 @using Clayzor.Lib.Web.DBSelect.Locations
 @inject LocationSelectDataSource LocationSource
 @inject EmployeeSelectDataSource EmployeeSource
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
 
 <MudDialog>
     <TitleContent>@(IsEdit ? "Изменение расположения" : "Новое расположение")</TitleContent>
@@ -37,6 +39,7 @@
                             DataSource="EmployeeSource"
                             ValueSelector="@(item => (int?)item.Id)"
                             TextSelector="@(item => item.Name)"
+                            ViewItem="EmployeeViewItem"
                             @bind-Value="EmployeeId"
                             Options="_employeeOptions" />
             </div>
@@ -51,12 +54,14 @@
         </div>
     </DialogContent>
     <DialogActions>
-        <MudButton OnClick="Cancel">Отмена</MudButton>
-        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply">OK</MudButton>
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" />
     </DialogActions>
 </MudDialog>
 
 @code {
+    private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
+    private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
     private readonly ClaySelectOptions _locationOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите расположение" };
     private readonly ClaySelectOptions _employeeOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите сотрудника" };
     private readonly ClayDatePickerOptions _fromDateOptions = new() { Required = true };
@@ -90,6 +95,12 @@
 
     /// <summary>Примечания.</summary>
     [Parameter] public string Notes { get; set; } = string.Empty;
+
+    private Func<Employee, Task>? EmployeeViewItem =>
+        !string.IsNullOrWhiteSpace(Configuration["URI_user_form"]) ? OpenEmployeeViewAsync : null;
+
+    private async Task OpenEmployeeViewAsync(Employee employee) =>
+        await JS.InvokeVoidAsync("open", EquipmentIns.BuildEditUrl(Configuration["URI_user_form"]!, employee.Id), "_blank");
 
     /// <inheritdoc />
     protected override void OnParametersSet()

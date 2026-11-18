@@ -1,5 +1,6 @@
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Detail
+@using Clayzor.Lib.Web.Controls.Components.Form
 @using Clayzor.Lib.Web.Controls.Components.Select
 @using Clayzor.Lib.Web.DBSelect.Equipment
 @inject IServiceProvider Services
@@ -16,7 +17,7 @@
                         TextSelector="@(item => item.Name)"
                         @bind-Value="_serverToAdd"
                         Options="_serverOptions" />
-            <MudButton OnClick="AddServer">Добавить</MudButton>
+            <ClayToolbarButton Options="_addButtonOptions" OnClick="AddServer" />
         </div>
         <ClayDetailGrid TItem="UpsServerLink"
                         Title="Серверы"
@@ -40,12 +41,15 @@
         </ClayDetailGrid>
     </DialogContent>
     <DialogActions>
-        <MudButton OnClick="Cancel">Отмена</MudButton>
-        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply">OK</MudButton>
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" />
     </DialogActions>
 </MudDialog>
 
 @code {
+    private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
+    private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
+    private readonly ClayToolbarButtonOptions _addButtonOptions = new() { Text = "Добавить" };
     private readonly ClaySelectOptions _serverOptions = new() { AutoSelectSingle = true, Placeholder = "Введите сервер" };
     private readonly ClayDetailGridOptions _serverGridOptions = new() { EmptyText = "Нет серверов" };
     private readonly ClayDetailGridOptions _testGridOptions = new() { EmptyText = "Нет тестов", AddTooltip = "Добавить тест" };

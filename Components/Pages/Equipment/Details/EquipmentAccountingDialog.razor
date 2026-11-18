@@ -70,12 +70,14 @@
         </div>
     </DialogContent>
     <DialogActions>
-        <MudButton OnClick="Cancel">Отмена</MudButton>
-        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply">OK</MudButton>
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" />
     </DialogActions>
 </MudDialog>
 
 @code {
+    private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
+    private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
     private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
     private readonly ClaySelectOptions _tenantOptions = new() { AutoSelectSingle = true, Placeholder = "Введите арендатора" };
     private readonly ClaySelectOptions _documentOptions = new() { AutoSelectSingle = true, Placeholder = "Введите документ" };

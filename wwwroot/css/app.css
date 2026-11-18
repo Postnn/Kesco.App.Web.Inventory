@@ -124,8 +124,107 @@
 
 .equipment-ins-date {
     display: grid;
-    grid-template-columns: minmax(160px, 220px) 150px;
+    grid-template-columns: minmax(160px, 220px) max-content;
     gap: 8px;
+}
+
+.equipment-form-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.equipment-form-pair {
+    display: grid;
+    grid-template-columns: 140px minmax(0, 1fr) 140px minmax(0, 1fr);
+    gap: 6px 8px;
+    align-items: center;
+}
+
+.equipment-form-single {
+    display: grid;
+    grid-template-columns: 140px minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+}
+
+.equipment-form-pair > *,
+.equipment-form-single > * {
+    min-width: 0;
+}
+
+.equipment-form-label {
+    white-space: nowrap;
+}
+
+.equipment-form-top {
+    align-items: start;
+}
+
+.equipment-form-top > .equipment-form-label {
+    padding-top: 8px;
+}
+
+.equipment-form-writeoff {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+}
+
+.equipment-form-writeoff-date {
+    flex: 0 1 180px;
+    min-width: 150px;
+}
+
+.equipment-form-writeoff-document {
+    flex: 1 1 180px;
+    min-width: 180px;
+}
+
+.equipment-form-mac {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.equipment-form-mac > .mud-input-control {
+    flex: 1 1 100px;
+    min-width: 100px;
+}
+
+.equipment-form-model-meta {
+    color: var(--mud-palette-text-secondary);
+    font-size: var(--clay-font-size-small);
+}
+
+@media (max-width: 1100px) {
+    .equipment-form-pair {
+        grid-template-columns: 140px minmax(0, 1fr);
+    }
+}
+
+@media (max-width: 600px) {
+    .equipment-form-pair,
+    .equipment-form-single {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 2px;
+    }
+
+    .equipment-form-label {
+        white-space: normal;
+    }
+
+    .equipment-form-top > .equipment-form-label {
+        padding-top: 0;
+    }
+
+    .equipment-form-writeoff-date,
+    .equipment-form-writeoff-document {
+        flex: 1 1 100%;
+        min-width: 0;
+    }
 }
 
 .equipment-ins-mac {
@@ -185,5 +284,22 @@
     .equipment-ins-date,
     .equipment-ins-mac {
         grid-template-columns: 1fr;
+    }
+}
+
+
+.equipment-form-writeoff-row {
+    grid-template-columns: 140px minmax(180px, 255px) 100px minmax(0, 1fr);
+}
+
+@media (max-width: 1100px) {
+    .equipment-form-writeoff-row {
+        grid-template-columns: 140px minmax(0, 1fr);
+    }
+}
+
+@media (max-width: 600px) {
+    .equipment-form-writeoff-row {
+        grid-template-columns: minmax(0, 1fr);
     }
 }

@@ -43,7 +43,7 @@
                         TextSelector="@(item => item.Name)"
                         @bind-Value="PersonalDataPersonId"
                         Options="_personOptions" />
-            <MudButton OnClick="FillPersonalDataAsync" Disabled="@(CurrentEmployeeId is null)">Заполнить</MudButton>
+            <ClayToolbarButton Options="_fillButtonOptions" OnClick="FillPersonalDataAsync" Disabled="@(CurrentEmployeeId is null)" />
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">PIN:</span>
@@ -59,12 +59,15 @@
         </div>
     </DialogContent>
     <DialogActions>
-        <MudButton OnClick="Cancel">Отмена</MudButton>
-        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply" Disabled="_loading">OK</MudButton>
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="_loading" />
     </DialogActions>
 </MudDialog>
 
 @code {
+    private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
+    private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
+    private readonly ClayToolbarButtonOptions _fillButtonOptions = new() { Text = "Заполнить" };
     private readonly ClayTextBoxOptions _phoneOptions = new() { Required = true, MaxLength = 50 };
     private readonly ClayDatePickerOptions _activationDateOptions = new() { Required = true };
     private readonly ClayTimeOptions _activationTimeOptions = new() { Required = true };
