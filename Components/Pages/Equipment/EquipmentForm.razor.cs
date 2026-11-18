@@ -67,6 +67,21 @@ public partial class EquipmentForm : IDisposable
     private readonly ClayDetailGridOptions _simGridOptions = new() { EmptyText = "Нет сведений SIM", AddTooltip = "Добавить сведения SIM" };
     private IReadOnlyList<ClayDetailColumn<EquipmentSimCard>> _simColumns = null!;
     private List<EquipmentSimCard> _simCards = [];
+    private readonly ClayDetailGridOptions _simServiceGridOptions = new() { EmptyText = "Нет дополнительных услуг", AddTooltip = "Добавить дополнительную услугу" };
+    private readonly IReadOnlyList<ClayDetailColumn<EquipmentSimService>> _simServiceColumns =
+    [
+        new() { Title = "Услуга", TextSelector = item => item.ServiceName },
+        new() { Title = "Подключена", TextSelector = item => item.DateFrom?.ToString("dd.MM.yyyy") ?? string.Empty },
+        new() { Title = "Прекращена", TextSelector = item => item.DateTo?.ToString("dd.MM.yyyy") ?? string.Empty },
+        new() { Title = "Включение", TextSelector = item => item.ActivationCost.ToString("0.00") },
+        new() { Title = "В день", TextSelector = item => item.DailyCost.ToString("0.00") },
+        new() { Title = "В месяц", TextSelector = item => item.MonthlyCost.ToString("0.00") },
+        new() { Title = "Обязательная", TextSelector = item => item.IsCompanyRequired ? "Да" : "Нет" },
+    ];
+    private List<EquipmentSimService> _simServices = [];
+    private IReadOnlyList<SimServiceType> _simServiceTypes = [];
+    private bool _showServiceHistory;
+    private bool _showCompanyRequiredServices;
     private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
     private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Введите документ поступления" };
     private readonly ClaySelectOptions _writeOffDocumentOptions = new() { Placeholder = "Введите документ списания" };
@@ -96,6 +111,7 @@ public partial class EquipmentForm : IDisposable
     private int _accountVersion;
     private int _computerVersion;
     private int _simVersion;
+    private int _simServiceVersion;
     private string? _warningMessage;
     private DateTime? _writeOffDate;
     private TimeSpan? _writeOffTime;
@@ -188,6 +204,7 @@ public partial class EquipmentForm : IDisposable
         _accountVersion++;
         _computerVersion++;
         _simVersion++;
+        _simServiceVersion++;
         _loading = true;
         _loaded = false;
         _notFound = false;
@@ -245,6 +262,12 @@ public partial class EquipmentForm : IDisposable
             var simCards = selectedType?.HasSimCharacteristics > 0
                 ? await Service.GetSimCardsAsync(id)
                 : (IReadOnlyList<EquipmentSimCard>)[];
+            var simServices = selectedType?.HasSimCharacteristics > 0
+                ? await Service.GetSimServicesAsync(id, _showServiceHistory, _showCompanyRequiredServices)
+                : (IReadOnlyList<EquipmentSimService>)[];
+            var simServiceTypes = selectedType?.HasSimCharacteristics > 0
+                ? await Service.GetSimServiceTypesAsync()
+                : (IReadOnlyList<SimServiceType>)[];
             if (!IsCurrent(version, id))
                 return;
             DateTime? localWriteOff = null;
@@ -268,6 +291,8 @@ public partial class EquipmentForm : IDisposable
             _computerHistory = computerHistory.ToList();
             _standardConfigurations = configurations;
             _simCards = simCards.ToList();
+            _simServices = simServices.ToList();
+            _simServiceTypes = simServiceTypes;
             await RefreshLocationDisplayDatesAsync();
             _phoneToAdd = null;
             _phoneVersion++;
@@ -1021,6 +1046,90 @@ public partial class EquipmentForm : IDisposable
             return;
         _simCards = simCards.ToList();
         await RefreshLocationDisplayDatesAsync();
+        await RefreshSimServicesAsync();
+    }
+
+    private async Task OpenSimServiceDialogAsync(EquipmentSimService? existing)
+    {
+        var sim = _simCards.SingleOrDefault();
+        if (_model is null || sim is null || !_canEditSim || _saving)
+            return;
+        var value = existing is null
+            ? new EquipmentSimService { EquipmentId = _model.Id, PhoneNumber = sim.PhoneNumber }
+            : new EquipmentSimService
+            {
+                Id = existing.Id,
+                EquipmentId = _model.Id,
+                PhoneNumber = sim.PhoneNumber,
+                ServiceTypeId = existing.ServiceTypeId,
+                ServiceName = existing.ServiceName,
+                DateFrom = existing.DateFrom,
+                DateTo = existing.DateTo,
+                ActivationCost = existing.ActivationCost,
+                DailyCost = existing.DailyCost,
+                MonthlyCost = existing.MonthlyCost,
+            };
+        var parameters = new DialogParameters<EquipmentSimServiceDialog>
+        {
+            { dialog => dialog.Value, value },
+            { dialog => dialog.Types, _simServiceTypes },
+        };
+        var dialog = await DialogService.ShowAsync<EquipmentSimServiceDialog>("Дополнительная услуга SIM", parameters);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not EquipmentSimService service)
+            return;
+        var version = ++_simServiceVersion;
+        var equipmentId = _model.Id;
+        service.EquipmentId = equipmentId;
+        service.PhoneNumber = sim.PhoneNumber;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        try
+        {
+            await Service.SaveSimServiceAsync(service);
+            if (_disposed || version != _simServiceVersion || _model.Id != equipmentId)
+                return;
+            await RefreshSimServicesAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _simServiceVersion)
+                _validationMessage = "Дополнительная услуга не сохранена. Подробности — в сообщении базы данных.";
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (!_disposed && version == _simServiceVersion)
+                _validationMessage = ex.Message;
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task OnSimServiceFiltersChangedAsync()
+    {
+        _simServiceVersion++;
+        await RefreshSimServicesAsync();
+        StateHasChanged();
+    }
+
+    private async Task RefreshSimServicesAsync()
+    {
+        if (_model is null)
+            return;
+        var version = _simServiceVersion;
+        var equipmentId = _model.Id;
+        var services = await Service.GetSimServicesAsync(
+            equipmentId, _showServiceHistory, _showCompanyRequiredServices);
+        if (_disposed || version != _simServiceVersion || _model.Id != equipmentId)
+            return;
+        _simServices = services.ToList();
     }
 
     private async Task RefreshLocationDisplayDatesAsync()

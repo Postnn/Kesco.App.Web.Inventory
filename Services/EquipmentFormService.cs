@@ -131,6 +131,25 @@ public class EquipmentFormService
         await _db.ExecuteScalarAsync<int?>(SQLQueries.SELECT_ЛицоСотрудника,
             new { EmployeeId = employeeId }, commandType: CommandType.Text);
 
+    /// <summary>Загружает дополнительные услуги текущей SIM.</summary>
+    public virtual async Task<IReadOnlyList<EquipmentSimService>> GetSimServicesAsync(
+        int equipmentId, bool showHistory, bool showRequired) =>
+        (await _db.QueryAsync<EquipmentSimService>(SQLQueries.SELECT_SIMКартыДопУслугиСотОператора_КодОборудования,
+            new { EquipmentId = equipmentId, ShowHistory = showHistory ? 1 : 0, ShowRequired = showRequired ? 1 : 0 })).ToList();
+
+    /// <summary>Загружает типы дополнительных услуг.</summary>
+    public virtual async Task<IReadOnlyList<SimServiceType>> GetSimServiceTypesAsync() =>
+        (await _db.QueryAsync<SimServiceType>(SQLQueries.SELECT_ТипыДопУслугСотОператора)).ToList();
+
+    /// <summary>Проверяет и сохраняет дополнительную услугу SIM.</summary>
+    public virtual Task SaveSimServiceAsync(EquipmentSimService service)
+    {
+        var validation = service.Validate(DateTime.Today);
+        if (validation is not null)
+            throw new InvalidOperationException(validation);
+        return service.SaveAsync(_db);
+    }
+
     /// <summary>Загружает историю дневных конфигураций компьютера.</summary>
     public virtual async Task<IReadOnlyList<EquipmentComputerSnapshot>> GetComputerHistoryAsync(int equipmentId)
     {

@@ -304,6 +304,23 @@
                                     Disabled="@(!_canEditSim || _saving)" OnClick="DeleteSimAsync" />
                     </Actions>
                 </ClayDetailGrid>
+                <div class="d-flex gap-4">
+                    <ClayCheckbox State="_showServiceHistory" StateChanged="value => _showServiceHistory = value == true" Label="Показать историю" OnToggle="OnSimServiceFiltersChangedAsync" />
+                    <ClayCheckbox State="_showCompanyRequiredServices" StateChanged="value => _showCompanyRequiredServices = value == true" Label="Показать обязательные услуги" OnToggle="OnSimServiceFiltersChangedAsync" />
+                </div>
+                <ClayDetailGrid TItem="EquipmentSimService"
+                                Title="Дополнительные услуги SIM"
+                                Items="_simServices"
+                                Columns="_simServiceColumns"
+                                Options="_simServiceGridOptions"
+                                OnAdd="@(() => OpenSimServiceDialogAsync(null))"
+                                AddDisabled="@(!_canEditSim || _simCards.Count == 0 || _saving)"
+                                ReadOnly="@(!_canEditSim)">
+                    <Actions Context="item">
+                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить дополнительную услугу"
+                                    Disabled="@(!_canEditSim || _saving)" OnClick="@(() => OpenSimServiceDialogAsync(item))" />
+                    </Actions>
+                </ClayDetailGrid>
             }
         }
     </ChildContent>

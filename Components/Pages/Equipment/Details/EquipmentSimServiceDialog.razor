@@ -1,0 +1,94 @@
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Form
+
+<MudDialog>
+    <TitleContent>Дополнительная услуга SIM</TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Error">@_error</MudAlert>
+        }
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Тип услуги:</span>
+            <ClayDropDownList TItem="SimServiceType" TValue="string"
+                              Items="Types"
+                              ValueSelector="@(item => item.Id)"
+                              TextSelector="@(item => item.Name)"
+                              Value="Value.ServiceTypeId"
+                              ValueChanged="OnTypeChanged"
+                              Options="_typeOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Название:</span>
+            <ClayTextBox @bind-Value="Value.ServiceName" Options="_nameOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Подключена:</span>
+            <ClayDatePicker @bind-Value="Value.DateFrom" Options="_fromOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Прекращена:</span>
+            <ClayDatePicker @bind-Value="Value.DateTo" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Включение:</span>
+            <ClayNumber Value="@((decimal?)Value.ActivationCost)" ValueChanged="value => Value.ActivationCost = value ?? 0" Options="_costOptions" />
+            <span class="equipment-ins-label">В день:</span>
+            <ClayNumber Value="@((decimal?)Value.DailyCost)" ValueChanged="value => Value.DailyCost = value ?? 0" Options="_costOptions" />
+            <span class="equipment-ins-label">В месяц:</span>
+            <ClayNumber Value="@((decimal?)Value.MonthlyCost)" ValueChanged="value => Value.MonthlyCost = value ?? 0" Options="_costOptions" />
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Отмена</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply">OK</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private readonly ClayDropDownListOptions _typeOptions = new() { Required = true };
+    private readonly ClayTextBoxOptions _nameOptions = new() { Required = true, MaxLength = 100 };
+    private readonly ClayDatePickerOptions _fromOptions = new() { Required = true };
+    private readonly ClayNumberOptions _costOptions = new() { Precision = 2 };
+    private string? _error;
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+
+    /// <summary>Редактируемая услуга.</summary>
+    [Parameter] public EquipmentSimService Value { get; set; } = new();
+
+    /// <summary>Доступные типы услуг.</summary>
+    [Parameter] public IReadOnlyList<SimServiceType> Types { get; set; } = [];
+
+    private bool IsEdit => Value.Id > 0;
+
+    /// <inheritdoc />
+    protected override void OnParametersSet()
+    {
+        _typeOptions.ReadOnly = IsEdit;
+        _nameOptions.ReadOnly = IsEdit;
+        _costOptions.ReadOnly = !IsEdit;
+    }
+
+    private void OnTypeChanged(string? id)
+    {
+        Value.ServiceTypeId = id ?? string.Empty;
+        var type = Types.FirstOrDefault(item => item.Id == id);
+        if (type is null)
+            return;
+        Value.ServiceName = type.Name;
+        Value.ActivationCost = type.ActivationCost;
+        Value.DailyCost = type.DailyCost;
+        Value.MonthlyCost = type.MonthlyCost;
+    }
+
+    private void Cancel() => Dialog.Cancel();
+
+    private void Apply()
+    {
+        _error = Value.Validate(DateTime.Today);
+        if (_error is not null)
+            return;
+        Dialog.Close(DialogResult.Ok(Value));
+    }
+}
