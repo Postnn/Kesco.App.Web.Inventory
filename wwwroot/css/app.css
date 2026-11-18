@@ -221,10 +221,45 @@
 .equipment-detail-grid {
     margin-top: 8px;
     padding: 0;
+    border: 0 !important;
+    box-shadow: none !important;
 }
 
 .equipment-detail-grid .mud-data-grid {
     max-width: 100%;
+}
+
+.equipment-detail-grid .mud-table-container {
+    border-bottom: 0;
+}
+
+.equipment-detail-grid .mud-table-body .mud-table-row:last-child .mud-table-cell {
+    border-bottom: 0 !important;
+}
+
+.equipment-phone-editor {
+    width: min(100%, 520px);
+}
+
+.equipment-phone-editor .equipment-detail-grid {
+    margin-top: 0;
+    margin-bottom: 4px;
+}
+
+.equipment-accounts-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin: 8px 0;
+    color: var(--mud-palette-primary);
+    cursor: pointer;
+}
+
+.equipment-last-inventory-inline {
+    margin: 4px 0 8px;
+    color: var(--mud-palette-text-secondary);
+    font-size: var(--clay-font-size-small);
+    text-align: left;
 }
 
 .equipment-form .equipment-detail-grid tr.equipment-overdue > td {

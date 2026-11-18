@@ -32,7 +32,7 @@ public partial class EquipmentForm : IDisposable
     private readonly ClaySelectOptions _modelOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите модель" };
     private readonly ClaySelectOptions _phonePoolOptions = new() { AutoSelectSingle = true, Placeholder = "Введите телефонный пул" };
     private readonly ClaySelectOptions _phoneOptions = new() { AutoSelectSingle = true, Placeholder = "Введите телефонный номер" };
-    private readonly ClayGridOptions _phoneGridOptions = new() { EmptyText = "Нет телефонных номеров", AddTooltip = "Связать выбранный номер" };
+    private readonly ClayGridOptions _phoneGridOptions = new() { EmptyText = "Нет телефонных номеров", ShowAddButton = false, ShowHeader = false };
     private int _hotelPhoneCount;
     private readonly ClayGridOptions _locationGridOptions = new() { EmptyText = "Нет расположений", AddTooltip = "Добавить расположение" };
     private List<EquipmentLocationPeriod> _locations = [];
@@ -41,6 +41,7 @@ public partial class EquipmentForm : IDisposable
     private List<EquipmentResponsiblePeriod> _responsibles = [];
     private readonly ClayGridOptions _accountGridOptions = new() { EmptyText = "Нет учётных записей", AddTooltip = "Добавить учётную запись" };
     private List<EquipmentAccount> _accounts = [];
+    private bool _accountsVisible;
     private readonly ClayGridOptions _computerGridOptions = new() { EmptyText = "Нет снимков конфигурации", AddTooltip = "Добавить или обновить текущий снимок" };
     private List<EquipmentComputerSnapshot> _computerHistory = [];
     private IReadOnlyList<StandardConfiguration> _standardConfigurations = [];
@@ -215,6 +216,25 @@ public partial class EquipmentForm : IDisposable
         ? string.Empty
         : $"{from:dd.MM.yyyy} — {(to is null ? "по н.в." : $"{to:dd.MM.yyyy}")}";
 
+    private string FormatLocationDate(EquipmentLocationPeriod item)
+    {
+        var text = FormatDisplayDate(item.FromUtc, true);
+        if (ReferenceEquals(_locations.LastOrDefault(), item) && item.ReturnDate is not null)
+            text += $" - срок возврата {item.ReturnDate:dd.MM.yyyy}";
+        return text;
+    }
+
+    private string FormatResponsiblePeriod(EquipmentResponsiblePeriod item)
+    {
+        var text = FormatDisplayDate(item.FromUtc, true) + " — " +
+                   (item.ToUtc is null ? "сейчас" : FormatDisplayDate(item.ToUtc.Value, true));
+        if (item.ReturnDate is not null)
+            text += $" — срок возврата {item.ReturnDate:dd.MM.yyyy}";
+        return text;
+    }
+
+    private void ShowAccountGrid() => _accountsVisible = true;
+
     private string? EquipmentUrl(int? id) => id is > 0 && !string.IsNullOrWhiteSpace(Configuration["URI_equipment_form"])
         ? EquipmentIns.BuildEditUrl(Configuration["URI_equipment_form"]!, id.Value)
         : null;
@@ -280,6 +300,7 @@ public partial class EquipmentForm : IDisposable
         _loaded = false;
         _notFound = false;
         _validationMessage = null;
+        _accountsVisible = false;
         StateHasChanged();
         await Task.Delay(100);
         try
@@ -652,9 +673,16 @@ public partial class EquipmentForm : IDisposable
         if (index == 3) _model.MacAddressIlo = normalized;
     }
 
+    private async Task OnPhoneToAddChangedAsync(int? id)
+    {
+        _phoneToAdd = id;
+        if (id is not null)
+            await AddPhoneAsync();
+    }
+
     private async Task AddPhoneAsync()
     {
-        if (_model is null || _phoneToAdd is null || !_canEdit)
+        if (_model is null || _phoneToAdd is null || !_canEdit || _saving)
             return;
         var version = ++_phoneVersion;
         var phoneId = _phoneToAdd.Value;
@@ -1956,7 +1984,6 @@ public partial class EquipmentForm : IDisposable
         _tenantOptions.ReadOnly = true;
         foreach (var options in new ClayInputOptions[] { _writeOffDateOptions, _writeOffTimeOptions, _snOptions, _networkNameOptions, _macOptions, _descriptionOptions })
             options.ReadOnly = !_canEdit;
-        _phoneGridOptions.ShowAddButton = _canEdit;
         _locationGridOptions.ShowAddButton = _canEdit;
         _responsibleGridOptions.ShowAddButton = _canEdit;
         _accountGridOptions.ShowAddButton = _canEdit;

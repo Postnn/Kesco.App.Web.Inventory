@@ -71,60 +71,25 @@
                 <MudAlert Severity="Severity.Error" Class="mb-3">@_validationMessage</MudAlert>
             }
 
-            @if (_lastInventory is not null || _upsLinks.Count > 0)
+            @if (_upsLinks.Count > 0)
             {
                 <div class="equipment-form-summary">
-                    @if (_lastInventory is not null)
-                    {
-                        <section class="equipment-last-inventory">
-                            <h3>Последняя инвентаризация</h3>
+                    <section class="equipment-ups-summary">
+                        <h3>Подключённые UPS</h3>
+                        @foreach (var ups in _upsLinks)
+                        {
                             <div>
-                                @FormatDisplayDate(_lastInventory.CheckedAt, true) —
-                                @if (EmployeeUrl(_lastInventory.ChangedById) is string employeeUrl)
+                                @if (EquipmentUrl(ups.UpsEquipmentId) is string upsUrl)
                                 {
-                                    <a href="@employeeUrl" target="_blank" rel="noopener">@_lastInventory.ChangedByName</a>
+                                    <a href="@upsUrl" target="_blank" rel="noopener">@ups.EquipmentName</a>
                                 }
                                 else
                                 {
-                                    @_lastInventory.ChangedByName
+                                    @ups.EquipmentName
                                 }
                             </div>
-                            @if (_lastInventory.IsBeyondRepair > 0)
-                            {
-                                <div>Оборудование сломано и ремонту не подлежит.</div>
-                            }
-                            @if (!string.IsNullOrWhiteSpace(_lastInventory.Notes))
-                            {
-                                <div>@_lastInventory.Notes</div>
-                            }
-                            @if (_lastInventory.LocationId != _model.LocationId)
-                            {
-                                <MudAlert Severity="Severity.Warning">
-                                    Фактическое расположение не совпадает с учётным:
-                                    @(string.IsNullOrWhiteSpace(_lastInventory.LocationName) ? $"#{_lastInventory.LocationId}" : _lastInventory.LocationName).
-                                </MudAlert>
-                            }
-                        </section>
-                    }
-                    @if (_upsLinks.Count > 0)
-                    {
-                        <section class="equipment-ups-summary">
-                            <h3>Подключённые UPS</h3>
-                            @foreach (var ups in _upsLinks)
-                            {
-                                <div>
-                                    @if (EquipmentUrl(ups.UpsEquipmentId) is string upsUrl)
-                                    {
-                                        <a href="@upsUrl" target="_blank" rel="noopener">@ups.EquipmentName</a>
-                                    }
-                                    else
-                                    {
-                                        @ups.EquipmentName
-                                    }
-                                </div>
-                            }
-                        </section>
-                    }
+                        }
+                    </section>
                 </div>
             }
 
@@ -226,69 +191,80 @@
                     </div>
                     @if (ShowPhones)
                     {
-                        @if (ShowHotelPhoneWarning)
-                        {
-                            <MudAlert Severity="Severity.Warning" Class="mb-2">
-                                На телефонном аппарате, расположенном в номере гостиницы, может быть только один телефонный номер.
-                            </MudAlert>
-                        }
-                        <div class="equipment-ins-row">
-                            <span class="equipment-ins-label">Новый номер:</span>
-                            <ClaySelect TItem="PhoneNumberLookup" TValue="int?"
-                                        DataSource="PhoneNumberSource"
-                                        ValueSelector="@(item => (int?)item.Id)"
-                                        TextSelector="@(item => item.Name)"
-                                        @bind-Value="_phoneToAdd"
-                                        Options="_phoneOptions" />
+                        <div class="equipment-form-single">
+                            <span class="equipment-form-label">Телефонный номер:</span>
+                            <div class="equipment-phone-editor">
+                                @if (_phones.Count > 0)
+                                {
+                                    <ClayGrid TEntity="EquipmentPhoneLink" @key="PhoneGridKey"
+                                              Items="_phones" Options="_phoneGridOptions"
+                                              RowClass="@(item => item.ReturnDate?.Date < DateTime.UtcNow.Date ? "equipment-overdue" : null)">
+                                        <ColumnDefs>
+                                            <ClayColumnDef ColumnId="1" SqlName="Description" DisplayName="Название" />
+                                            @if (_phones.Any(item => item.ConnectionEquipmentId is > 0))
+                                            {
+                                                <ClayColumnDef ColumnId="2" SqlName="ConnectionEquipment" DisplayName="Код оборудования подключения" />
+                                            }
+                                            @if (_canEdit || _phones.Any(item => item.ReturnDate is not null))
+                                            {
+                                                <ClayColumnDef ColumnId="3" SqlName="ReturnDate" DisplayName="Срок возврата" />
+                                            }
+                                        </ColumnDefs>
+                                        <Columns>
+                                            <ClayColumn TEntity="EquipmentPhoneLink" ColumnId="1">
+                                                <CellTemplate>
+                                                    @RenderLink(PhoneUrl(context.Item.PhoneId),
+                                                        context.Item.Description + (context.Item.IsDefault ? " (основной на аппарате)" : string.Empty),
+                                                        PhoneChangedTooltip(context.Item))
+                                                </CellTemplate>
+                                            </ClayColumn>
+                                            @if (_phones.Any(item => item.ConnectionEquipmentId is > 0))
+                                            {
+                                                <ClayColumn TEntity="EquipmentPhoneLink" ColumnId="2">
+                                                    <CellTemplate>
+                                                        @if (context.Item.ConnectionEquipmentId is > 0)
+                                                        {
+                                                            @RenderLink(EquipmentUrl(context.Item.ConnectionEquipmentId), $"#{context.Item.ConnectionEquipmentId}",
+                                                                "Оборудование подключения. Нажмите, чтобы открыть.")
+                                                        }
+                                                    </CellTemplate>
+                                                </ClayColumn>
+                                            }
+                                            @if (_canEdit || _phones.Any(item => item.ReturnDate is not null))
+                                            {
+                                                <ClayColumn TEntity="EquipmentPhoneLink" ColumnId="3">
+                                                    <CellTemplate>
+                                                        @if (context.Item.ReturnDate is not null)
+                                                        {
+                                                            @($"срок возврата {context.Item.ReturnDate:dd.MM.yyyy}")@(string.IsNullOrWhiteSpace(context.Item.Notes) ? string.Empty : $" ({context.Item.Notes})")
+                                                        }
+                                                    </CellTemplate>
+                                                </ClayColumn>
+                                            }
+                                        </Columns>
+                                        <RowActions Context="item">
+                                            <ClayButton Icon="@Icons.Material.Filled.Schedule" Text="Изменить срок возврата"
+                                                        Disabled="@(!_canEdit || _saving)" OnClick="@(() => EditPhoneReturnAsync(item))" />
+                                            <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить связь с номером"
+                                                        Disabled="@(!_canEdit || _saving)" OnClick="@(() => RemovePhoneAsync(item))" />
+                                        </RowActions>
+                                    </ClayGrid>
+                                }
+                                <ClaySelect TItem="PhoneNumberLookup" TValue="int?"
+                                            DataSource="PhoneNumberSource"
+                                            ValueSelector="@(item => (int?)item.Id)"
+                                            TextSelector="@(item => item.Name)"
+                                            Value="_phoneToAdd"
+                                            ValueChanged="OnPhoneToAddChangedAsync"
+                                            Options="_phoneOptions" />
+                                @if (ShowHotelPhoneWarning)
+                                {
+                                    <MudAlert Severity="Severity.Warning" Class="mt-2">
+                                        На телефонном аппарате, расположенном в номере гостиницы, может быть только один телефонный номер.
+                                    </MudAlert>
+                                }
+                            </div>
                         </div>
-                        <ClayGrid TEntity="EquipmentPhoneLink" @key="PhoneGridKey"
-                                  Items="_phones" Options="_phoneGridOptions"
-                                  RowClass="@(item => item.ReturnDate?.Date < DateTime.UtcNow.Date ? "equipment-overdue" : null)"
-                                  OnAdd="AddPhoneAsync" AddDisabled="@(_phoneToAdd is null || _saving || !_canEdit)">
-                            <ColumnDefs>
-                                <ClayColumnDef ColumnId="1" SqlName="Description" DisplayName="Номер" />
-                                @if (_phones.Any(item => item.ConnectionEquipmentId is > 0))
-                                {
-                                    <ClayColumnDef ColumnId="2" SqlName="ConnectionEquipment" DisplayName="Подключение" />
-                                }
-                                @if (_canEdit || _phones.Any(item => item.ReturnDate is not null))
-                                {
-                                    <ClayColumnDef ColumnId="3" SqlName="ReturnDate" DisplayName="Срок возврата" />
-                                }
-                            </ColumnDefs>
-                            <Columns>
-                                <ClayColumn TEntity="EquipmentPhoneLink" ColumnId="1">
-                                    <CellTemplate>
-                                        @RenderLink(PhoneUrl(context.Item.PhoneId),
-                                            context.Item.Description + (context.Item.IsDefault ? " (основной)" : string.Empty),
-                                            PhoneChangedTooltip(context.Item))
-                                    </CellTemplate>
-                                </ClayColumn>
-                                @if (_phones.Any(item => item.ConnectionEquipmentId is > 0))
-                                {
-                                    <ClayColumn TEntity="EquipmentPhoneLink" ColumnId="2">
-                                        <CellTemplate>
-                                            @RenderLink(EquipmentUrl(context.Item.ConnectionEquipmentId), $"#{context.Item.ConnectionEquipmentId}",
-                                                "Оборудование подключения. Нажмите, чтобы открыть.")
-                                        </CellTemplate>
-                                    </ClayColumn>
-                                }
-                                @if (_canEdit || _phones.Any(item => item.ReturnDate is not null))
-                                {
-                                    <ClayColumn TEntity="EquipmentPhoneLink" ColumnId="3">
-                                        <CellTemplate>
-                                            @(context.Item.ReturnDate?.ToString("dd.MM.yyyy") ?? string.Empty)@(string.IsNullOrWhiteSpace(context.Item.Notes) ? string.Empty : $" ({context.Item.Notes})")
-                                        </CellTemplate>
-                                    </ClayColumn>
-                                }
-                            </Columns>
-                            <RowActions Context="item">
-                                <ClayButton Icon="@Icons.Material.Filled.Schedule" Text="Изменить срок возврата"
-                                            Disabled="@(!_canEdit || _saving)" OnClick="@(() => EditPhoneReturnAsync(item))" />
-                                <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить связь с номером"
-                                            Disabled="@(!_canEdit || _saving)" OnClick="@(() => RemovePhoneAsync(item))" />
-                            </RowActions>
-                        </ClayGrid>
                         @if (ShowCamera)
                         {
                             <div class="equipment-form-single">
@@ -350,27 +326,39 @@
             }
             @if (ShowAccounts)
             {
-                <ClayGrid TEntity="EquipmentAccount" Items="_accounts" Options="_accountGridOptions"
-                          OnAdd="@(() => OpenAccountDialogAsync(null))" AddDisabled="@(!_canEdit || _saving)">
-                    <ColumnDefs>
-                        <ClayColumnDef ColumnId="1" SqlName="Login" DisplayName="Логин" />
-                        <ClayColumnDef ColumnId="2" SqlName="Password" DisplayName="Пароль" />
-                        <ClayColumnDef ColumnId="3" SqlName="LimitedRights" DisplayName="Ограниченные права" />
-                        <ClayColumnDef ColumnId="4" SqlName="Notes" DisplayName="Примечание" />
-                    </ColumnDefs>
-                    <Columns>
-                        <ClayColumn TEntity="EquipmentAccount" ColumnId="1" TextSelector="@(item => item.Login)" />
-                        <ClayColumn TEntity="EquipmentAccount" ColumnId="2" TextSelector="@(_ => "*****")" />
-                        <ClayColumn TEntity="EquipmentAccount" ColumnId="3" TextSelector="@(item => item.LimitedRights > 0 ? "Да" : "Нет")" />
-                        <ClayColumn TEntity="EquipmentAccount" ColumnId="4" TextSelector="@(item => item.Notes)" />
-                    </Columns>
-                    <RowActions Context="item">
-                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить учётную запись"
-                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenAccountDialogAsync(item))" />
-                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить учётную запись"
-                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => DeleteAccountAsync(item))" />
-                    </RowActions>
-                </ClayGrid>
+                if (!_accountsVisible)
+                {
+                    <a href="#equipment-accounts" class="equipment-accounts-toggle"
+                       title="Показать учетные записи оборудования"
+                       @onclick="ShowAccountGrid" @onclick:preventDefault="true">
+                        <MudIcon Icon="@Icons.Material.Filled.Group" Size="Size.Small" />
+                        <span>Учетные записи оборудования</span>
+                    </a>
+                }
+                else
+                {
+                    <ClayGrid TEntity="EquipmentAccount" Items="_accounts" Options="_accountGridOptions"
+                              OnAdd="@(() => OpenAccountDialogAsync(null))" AddDisabled="@(!_canEdit || _saving)">
+                        <ColumnDefs>
+                            <ClayColumnDef ColumnId="1" SqlName="Login" DisplayName="Логин" />
+                            <ClayColumnDef ColumnId="2" SqlName="Password" DisplayName="Пароль" />
+                            <ClayColumnDef ColumnId="3" SqlName="LimitedRights" DisplayName="Ограниченные права" />
+                            <ClayColumnDef ColumnId="4" SqlName="Notes" DisplayName="Примечание" />
+                        </ColumnDefs>
+                        <Columns>
+                            <ClayColumn TEntity="EquipmentAccount" ColumnId="1" TextSelector="@(item => item.Login)" />
+                            <ClayColumn TEntity="EquipmentAccount" ColumnId="2" TextSelector="@(_ => "*****")" />
+                            <ClayColumn TEntity="EquipmentAccount" ColumnId="3" TextSelector="@(item => item.LimitedRights > 0 ? "Да" : "Нет")" />
+                            <ClayColumn TEntity="EquipmentAccount" ColumnId="4" TextSelector="@(item => item.Notes)" />
+                        </Columns>
+                        <RowActions Context="item">
+                            <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить учётную запись"
+                                        Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenAccountDialogAsync(item))" />
+                            <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить учётную запись"
+                                        Disabled="@(!_canEdit || _saving)" OnClick="@(() => DeleteAccountAsync(item))" />
+                        </RowActions>
+                    </ClayGrid>
+                }
             }
             @if (ShowRouter)
             {
@@ -380,14 +368,12 @@
                 }
                 <ClayGrid TEntity="EquipmentRouterInventoryItem" Items="_routerInventory" Options="_routerGridOptions">
                     <ColumnDefs>
-                        <ClayColumnDef ColumnId="1" SqlName="NetworkName" DisplayName="Сетевое имя" />
-                        <ClayColumnDef ColumnId="2" SqlName="Module" DisplayName="Модуль" />
-                        <ClayColumnDef ColumnId="3" SqlName="Characteristic" DisplayName="Характеристика" />
+                        <ClayColumnDef ColumnId="1" SqlName="Module" DisplayName="Модуль" />
+                        <ClayColumnDef ColumnId="2" SqlName="Characteristic" DisplayName="Характеристика" />
                     </ColumnDefs>
                     <Columns>
-                        <ClayColumn TEntity="EquipmentRouterInventoryItem" ColumnId="1" TextSelector="@(item => item.NetworkName)" />
-                        <ClayColumn TEntity="EquipmentRouterInventoryItem" ColumnId="2" TextSelector="@(item => item.Module)" />
-                        <ClayColumn TEntity="EquipmentRouterInventoryItem" ColumnId="3" TextSelector="@(item => item.Characteristic)" />
+                        <ClayColumn TEntity="EquipmentRouterInventoryItem" ColumnId="1" TextSelector="@(item => item.Module)" />
+                        <ClayColumn TEntity="EquipmentRouterInventoryItem" ColumnId="2" TextSelector="@(item => item.Characteristic)" />
                     </Columns>
                 </ClayGrid>
             }
@@ -396,7 +382,7 @@
                 <ClayGrid TEntity="EquipmentSimCard" Items="_simCards" Options="_simGridOptions"
                           OnAdd="OpenSimDialogAsync" AddDisabled="@(!_canEditSim || _simCards.Count > 0 || _saving)">
                     <ColumnDefs>
-                        <ClayColumnDef ColumnId="1" SqlName="PhoneNumber" DisplayName="Номер" />
+                        <ClayColumnDef ColumnId="1" SqlName="PhoneNumber" DisplayName="НомерТелефона" />
                         <ClayColumnDef ColumnId="2" SqlName="ActivatedAt" DisplayName="Активация" />
                         <ClayColumnDef ColumnId="3" SqlName="Contract" DisplayName="Договор" />
                         <ClayColumnDef ColumnId="4" SqlName="PersonalDataPerson" DisplayName="Лицо ПДн" />
@@ -459,10 +445,10 @@
                           Items="_computerHistory" Options="_computerGridOptions"
                           OnAdd="OpenComputerDialogAsync" AddDisabled="@(!_canEdit || _saving)">
                     <ColumnDefs>
-                        <ClayColumnDef ColumnId="1" SqlName="Date" DisplayName="Дата" />
+                        <ClayColumnDef ColumnId="1" SqlName="Date" DisplayName="С" />
                         @if (_computerHistory.Any(item => item.RamMb != 0))
                         {
-                            <ClayColumnDef ColumnId="2" SqlName="Ram" DisplayName="RAM, Мб" />
+                            <ClayColumnDef ColumnId="2" SqlName="Ram" DisplayName="RAM" />
                         }
                         @for (var index = 0; index < ComputerRamColumns; index++)
                         {
@@ -470,7 +456,7 @@
                         }
                         @if (_computerHistory.Any(item => item.HdGb != 0))
                         {
-                            <ClayColumnDef ColumnId="3" SqlName="Hd" DisplayName="HD, Гб" />
+                            <ClayColumnDef ColumnId="3" SqlName="Hd" DisplayName="HD" />
                         }
                         @for (var index = 0; index < ComputerHdColumns; index++)
                         {
@@ -478,7 +464,7 @@
                         }
                         @if (_computerHistory.Any(item => item.SsdGb != 0))
                         {
-                            <ClayColumnDef ColumnId="4" SqlName="Ssd" DisplayName="SSD, Гб" />
+                            <ClayColumnDef ColumnId="4" SqlName="Ssd" DisplayName="SSD" />
                         }
                         @for (var index = 0; index < ComputerSsdColumns; index++)
                         {
@@ -544,43 +530,66 @@
             <ClayGrid TEntity="EquipmentLocationPeriod" Items="_locations" Options="_locationGridOptions"
                       OnAdd="@(() => OpenLocationDialogAsync(null))" AddDisabled="@(!_canEdit || _saving)">
                 <ColumnDefs>
-                    <ClayColumnDef ColumnId="1" SqlName="From" DisplayName="С" />
+                    <ClayColumnDef ColumnId="1" SqlName="Date" DisplayName="Дата" />
                     <ClayColumnDef ColumnId="2" SqlName="Location" DisplayName="Расположение" />
-                    <ClayColumnDef ColumnId="3" SqlName="ReturnDate" DisplayName="Срок возврата" />
-                    <ClayColumnDef ColumnId="4" SqlName="Notes" DisplayName="Примечания" />
-                    <ClayColumnDef ColumnId="5" SqlName="ChangedBy" DisplayName="Изменил" />
-                    <ClayColumnDef ColumnId="6" SqlName="ChangedAt" DisplayName="Изменено" />
+                    <ClayColumnDef ColumnId="3" SqlName="Notes" DisplayName="Примечания" />
+                    <ClayColumnDef ColumnId="4" SqlName="ChangedBy" DisplayName="Изменил" />
+                    <ClayColumnDef ColumnId="5" SqlName="ChangedAt" DisplayName="Изменено" />
                 </ColumnDefs>
                 <Columns>
-                    <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="1" TextSelector="@(item => FormatDisplayDate(item.FromUtc, true))" />
+                    <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="1" TextSelector="@(item => FormatLocationDate(item))" />
                     <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="2" TextSelector="@(item => item.LocationName)" />
-                    <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="3" TextSelector="@(item => item.ReturnDate?.ToString("dd.MM.yyyy") ?? string.Empty)" />
-                    <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="4" TextSelector="@(item => item.Notes)" />
-                    <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="5" TextSelector="@(item => item.ChangedByName)" />
-                    <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="6" TextSelector="@(item => FormatDisplayDate(item.ChangedAtUtc, true))" />
+                    <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="3" TextSelector="@(item => item.Notes)" />
+                    <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="4" TextSelector="@(item => item.ChangedByName)" />
+                    <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="5" TextSelector="@(item => FormatDisplayDate(item.ChangedAtUtc, true))" />
                 </Columns>
                 <RowActions Context="item">
                     <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить срок возврата и примечания"
                                 Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenLocationDialogAsync(item))" />
                 </RowActions>
             </ClayGrid>
+            @if (_lastInventory is not null)
+            {
+                <div class="equipment-last-inventory-inline">
+                    <strong>Последняя инвентаризация:</strong>
+                    @FormatDisplayDate(_lastInventory.CheckedAt, true) —
+                    @if (EmployeeUrl(_lastInventory.ChangedById) is string employeeUrl)
+                    {
+                        <a href="@employeeUrl" target="_blank" rel="noopener">@_lastInventory.ChangedByName</a>
+                    }
+                    else
+                    {
+                        @_lastInventory.ChangedByName
+                    }
+                    @if (!string.IsNullOrWhiteSpace(_lastInventory.Notes))
+                    {
+                        <text>; @_lastInventory.Notes</text>
+                    }
+                    @if (_lastInventory.IsBeyondRepair > 0)
+                    {
+                        <text>; оборудование сломано и ремонту не подлежит</text>
+                    }
+                    @if (_lastInventory.LocationId != _model.LocationId)
+                    {
+                        <text>; фактическое расположение: @(string.IsNullOrWhiteSpace(_lastInventory.LocationName) ? $"#{_lastInventory.LocationId}" : _lastInventory.LocationName)</text>
+                    }
+                </div>
+            }
             <ClayGrid TEntity="EquipmentResponsiblePeriod" Items="_responsibles" Options="_responsibleGridOptions"
                       OnAdd="@(() => OpenResponsibleDialogAsync(EquipmentResponsibleDialogMode.Issue, null))" AddDisabled="@(!_canEdit || _saving)">
                 <ColumnDefs>
                     <ClayColumnDef ColumnId="1" SqlName="Period" DisplayName="Период" />
                     <ClayColumnDef ColumnId="2" SqlName="Employee" DisplayName="Ответственный" />
-                    <ClayColumnDef ColumnId="3" SqlName="ReturnDate" DisplayName="Срок возврата" />
-                    <ClayColumnDef ColumnId="4" SqlName="Notes" DisplayName="Примечания" />
-                    <ClayColumnDef ColumnId="5" SqlName="ChangedBy" DisplayName="Изменил" />
-                    <ClayColumnDef ColumnId="6" SqlName="ChangedAt" DisplayName="Изменено" />
+                    <ClayColumnDef ColumnId="3" SqlName="Notes" DisplayName="Примечания" />
+                    <ClayColumnDef ColumnId="4" SqlName="ChangedBy" DisplayName="Изменил" />
+                    <ClayColumnDef ColumnId="5" SqlName="ChangedAt" DisplayName="Изменено" />
                 </ColumnDefs>
                 <Columns>
-                    <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="1" TextSelector="@(item => FormatDisplayDate(item.FromUtc, true) + " — " + (item.ToUtc is null ? "сейчас" : FormatDisplayDate(item.ToUtc.Value, true)))" />
+                    <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="1" TextSelector="@(item => FormatResponsiblePeriod(item))" />
                     <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="2" TextSelector="@(item => item.EmployeeName)" />
-                    <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="3" TextSelector="@(item => item.ReturnDate?.ToString("dd.MM.yyyy") ?? string.Empty)" />
-                    <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="4" TextSelector="@(item => item.Notes)" />
-                    <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="5" TextSelector="@(item => item.ChangedByName)" />
-                    <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="6" TextSelector="@(item => FormatDisplayDate(item.ChangedAtUtc, true))" />
+                    <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="3" TextSelector="@(item => item.Notes)" />
+                    <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="4" TextSelector="@(item => item.ChangedByName)" />
+                    <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="5" TextSelector="@(item => FormatDisplayDate(item.ChangedAtUtc, true))" />
                 </Columns>
                 <RowActions Context="item">
                     <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить срок возврата и примечания"
@@ -624,8 +633,8 @@
             <ClayGrid TEntity="EquipmentAccounting" Items="_accounting" Options="_accountingGridOptions"
                       OnAdd="@(() => OpenAccountingDialogAsync(null))" AddDisabled="@(!_canUseAccounting || _saving)">
                 <ColumnDefs>
-                    <ClayColumnDef ColumnId="1" SqlName="Owner" DisplayName="Владелец" />
-                    <ClayColumnDef ColumnId="2" SqlName="InventoryNumber" DisplayName="Инв. №" />
+                    <ClayColumnDef ColumnId="1" SqlName="Owner" DisplayName="Бухгалтерия" />
+                    <ClayColumnDef ColumnId="2" SqlName="InventoryNumber" DisplayName="Инв №" />
                     <ClayColumnDef ColumnId="3" SqlName="Tenant" DisplayName="Арендатор" />
                     <ClayColumnDef ColumnId="4" SqlName="DateFrom" DisplayName="Дата поступления" />
                     <ClayColumnDef ColumnId="5" SqlName="DateTo" DisplayName="Дата списания" />
@@ -701,32 +710,30 @@
                           RowClass="@(item => item.IsTariffPlan > 0 ? "equipment-recommended" : null)"
                           OnAdd="@(() => OpenSimServiceDialogAsync(null))" AddDisabled="@(!_canEditSim || _simCards.Count == 0 || _saving)">
                     <ColumnDefs>
-                        <ClayColumnDef ColumnId="1" SqlName="Service" DisplayName="Услуга" />
+                        <ClayColumnDef ColumnId="1" SqlName="Period" DisplayName="Срок оказания услуги" />
                         <ClayColumnDef ColumnId="2" SqlName="ServiceType" DisplayName="Код услуги" />
-                        <ClayColumnDef ColumnId="3" SqlName="Period" DisplayName="Срок оказания услуги" />
-                        <ClayColumnDef ColumnId="4" SqlName="ActivationCost" DisplayName="Включение" />
-                        <ClayColumnDef ColumnId="5" SqlName="DailyCost" DisplayName="В день" />
-                        <ClayColumnDef ColumnId="6" SqlName="MonthlyCost" DisplayName="В месяц" />
+                        <ClayColumnDef ColumnId="3" SqlName="Service" DisplayName="Услуга" />
+                        <ClayColumnDef ColumnId="4" SqlName="DailyCost" DisplayName="Стоимость в день" />
+                        <ClayColumnDef ColumnId="5" SqlName="MonthlyCost" DisplayName="Стоимость в месяц" />
                         @if (_showCompanyRequiredServices)
                         {
-                            <ClayColumnDef ColumnId="7" SqlName="Required" DisplayName="Обяз." />
+                            <ClayColumnDef ColumnId="6" SqlName="Required" DisplayName="Обяз." />
                         }
-                        <ClayColumnDef ColumnId="8" SqlName="ChangedBy" DisplayName="Изменил" />
-                        <ClayColumnDef ColumnId="9" SqlName="ChangedAt" DisplayName="Изменено" />
+                        <ClayColumnDef ColumnId="7" SqlName="ChangedBy" DisplayName="Изменил" />
+                        <ClayColumnDef ColumnId="8" SqlName="ChangedAt" DisplayName="Изменено" />
                     </ColumnDefs>
                     <Columns>
-                        <ClayColumn TEntity="EquipmentSimService" ColumnId="1" TextSelector="@(item => item.ServiceName)" />
+                        <ClayColumn TEntity="EquipmentSimService" ColumnId="1" TextSelector="@(item => FormatPeriod(item.DateFrom, item.DateTo))" />
                         <ClayColumn TEntity="EquipmentSimService" ColumnId="2" TextSelector="@(item => item.ServiceTypeId)" />
-                        <ClayColumn TEntity="EquipmentSimService" ColumnId="3" TextSelector="@(item => FormatPeriod(item.DateFrom, item.DateTo))" />
-                        <ClayColumn TEntity="EquipmentSimService" ColumnId="4" TextSelector="@(item => item.ActivationCost.ToString("0.00"))" />
-                        <ClayColumn TEntity="EquipmentSimService" ColumnId="5" TextSelector="@(item => item.DailyCost.ToString("0.00"))" />
-                        <ClayColumn TEntity="EquipmentSimService" ColumnId="6" TextSelector="@(item => item.MonthlyCost.ToString("0.00"))" />
+                        <ClayColumn TEntity="EquipmentSimService" ColumnId="3" TextSelector="@(item => item.ServiceName)" />
+                        <ClayColumn TEntity="EquipmentSimService" ColumnId="4" TextSelector="@(item => item.DailyCost.ToString("0.00"))" />
+                        <ClayColumn TEntity="EquipmentSimService" ColumnId="5" TextSelector="@(item => item.MonthlyCost.ToString("0.00"))" />
                         @if (_showCompanyRequiredServices)
                         {
-                            <ClayColumn TEntity="EquipmentSimService" ColumnId="7" TextSelector="@(item => item.IsCompanyRequired ? "Да" : string.Empty)" />
+                            <ClayColumn TEntity="EquipmentSimService" ColumnId="6" TextSelector="@(item => item.IsCompanyRequired ? "Да" : string.Empty)" />
                         }
-                        <ClayColumn TEntity="EquipmentSimService" ColumnId="8" TextSelector="@(item => item.ChangedByName)" />
-                        <ClayColumn TEntity="EquipmentSimService" ColumnId="9" TextSelector="@(item => FormatDisplayDate(item.ChangedAt, true))" />
+                        <ClayColumn TEntity="EquipmentSimService" ColumnId="7" TextSelector="@(item => item.ChangedByName)" />
+                        <ClayColumn TEntity="EquipmentSimService" ColumnId="8" TextSelector="@(item => FormatDisplayDate(item.ChangedAt, true))" />
                     </Columns>
                     <RowActions Context="item">
                         <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить дополнительную услугу"
