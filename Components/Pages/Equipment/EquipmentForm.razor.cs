@@ -33,12 +33,32 @@ public partial class EquipmentForm : IDisposable
     private readonly ClaySelectOptions _phonePoolOptions = new() { AutoSelectSingle = true, Placeholder = "Введите телефонный пул" };
     private readonly ClaySelectOptions _phoneOptions = new() { AutoSelectSingle = true, Placeholder = "Введите телефонный номер" };
     private readonly ClayDetailGridOptions _phoneGridOptions = new() { EmptyText = "Нет телефонных номеров", AddTooltip = "Связать выбранный номер" };
-    private readonly IReadOnlyList<ClayDetailColumn<EquipmentPhoneLink>> _phoneColumns =
+    private IReadOnlyList<ClayDetailColumn<EquipmentPhoneLink>> PhoneColumns =>
     [
-        new() { Title = "Номер", TextSelector = item => item.Description + (item.IsDefault ? " (основной)" : string.Empty) },
-        new() { Title = "Подключение", TextSelector = item => item.ConnectionEquipmentId is > 0 ? $"#{item.ConnectionEquipmentId}" : string.Empty },
-        new() { Title = "Срок возврата", TextSelector = item => (item.ReturnDate?.ToString("dd.MM.yyyy") ?? string.Empty) + (string.IsNullOrWhiteSpace(item.Notes) ? string.Empty : $" ({item.Notes})") },
+        new()
+        {
+            Title = "Номер",
+            TextSelector = item => item.Description + (item.IsDefault ? " (основной)" : string.Empty),
+            CellTemplate = item => RenderLink(PhoneUrl(item.PhoneId),
+                item.Description + (item.IsDefault ? " (основной)" : string.Empty), PhoneChangedTooltip(item)),
+        },
+        new()
+        {
+            Title = "Подключение",
+            TextSelector = item => item.ConnectionEquipmentId is > 0 ? $"#{item.ConnectionEquipmentId}" : string.Empty,
+            IsVisible = _phones.Any(item => item.ConnectionEquipmentId is > 0),
+            CellTemplate = item => RenderLink(EquipmentUrl(item.ConnectionEquipmentId), $"#{item.ConnectionEquipmentId}",
+                "Оборудование подключения. Нажмите, чтобы открыть."),
+        },
+        new()
+        {
+            Title = "Срок возврата",
+            TextSelector = item => (item.ReturnDate?.ToString("dd.MM.yyyy") ?? string.Empty) +
+                (string.IsNullOrWhiteSpace(item.Notes) ? string.Empty : $" ({item.Notes})"),
+            IsVisible = _canEdit || _phones.Any(item => item.ReturnDate is not null),
+        },
     ];
+    private int _hotelPhoneCount;
     private readonly ClayDetailGridOptions _locationGridOptions = new() { EmptyText = "Нет расположений", AddTooltip = "Добавить расположение" };
     private IReadOnlyList<ClayDetailColumn<EquipmentLocationPeriod>> _locationColumns = null!;
     private List<EquipmentLocationPeriod> _locations = [];
@@ -56,72 +76,77 @@ public partial class EquipmentForm : IDisposable
     ];
     private List<EquipmentAccount> _accounts = [];
     private readonly ClayDetailGridOptions _computerGridOptions = new() { EmptyText = "Нет снимков конфигурации", AddTooltip = "Добавить или обновить текущий снимок" };
-    private readonly IReadOnlyList<ClayDetailColumn<EquipmentComputerSnapshot>> _computerColumns =
-    [
-        new() { Title = "Дата", TextSelector = item => item.Date.ToString("dd.MM.yyyy") },
-        new() { Title = "RAM, Мб", TextSelector = item => item.RamMb.ToString() },
-        new() { Title = "HD, Гб", TextSelector = item => item.HdGb.ToString("0.###") },
-        new() { Title = "SSD, Гб", TextSelector = item => item.SsdGb.ToString() },
-        new() { Title = "Лицензия", TextSelector = item => item.License },
-        new() { Title = "Примечания", TextSelector = item => item.Notes },
-        new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
-    ];
+    private IReadOnlyList<ClayDetailColumn<EquipmentComputerSnapshot>> _computerColumns => BuildComputerColumns();
     private List<EquipmentComputerSnapshot> _computerHistory = [];
     private IReadOnlyList<StandardConfiguration> _standardConfigurations = [];
     private readonly ClayDetailGridOptions _simGridOptions = new() { EmptyText = "Нет сведений SIM", AddTooltip = "Добавить сведения SIM" };
     private IReadOnlyList<ClayDetailColumn<EquipmentSimCard>> _simColumns = null!;
     private List<EquipmentSimCard> _simCards = [];
     private readonly ClayDetailGridOptions _simServiceGridOptions = new() { EmptyText = "Нет дополнительных услуг", AddTooltip = "Добавить дополнительную услугу" };
-    private readonly IReadOnlyList<ClayDetailColumn<EquipmentSimService>> _simServiceColumns =
+    private IReadOnlyList<ClayDetailColumn<EquipmentSimService>> _simServiceColumns =>
     [
         new() { Title = "Услуга", TextSelector = item => item.ServiceName },
-        new() { Title = "Подключена", TextSelector = item => item.DateFrom?.ToString("dd.MM.yyyy") ?? string.Empty },
-        new() { Title = "Прекращена", TextSelector = item => item.DateTo?.ToString("dd.MM.yyyy") ?? string.Empty },
+        new() { Title = "Код услуги", TextSelector = item => item.ServiceTypeId },
+        new() { Title = "Срок оказания услуги", TextSelector = item => FormatPeriod(item.DateFrom, item.DateTo) },
         new() { Title = "Включение", TextSelector = item => item.ActivationCost.ToString("0.00") },
         new() { Title = "В день", TextSelector = item => item.DailyCost.ToString("0.00") },
         new() { Title = "В месяц", TextSelector = item => item.MonthlyCost.ToString("0.00") },
-        new() { Title = "Обязательная", TextSelector = item => item.IsCompanyRequired ? "Да" : "Нет" },
+        new() { Title = "Обяз.", TextSelector = item => item.IsCompanyRequired ? "Да" : string.Empty, IsVisible = _showCompanyRequiredServices },
+        new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
+        new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAt, true) },
     ];
     private List<EquipmentSimService> _simServices = [];
     private IReadOnlyList<SimServiceType> _simServiceTypes = [];
     private bool _showServiceHistory;
     private bool _showCompanyRequiredServices;
     private readonly ClayDetailGridOptions _licenseGridOptions = new() { EmptyText = "Нет лицензии", AddTooltip = "Добавить лицензию" };
-    private readonly IReadOnlyList<ClayDetailColumn<EquipmentLicense>> _licenseColumns =
+    private IReadOnlyList<ClayDetailColumn<EquipmentLicense>> _licenseColumns =>
     [
-        new() { Title = "Тип", TextSelector = item => item.LicenseTypeName },
-        new() { Title = "Номер", TextSelector = item => item.LicenseeNumber },
-        new() { Title = "Серверы", TextSelector = item => item.ServerCount?.ToString() ?? string.Empty },
-        new() { Title = "Клиенты", TextSelector = item => item.ClientCount?.ToString() ?? string.Empty },
-        new() { Title = "С", TextSelector = item => item.DateFrom?.ToString("dd.MM.yyyy") ?? string.Empty },
-        new() { Title = "По", TextSelector = item => item.DateTo?.ToString("dd.MM.yyyy") ?? string.Empty },
+        new() { Title = "Тип лицензирования", TextSelector = item => item.LicenseTypeName },
+        new() { Title = "Номер лицензиата", TextSelector = item => item.LicenseeNumber },
+        new()
+        {
+            Title = "URL проверки лицензии",
+            TextSelector = item => item.VerificationUrl,
+            CellTemplate = item => RenderLink(SafeExternalUrl(item.VerificationUrl), item.VerificationUrl),
+        },
+        new() { Title = "Количество серверов", TextSelector = item => item.ServerCount?.ToString() ?? string.Empty },
+        new() { Title = "Количество клиентов", TextSelector = item => item.ClientCount?.ToString() ?? string.Empty },
+        new() { Title = "Период действия", TextSelector = item => FormatPeriod(item.DateFrom, item.DateTo) },
         new() { Title = "Дистрибутив", TextSelector = item => item.Distribution },
         new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
+        new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAt, true) },
     ];
     private List<EquipmentLicense> _licenses = [];
     private IReadOnlyList<LicenseType> _licenseTypes = [];
     private readonly ClayDetailGridOptions _softwareGridOptions = new() { EmptyText = "Нет установленного ПО", AddTooltip = "Добавить установленное ПО" };
-    private readonly IReadOnlyList<ClayDetailColumn<EquipmentSoftwareInstallation>> _softwareColumns =
+    private IReadOnlyList<ClayDetailColumn<EquipmentSoftwareInstallation>> _softwareColumns =>
     [
-        new() { Title = "ПО", TextSelector = item => item.SoftwareName },
-        new() { Title = "Установлено", TextSelector = item => item.Installed },
+        new()
+        {
+            Title = "Установлено ПО",
+            TextSelector = item => item.Installed,
+            CellTemplate = item => RenderLink(EquipmentUrl(item.SoftwareId), item.Installed,
+                "Открыть форму редактирования информации о ПО"),
+        },
         new() { Title = "Дистрибутив", TextSelector = item => item.Distribution },
-        new() { Title = "С", TextSelector = item => item.InstalledAt?.ToString("dd.MM.yyyy") ?? string.Empty },
-        new() { Title = "По", TextSelector = item => item.UninstalledAt?.ToString("dd.MM.yyyy") ?? string.Empty },
+        new() { Title = "Период", TextSelector = item => FormatPeriod(item.InstalledAt, item.UninstalledAt) },
         new() { Title = "Примечания", TextSelector = item => item.Notes },
         new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
+        new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAt, true) },
     ];
     private List<EquipmentSoftwareInstallation> _softwareInstallations = [];
     private readonly ClayDetailGridOptions _accountingGridOptions = new() { EmptyText = "Нет записей бухгалтерского учёта", AddTooltip = "Добавить запись бухгалтерского учёта" };
-    private readonly IReadOnlyList<ClayDetailColumn<EquipmentAccounting>> _accountingColumns =
+    private IReadOnlyList<ClayDetailColumn<EquipmentAccounting>> _accountingColumns =>
     [
         new() { Title = "Владелец", TextSelector = item => item.OwnerName },
-        new() { Title = "Инв. номер", TextSelector = item => item.InventoryNumber },
+        new() { Title = "Инв. №", TextSelector = item => item.InventoryNumber },
         new() { Title = "Арендатор", TextSelector = item => item.TenantName },
-        new() { Title = "Поступление", TextSelector = item => item.DateFrom?.ToString("dd.MM.yyyy") ?? string.Empty },
-        new() { Title = "Списание", TextSelector = item => item.DateTo?.ToString("dd.MM.yyyy") ?? string.Empty },
+        new() { Title = "Дата поступления", TextSelector = item => item.DateFrom?.ToString("dd.MM.yyyy") ?? string.Empty },
+        new() { Title = "Дата списания", TextSelector = item => item.DateTo?.ToString("dd.MM.yyyy") ?? string.Empty },
         new() { Title = "Примечания", TextSelector = item => item.Notes },
         new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
+        new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAt, true) },
     ];
     private List<EquipmentAccounting> _accounting = [];
     private bool _canUseAccounting;
@@ -129,14 +154,21 @@ public partial class EquipmentForm : IDisposable
     private readonly ClayDetailGridOptions _routerGridOptions = new() { EmptyText = "Нет данных маршрутизатора" };
     private readonly IReadOnlyList<ClayDetailColumn<EquipmentRouterInventoryItem>> _routerColumns =
     [
+        new() { Title = "Сетевое имя", TextSelector = item => item.NetworkName },
         new() { Title = "Модуль", TextSelector = item => item.Module },
         new() { Title = "Характеристика", TextSelector = item => item.Characteristic },
     ];
     private List<EquipmentRouterInventoryItem> _routerInventory = [];
     private readonly ClayDetailGridOptions _upsGridOptions = new() { EmptyText = "Нет подключённых UPS" };
-    private readonly IReadOnlyList<ClayDetailColumn<UpsServerLink>> _upsColumns =
+    private IReadOnlyList<ClayDetailColumn<UpsServerLink>> _upsColumns =>
     [
-        new() { Title = "UPS", TextSelector = item => item.EquipmentName },
+        new()
+        {
+            Title = "UPS",
+            TextSelector = item => item.EquipmentName,
+            CellTemplate = item => RenderLink(EquipmentUrl(item.UpsEquipmentId), item.EquipmentName,
+                "Открыть карточку UPS"),
+        },
     ];
     private List<UpsServerLink> _upsLinks = [];
     private int? _upsToAdd;
@@ -226,6 +258,7 @@ public partial class EquipmentForm : IDisposable
     private bool HasSelectedModel => _model?.ModelId is > 0 && _selectedModel is not null;
     private bool ShowNetworkName => HasSelectedModel && _selectedType?.HasNetworkName > 0;
     private bool ShowPhones => HasSelectedModel && _selectedType?.HasPhoneNumber > 0;
+    private bool ShowHotelPhoneWarning => _hotelPhoneCount > 1;
     private bool ShowPhonePool => ShowPhones && _selectedType?.Id == 30;
     private bool ShowPhoneConfig => _selectedType?.Id == 30;
     private bool ShowComputer => _selectedType?.HasComputerCharacteristics > 0;
@@ -269,8 +302,97 @@ public partial class EquipmentForm : IDisposable
             new() { Title = "Договор", TextSelector = item => item.ContractName },
             new() { Title = "Лицо ПДн", TextSelector = item => item.PersonalDataPersonName },
             new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
+            new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAt, true) },
         ];
     }
+
+    private IReadOnlyList<ClayDetailColumn<EquipmentComputerSnapshot>> BuildComputerColumns()
+    {
+        var columns = new List<ClayDetailColumn<EquipmentComputerSnapshot>>
+        {
+            new() { Title = "Дата", TextSelector = item => item.Date.ToString("dd.MM.yyyy") },
+        };
+        AddComputerComponentColumns(columns, "RAM", "Мб", item => item.RamMb, item => item.RamComponents);
+        AddComputerComponentColumns(columns, "HD", "Гб", item => (decimal)item.HdGb, item => item.HdComponents);
+        AddComputerComponentColumns(columns, "SSD", "Гб", item => item.SsdGb, item => item.SsdComponents);
+        if (_computerHistory.Any(item => item.Configuration1Id is not null))
+            columns.Add(new() { Title = "Стандартная конфигурация 1", TextSelector = item => FormatConfiguration(item.Configuration1Name, item.Configuration1Date) });
+        if (_computerHistory.Any(item => item.Configuration2Id is not null))
+            columns.Add(new() { Title = "Стандартная конфигурация 2", TextSelector = item => FormatConfiguration(item.Configuration2Name, item.Configuration2Date) });
+        columns.Add(new() { Title = "Лицензия", TextSelector = item => item.License });
+        columns.Add(new() { Title = "Примечания", TextSelector = item => item.Notes });
+        columns.Add(new() { Title = "Изменил", TextSelector = item => item.ChangedByName });
+        columns.Add(new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAt, true) });
+        return columns;
+    }
+
+    private void AddComputerComponentColumns(
+        List<ClayDetailColumn<EquipmentComputerSnapshot>> columns,
+        string name,
+        string unit,
+        Func<EquipmentComputerSnapshot, decimal> total,
+        Func<EquipmentComputerSnapshot, IReadOnlyList<decimal>> components)
+    {
+        if (_computerHistory.Any(item => total(item) != 0))
+            columns.Add(new() { Title = $"{name}, {unit}", TextSelector = item => total(item).ToString("0.###") });
+        var count = _computerHistory.Count == 0 ? 0 : _computerHistory.Max(item => components(item).Count);
+        for (var index = 0; index < count; index++)
+        {
+            var componentIndex = index;
+            columns.Add(new()
+            {
+                Title = $"{name}{index + 1}",
+                TextSelector = item => componentIndex < components(item).Count
+                    ? components(item)[componentIndex].ToString("0.###")
+                    : "0",
+            });
+        }
+    }
+
+    private static string FormatConfiguration(string name, DateTime? date) => string.IsNullOrWhiteSpace(name)
+        ? string.Empty
+        : $"{name} [{date:dd.MM.yy}]";
+
+    private static string FormatPeriod(DateTime? from, DateTime? to) => from is null
+        ? string.Empty
+        : $"{from:dd.MM.yyyy} — {(to is null ? "по н.в." : $"{to:dd.MM.yyyy}")}";
+
+    private string? EquipmentUrl(int? id) => id is > 0 && !string.IsNullOrWhiteSpace(Configuration["URI_equipment_form"])
+        ? EquipmentIns.BuildEditUrl(Configuration["URI_equipment_form"]!, id.Value)
+        : null;
+
+    private string? PhoneUrl(int id) => !string.IsNullOrWhiteSpace(Configuration["URI_tel_form"])
+        ? EquipmentIns.BuildEditUrl(Configuration["URI_tel_form"]!, id)
+        : null;
+
+    private string? EmployeeUrl(int id) => !string.IsNullOrWhiteSpace(Configuration["URI_user_form"])
+        ? EquipmentIns.BuildEditUrl(Configuration["URI_user_form"]!, id)
+        : null;
+
+    private static string? SafeExternalUrl(string? url) => Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+        (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+        ? url
+        : null;
+
+    private string PhoneChangedTooltip(EquipmentPhoneLink item) =>
+        $"Изменил: {item.ChangedByName} {FormatDisplayDate(item.ChangedAt, true)}".Trim();
+
+    private static RenderFragment RenderLink(string? url, string? text, string? title = null) => builder =>
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            builder.AddContent(0, text);
+            return;
+        }
+        builder.OpenElement(0, "a");
+        builder.AddAttribute(1, "href", url);
+        builder.AddAttribute(2, "target", "_blank");
+        builder.AddAttribute(3, "rel", "noopener");
+        if (!string.IsNullOrWhiteSpace(title))
+            builder.AddAttribute(4, "title", title);
+        builder.AddContent(5, text);
+        builder.CloseElement();
+    };
 
     /// <inheritdoc />
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -344,6 +466,9 @@ public partial class EquipmentForm : IDisposable
             var phones = selectedType?.HasPhoneNumber > 0
                 ? await Service.GetPhonesAsync(id)
                 : (IReadOnlyList<EquipmentPhoneLink>)[];
+            var hotelPhoneCount = selectedModel is not null && phones.Count > 0
+                ? await Service.GetHotelPhoneCountAsync(id)
+                : 0;
             if (!IsCurrent(version, id))
                 return;
             var locations = await Service.GetLocationsAsync(id);
@@ -378,7 +503,7 @@ public partial class EquipmentForm : IDisposable
             var licenseTypes = selectedType?.HasSoftwareCharacteristics > 0
                 ? await Service.GetLicenseTypesAsync()
                 : (IReadOnlyList<LicenseType>)[];
-            var softwareInstallations = selectedType?.HasSoftwareCharacteristics > 0
+            var softwareInstallations = selectedType?.HasComputerCharacteristics > 0
                 ? await Service.GetSoftwareInstallationsAsync(id)
                 : (IReadOnlyList<EquipmentSoftwareInstallation>)[];
             var accounting = await Service.GetAccountingAsync(id);
@@ -402,7 +527,8 @@ public partial class EquipmentForm : IDisposable
                     return;
             }
             var localDates = await LoadLocalDatesAsync(GetDisplayDates(
-                locations, responsibles, simCards, networkNameHistory, lastInventory));
+                locations, responsibles, simCards, networkNameHistory, lastInventory,
+                phones, computerHistory, simServices, licenses, softwareInstallations, accounting));
             if (!IsCurrent(version, id))
                 return;
 
@@ -414,6 +540,7 @@ public partial class EquipmentForm : IDisposable
             _selectedModel = selectedModel;
             _phones = phones.ToList();
             _originalPhones = ClonePhones(phones);
+            _hotelPhoneCount = hotelPhoneCount;
             _locations = locations.ToList();
             _responsibles = responsibles.ToList();
             _accounts = accounts.ToList();
@@ -1880,7 +2007,8 @@ public partial class EquipmentForm : IDisposable
         var operationVersion = _operationVersion;
         var equipmentId = _model?.Id;
         var localDates = await LoadLocalDatesAsync(GetDisplayDates(
-            _locations, _responsibles, _simCards, _networkNameHistory, _lastInventory));
+            _locations, _responsibles, _simCards, _networkNameHistory, _lastInventory,
+            _phones, _computerHistory, _simServices, _licenses, _softwareInstallations, _accounting));
         if (_disposed || operationVersion != _operationVersion ||
             equipmentId is not null && _model?.Id != equipmentId)
             return;
@@ -1894,12 +2022,24 @@ public partial class EquipmentForm : IDisposable
         IEnumerable<EquipmentResponsiblePeriod> responsibles,
         IEnumerable<EquipmentSimCard> simCards,
         IEnumerable<EquipmentNetworkNameHistory> networkNameHistory,
-        EquipmentActualInventory? lastInventory) =>
+        EquipmentActualInventory? lastInventory,
+        IEnumerable<EquipmentPhoneLink> phones,
+        IEnumerable<EquipmentComputerSnapshot> computerHistory,
+        IEnumerable<EquipmentSimService> simServices,
+        IEnumerable<EquipmentLicense> licenses,
+        IEnumerable<EquipmentSoftwareInstallation> softwareInstallations,
+        IEnumerable<EquipmentAccounting> accounting) =>
         locations.SelectMany(item => new[] { item.FromUtc, item.ChangedAtUtc })
             .Concat(responsibles.SelectMany(item => new[] { item.FromUtc, item.ToUtc ?? default, item.ChangedAtUtc }))
             .Concat(simCards.SelectMany(item => new[] { item.ActivatedAtUtc, item.ChangedAt }))
             .Concat(networkNameHistory.Select(item => item.ChangedAtUtc))
             .Concat(lastInventory is null ? Array.Empty<DateTime>() : new[] { lastInventory.CheckedAt, lastInventory.ChangedAt })
+            .Concat(phones.Select(item => item.ChangedAt))
+            .Concat(computerHistory.Select(item => item.ChangedAt))
+            .Concat(simServices.Select(item => item.ChangedAt))
+            .Concat(licenses.Select(item => item.ChangedAt))
+            .Concat(softwareInstallations.Select(item => item.ChangedAt))
+            .Concat(accounting.Select(item => item.ChangedAt))
             .Where(item => item != default)
             .Distinct();
 

@@ -30,6 +30,11 @@ public class EquipmentFormService
         (await _db.QueryAsync<EquipmentPhoneLink>(
             SQLQueries.SELECT_ТелефонныеНомераОборудования, new { EquipmentId = equipmentId })).ToList();
 
+    /// <summary>Возвращает количество номеров, если текущее расположение является гостиничным номером.</summary>
+    public virtual async Task<int> GetHotelPhoneCountAsync(int equipmentId) =>
+        await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_UniquePhoneNumberInHotel,
+            new { EquipmentId = equipmentId }, commandType: CommandType.Text);
+
     /// <summary>Определяет доступное оборудование подключения аналогового номера.</summary>
     public virtual async Task<int?> GetConnectionEquipmentIdAsync(int phoneId, int? employeeId, int locationId) =>
         (await _db.QueryAsync<int?>(SQLQueries.SELECT_ТелефонныйНомерОборудованиеПодключения,

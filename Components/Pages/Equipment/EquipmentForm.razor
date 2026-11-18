@@ -71,6 +71,63 @@
                 <MudAlert Severity="Severity.Error" Class="mb-3">@_validationMessage</MudAlert>
             }
 
+            @if (_lastInventory is not null || _upsLinks.Count > 0)
+            {
+                <div class="equipment-form-summary">
+                    @if (_lastInventory is not null)
+                    {
+                        <section class="equipment-last-inventory">
+                            <h3>Последняя инвентаризация</h3>
+                            <div>
+                                @FormatDisplayDate(_lastInventory.CheckedAt, true) —
+                                @if (EmployeeUrl(_lastInventory.ChangedById) is string employeeUrl)
+                                {
+                                    <a href="@employeeUrl" target="_blank" rel="noopener">@_lastInventory.ChangedByName</a>
+                                }
+                                else
+                                {
+                                    @_lastInventory.ChangedByName
+                                }
+                            </div>
+                            @if (_lastInventory.IsBeyondRepair > 0)
+                            {
+                                <div>Оборудование сломано и ремонту не подлежит.</div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(_lastInventory.Notes))
+                            {
+                                <div>@_lastInventory.Notes</div>
+                            }
+                            @if (_lastInventory.LocationId != _model.LocationId)
+                            {
+                                <MudAlert Severity="Severity.Warning">
+                                    Фактическое расположение не совпадает с учётным:
+                                    @(string.IsNullOrWhiteSpace(_lastInventory.LocationName) ? $"#{_lastInventory.LocationId}" : _lastInventory.LocationName).
+                                </MudAlert>
+                            }
+                        </section>
+                    }
+                    @if (_upsLinks.Count > 0)
+                    {
+                        <section class="equipment-ups-summary">
+                            <h3>Подключённые UPS</h3>
+                            @foreach (var ups in _upsLinks)
+                            {
+                                <div>
+                                    @if (EquipmentUrl(ups.UpsEquipmentId) is string upsUrl)
+                                    {
+                                        <a href="@upsUrl" target="_blank" rel="noopener">@ups.EquipmentName</a>
+                                    }
+                                    else
+                                    {
+                                        @ups.EquipmentName
+                                    }
+                                </div>
+                            }
+                        </section>
+                    }
+                </div>
+            }
+
             <MudForm @ref="_form">
                 <div class="equipment-form-fields">
                     <div class="equipment-form-pair equipment-form-writeoff-row">
@@ -167,6 +224,48 @@
                             }
                         </div>
                     </div>
+                    @if (ShowPhones)
+                    {
+                        @if (ShowHotelPhoneWarning)
+                        {
+                            <MudAlert Severity="Severity.Warning" Class="mb-2">
+                                На телефонном аппарате, расположенном в номере гостиницы, может быть только один телефонный номер.
+                            </MudAlert>
+                        }
+                        <div class="equipment-ins-row">
+                            <span class="equipment-ins-label">Новый номер:</span>
+                            <ClaySelect TItem="PhoneNumberLookup" TValue="int?"
+                                        DataSource="PhoneNumberSource"
+                                        ValueSelector="@(item => (int?)item.Id)"
+                                        TextSelector="@(item => item.Name)"
+                                        @bind-Value="_phoneToAdd"
+                                        Options="_phoneOptions" />
+                        </div>
+                        <ClayDetailGrid TItem="EquipmentPhoneLink"
+                                        Title="Телефонные номера"
+                                        Items="_phones"
+                                        Columns="PhoneColumns"
+                                        Options="_phoneGridOptions"
+                                        RowClass="@(item => item.ReturnDate?.Date < DateTime.UtcNow.Date ? "equipment-overdue" : null)"
+                                        OnAdd="AddPhoneAsync"
+                                        AddDisabled="@(_phoneToAdd is null || _saving)"
+                                        ReadOnly="@(!_canEdit)">
+                            <Actions Context="item">
+                                <ClayButton Icon="@Icons.Material.Filled.Schedule" Text="Изменить срок возврата"
+                                            Disabled="@(!_canEdit || _saving)" OnClick="@(() => EditPhoneReturnAsync(item))" />
+                                <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить связь с номером"
+                                            Disabled="@(!_canEdit || _saving)" OnClick="@(() => RemovePhoneAsync(item))" />
+                            </Actions>
+                        </ClayDetailGrid>
+                        @if (ShowCamera)
+                        {
+                            <div class="equipment-form-single">
+                                <span class="equipment-form-label">Камера:</span>
+                                <ClayCheckbox State="@(_model.CameraIsConnected != 0)" StateChanged="OnCameraChanged"
+                                              ReadOnly="@(!_canEdit)" Label="подключена камера" />
+                            </div>
+                        }
+                    }
                     @if (ShowNetworkName || MacCount > 0)
                     {
                         <div class="equipment-form-pair">
@@ -212,81 +311,86 @@
                                         Options="_phonePoolOptions" />
                         </div>
                     }
-                    @if (ShowCamera)
-                    {
-                        <div class="equipment-form-single">
-                            <span class="equipment-form-label">Камера:</span>
-                            <ClayCheckbox State="@(_model.CameraIsConnected != 0)" StateChanged="OnCameraChanged"
-                                          ReadOnly="@(!_canEdit)" Label="подключена камера" />
-                        </div>
-                    }
-                    <div class="equipment-form-pair">
-                        <span class="equipment-form-label">Владелец:</span>
-                        <ClaySelect TItem="PersonLookup" TValue="int?"
-                                    DataSource="PersonSource"
-                                    ValueSelector="@(item => (int?)item.Id)"
-                                    TextSelector="@(item => item.Name)"
-                                    Value="_model.OwnerId"
-                                    ValueChanged="OnOwnerChangedAsync"
-                                    Options="_ownerOptions" />
-                        <span class="equipment-form-label">Арендатор:</span>
-                        <ClaySelect TItem="PersonLookup" TValue="int?"
-                                    DataSource="PersonSource"
-                                    ValueSelector="@(item => (int?)item.Id)"
-                                    TextSelector="@(item => item.Name)"
-                                    @bind-Value="_model.TenantId"
-                                    Options="_tenantOptions" />
-                    </div>
-                    <div class="equipment-form-pair">
-                        <span class="equipment-form-label">Документ поступления:</span>
-                        <ClaySelect TItem="DocumentLookup" TValue="int?"
-                                    DataSource="ReceiptDocumentSource"
-                                    ValueSelector="@(item => (int?)item.Id)"
-                                    TextSelector="@(item => item.DisplayName)"
-                                    Value="_model.DocumentReceiptOuId"
-                                    ValueChanged="OnReceiptDocumentChangedAsync"
-                                    Options="_receiptDocumentOptions" />
-                        <span class="equipment-form-label">Поставщик:</span>
-                        <ClaySelect TItem="PersonLookup" TValue="int?"
-                                    DataSource="PersonSource"
-                                    ValueSelector="@(item => (int?)item.Id)"
-                                    TextSelector="@(item => item.Name)"
-                                    Value="_model.ShipperId"
-                                    ValueChanged="OnShipperChanged"
-                                    Options="_shipperOptions" />
-                    </div>
                 </div>
-            </MudForm>
             @if (!string.IsNullOrWhiteSpace(_warningMessage))
             {
                 <MudAlert Severity="Severity.Warning" Class="mt-3">@_warningMessage</MudAlert>
             }
-            @if (ShowPhones)
+            @if (ShowAccounts)
             {
-                <div class="equipment-ins-row">
-                    <span class="equipment-ins-label">Новый номер:</span>
-                    <ClaySelect TItem="PhoneNumberLookup" TValue="int?"
-                                DataSource="PhoneNumberSource"
-                                ValueSelector="@(item => (int?)item.Id)"
-                                TextSelector="@(item => item.Name)"
-                                @bind-Value="_phoneToAdd"
-                                Options="_phoneOptions" />
-                </div>
-                <ClayDetailGrid TItem="EquipmentPhoneLink"
-                                Title="Телефонные номера"
-                                Items="_phones"
-                                Columns="_phoneColumns"
-                                Options="_phoneGridOptions"
-                                OnAdd="AddPhoneAsync"
-                                AddDisabled="@(_phoneToAdd is null || _saving)"
+                <ClayDetailGrid TItem="EquipmentAccount"
+                                Title="Учётные записи"
+                                Items="_accounts"
+                                Columns="_accountColumns"
+                                Options="_accountGridOptions"
+                                OnAdd="@(() => OpenAccountDialogAsync(null))"
+                                AddDisabled="@(!_canEdit || _saving)"
                                 ReadOnly="@(!_canEdit)">
                     <Actions Context="item">
-                        <ClayButton Icon="@Icons.Material.Filled.Schedule" Text="Изменить срок возврата"
-                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => EditPhoneReturnAsync(item))" />
-                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить связь с номером"
-                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => RemovePhoneAsync(item))" />
+                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить учётную запись"
+                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenAccountDialogAsync(item))" />
+                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить учётную запись"
+                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => DeleteAccountAsync(item))" />
                     </Actions>
                 </ClayDetailGrid>
+            }
+            @if (ShowRouter)
+            {
+                @if (!string.IsNullOrWhiteSpace(_routerInfo?.Description))
+                {
+                    <div class="equipment-router-description">@_routerInfo.Description</div>
+                }
+                <ClayDetailGrid TItem="EquipmentRouterInventoryItem"
+                                Title="Маршрутизатор"
+                                Items="_routerInventory"
+                                Columns="_routerColumns"
+                                Options="_routerGridOptions"
+                                ReadOnly="true" />
+            }
+            @if (ShowSim)
+            {
+                <ClayDetailGrid TItem="EquipmentSimCard"
+                                Title="SIM-карта"
+                                Items="_simCards"
+                                Columns="_simColumns"
+                                Options="_simGridOptions"
+                                OnAdd="OpenSimDialogAsync"
+                                AddDisabled="@(!_canEditSim || _simCards.Count > 0 || _saving)"
+                                ReadOnly="@(!_canEditSim)">
+                    <Actions Context="item">
+                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить сведения SIM"
+                                    Disabled="@(!_canEditSim || _saving)" OnClick="OpenSimDialogAsync" />
+                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить сведения SIM"
+                                    Disabled="@(!_canEditSim || _saving)" OnClick="DeleteSimAsync" />
+                    </Actions>
+                </ClayDetailGrid>
+            }
+            @if (ShowLicense)
+            {
+                <ClayDetailGrid TItem="EquipmentLicense"
+                                Title="Лицензия"
+                                Items="_licenses"
+                                Columns="_licenseColumns"
+                                Options="_licenseGridOptions"
+                                OnAdd="OpenLicenseDialogAsync"
+                                AddDisabled="@(!_canEditLicense || _licenses.Count > 0 || _saving)"
+                                ReadOnly="@(!_canEditLicense)">
+                    <Actions Context="item">
+                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить лицензию"
+                                    Disabled="@(!_canEditLicense || _saving)" OnClick="OpenLicenseDialogAsync" />
+                    </Actions>
+                </ClayDetailGrid>
+            }
+            @if (ShowComputer)
+            {
+                <ClayDetailGrid TItem="EquipmentComputerSnapshot"
+                                Title="Компьютер"
+                                Items="_computerHistory"
+                                Columns="_computerColumns"
+                                Options="_computerGridOptions"
+                                OnAdd="OpenComputerDialogAsync"
+                                AddDisabled="@(!_canEdit || _saving)"
+                                ReadOnly="@(!_canEdit)" />
             }
             <ClayDetailGrid TItem="EquipmentLocationPeriod"
                             Title="Расположения"
@@ -319,86 +423,6 @@
                     }
                 </Actions>
             </ClayDetailGrid>
-            @if (ShowAccounts)
-            {
-                <ClayDetailGrid TItem="EquipmentAccount"
-                                Title="Учётные записи"
-                                Items="_accounts"
-                                Columns="_accountColumns"
-                                Options="_accountGridOptions"
-                                OnAdd="@(() => OpenAccountDialogAsync(null))"
-                                AddDisabled="@(!_canEdit || _saving)"
-                                ReadOnly="@(!_canEdit)">
-                    <Actions Context="item">
-                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить учётную запись"
-                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenAccountDialogAsync(item))" />
-                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить учётную запись"
-                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => DeleteAccountAsync(item))" />
-                    </Actions>
-                </ClayDetailGrid>
-            }
-            @if (ShowComputer)
-            {
-                <ClayDetailGrid TItem="EquipmentComputerSnapshot"
-                                Title="Компьютер"
-                                Items="_computerHistory"
-                                Columns="_computerColumns"
-                                Options="_computerGridOptions"
-                                OnAdd="OpenComputerDialogAsync"
-                                AddDisabled="@(!_canEdit || _saving)"
-                                ReadOnly="@(!_canEdit)" />
-            }
-            @if (ShowSim)
-            {
-                <ClayDetailGrid TItem="EquipmentSimCard"
-                                Title="SIM-карта"
-                                Items="_simCards"
-                                Columns="_simColumns"
-                                Options="_simGridOptions"
-                                OnAdd="OpenSimDialogAsync"
-                                AddDisabled="@(!_canEditSim || _simCards.Count > 0 || _saving)"
-                                ReadOnly="@(!_canEditSim)">
-                    <Actions Context="item">
-                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить сведения SIM"
-                                    Disabled="@(!_canEditSim || _saving)" OnClick="OpenSimDialogAsync" />
-                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить сведения SIM"
-                                    Disabled="@(!_canEditSim || _saving)" OnClick="DeleteSimAsync" />
-                    </Actions>
-                </ClayDetailGrid>
-                <div class="d-flex gap-4">
-                    <ClayCheckbox State="_showServiceHistory" StateChanged="value => _showServiceHistory = value == true" Label="Показать историю" OnToggle="OnSimServiceFiltersChangedAsync" />
-                    <ClayCheckbox State="_showCompanyRequiredServices" StateChanged="value => _showCompanyRequiredServices = value == true" Label="Показать обязательные услуги" OnToggle="OnSimServiceFiltersChangedAsync" />
-                </div>
-                <ClayDetailGrid TItem="EquipmentSimService"
-                                Title="Дополнительные услуги SIM"
-                                Items="_simServices"
-                                Columns="_simServiceColumns"
-                                Options="_simServiceGridOptions"
-                                OnAdd="@(() => OpenSimServiceDialogAsync(null))"
-                                AddDisabled="@(!_canEditSim || _simCards.Count == 0 || _saving)"
-                                ReadOnly="@(!_canEditSim)">
-                    <Actions Context="item">
-                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить дополнительную услугу"
-                                    Disabled="@(!_canEditSim || _saving)" OnClick="@(() => OpenSimServiceDialogAsync(item))" />
-                    </Actions>
-                </ClayDetailGrid>
-            }
-            @if (ShowLicense)
-            {
-                <ClayDetailGrid TItem="EquipmentLicense"
-                                Title="Лицензия"
-                                Items="_licenses"
-                                Columns="_licenseColumns"
-                                Options="_licenseGridOptions"
-                                OnAdd="OpenLicenseDialogAsync"
-                                AddDisabled="@(!_canEditLicense || _licenses.Count > 0 || _saving)"
-                                ReadOnly="@(!_canEditLicense)">
-                    <Actions Context="item">
-                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить лицензию"
-                                    Disabled="@(!_canEditLicense || _saving)" OnClick="OpenLicenseDialogAsync" />
-                    </Actions>
-                </ClayDetailGrid>
-            }
             @if (ShowComputer)
             {
                 <ClayDetailGrid TItem="EquipmentSoftwareInstallation"
@@ -406,6 +430,7 @@
                                 Items="_softwareInstallations"
                                 Columns="_softwareColumns"
                                 Options="_softwareGridOptions"
+                                RowClass="@(item => item.IsUninstalled > 0 ? "equipment-uninstalled" : null)"
                                 OnAdd="@(() => OpenSoftwareDialogAsync(null))"
                                 AddDisabled="@(!_canEdit || _saving)"
                                 ReadOnly="@(!_canEdit)">
@@ -433,19 +458,65 @@
                     }
                 </Actions>
             </ClayDetailGrid>
-            @if (ShowRouter)
+            <div class="equipment-form-fields equipment-form-ownership">
+                <div class="equipment-form-pair">
+                    <span class="equipment-form-label">Владелец:</span>
+                    <ClaySelect TItem="PersonLookup" TValue="int?"
+                                DataSource="PersonSource"
+                                ValueSelector="@(item => (int?)item.Id)"
+                                TextSelector="@(item => item.Name)"
+                                Value="_model.OwnerId"
+                                ValueChanged="OnOwnerChangedAsync"
+                                Options="_ownerOptions" />
+                    <span class="equipment-form-label">Арендатор:</span>
+                    <ClaySelect TItem="PersonLookup" TValue="int?"
+                                DataSource="PersonSource"
+                                ValueSelector="@(item => (int?)item.Id)"
+                                TextSelector="@(item => item.Name)"
+                                @bind-Value="_model.TenantId"
+                                Options="_tenantOptions" />
+                </div>
+                <div class="equipment-form-pair">
+                    <span class="equipment-form-label">Документ поступления:</span>
+                    <ClaySelect TItem="DocumentLookup" TValue="int?"
+                                DataSource="ReceiptDocumentSource"
+                                ValueSelector="@(item => (int?)item.Id)"
+                                TextSelector="@(item => item.DisplayName)"
+                                Value="_model.DocumentReceiptOuId"
+                                ValueChanged="OnReceiptDocumentChangedAsync"
+                                Options="_receiptDocumentOptions" />
+                    <span class="equipment-form-label">Поставщик:</span>
+                    <ClaySelect TItem="PersonLookup" TValue="int?"
+                                DataSource="PersonSource"
+                                ValueSelector="@(item => (int?)item.Id)"
+                                TextSelector="@(item => item.Name)"
+                                Value="_model.ShipperId"
+                                ValueChanged="OnShipperChanged"
+                                Options="_shipperOptions" />
+                </div>
+            </div>
+            @if (ShowSim)
             {
-                @if (!string.IsNullOrWhiteSpace(_routerInfo?.Description))
-                {
-                    <div class="equipment-router-description">@_routerInfo.Description</div>
-                }
-                <ClayDetailGrid TItem="EquipmentRouterInventoryItem"
-                                Title="Маршрутизатор"
-                                Items="_routerInventory"
-                                Columns="_routerColumns"
-                                Options="_routerGridOptions"
-                                ReadOnly="true" />
+                <div class="d-flex gap-4">
+                    <ClayCheckbox State="_showServiceHistory" StateChanged="value => _showServiceHistory = value == true" Label="Показать историю" OnToggle="OnSimServiceFiltersChangedAsync" />
+                    <ClayCheckbox State="_showCompanyRequiredServices" StateChanged="value => _showCompanyRequiredServices = value == true" Label="Показать обязательные услуги" OnToggle="OnSimServiceFiltersChangedAsync" />
+                </div>
+                <ClayDetailGrid TItem="EquipmentSimService"
+                                Title="Дополнительные услуги SIM"
+                                Items="_simServices"
+                                Columns="_simServiceColumns"
+                                Options="_simServiceGridOptions"
+                                RowClass="@(item => item.IsTariffPlan > 0 ? "equipment-recommended" : null)"
+                                OnAdd="@(() => OpenSimServiceDialogAsync(null))"
+                                AddDisabled="@(!_canEditSim || _simCards.Count == 0 || _saving)"
+                                ReadOnly="@(!_canEditSim)">
+                    <Actions Context="item">
+                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить дополнительную услугу"
+                                    Disabled="@(!_canEditSim || _saving)" OnClick="@(() => OpenSimServiceDialogAsync(item))" />
+                    </Actions>
+                </ClayDetailGrid>
             }
+            </MudForm>
             @if (_canManageUps)
             {
                 <div class="equipment-ins-row">
@@ -472,25 +543,6 @@
                                 Disabled="@(!_canManageUps || _saving)" OnClick="@(() => DeleteUpsLinkAsync(item))" />
                 </Actions>
             </ClayDetailGrid>
-            @if (_lastInventory is not null)
-            {
-                <section class="equipment-last-inventory">
-                    <h3>Последняя инвентаризация</h3>
-                    <div>@FormatDisplayDate(_lastInventory.CheckedAt, true) — @_lastInventory.ChangedByName</div>
-                    @if (_lastInventory.IsBeyondRepair > 0)
-                    {
-                        <div>Оборудование сломано и ремонту не подлежит.</div>
-                    }
-                    @if (!string.IsNullOrWhiteSpace(_lastInventory.Notes))
-                    {
-                        <div>@_lastInventory.Notes</div>
-                    }
-                    @if (_lastInventory.LocationId != _model.LocationId)
-                    {
-                        <MudAlert Severity="Severity.Warning">Фактическое расположение не совпадает с учётным (ID @_lastInventory.LocationId).</MudAlert>
-                    }
-                </section>
-            }
         }
     </ChildContent>
     <Footer>
