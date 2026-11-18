@@ -261,6 +261,21 @@
                     }
                 </Actions>
             </ClayDetailGrid>
+            <ClayDetailGrid TItem="EquipmentAccount"
+                            Title="Учётные записи"
+                            Items="_accounts"
+                            Columns="_accountColumns"
+                            Options="_accountGridOptions"
+                            OnAdd="@(() => OpenAccountDialogAsync(null))"
+                            AddDisabled="@(!_canEdit || _saving)"
+                            ReadOnly="@(!_canEdit)">
+                <Actions Context="item">
+                    <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить учётную запись"
+                                Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenAccountDialogAsync(item))" />
+                    <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить учётную запись"
+                                Disabled="@(!_canEdit || _saving)" OnClick="@(() => DeleteAccountAsync(item))" />
+                </Actions>
+            </ClayDetailGrid>
         }
     </ChildContent>
     <Footer>

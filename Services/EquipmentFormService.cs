@@ -69,6 +69,30 @@ public class EquipmentFormService
         EquipmentLocationPeriod? location) =>
         current.WithdrawAsync(_db, next, location);
 
+    /// <summary>Загружает учётные записи без паролей.</summary>
+    public virtual async Task<IReadOnlyList<EquipmentAccount>> GetAccountsAsync(int equipmentId) =>
+        (await _db.QueryAsync<EquipmentAccount>(
+            SQLQueries.SELECT_ОборудованиеУчётныеЗаписи, new { EquipmentId = equipmentId })).ToList();
+
+    /// <summary>Загружает пароль одной записи после серверной проверки роли.</summary>
+    public virtual async Task<string> GetAccountPasswordAsync(int equipmentId, string login)
+    {
+        if (!await HasRoleAsync(43))
+            throw new UnauthorizedAccessException("Недостаточно прав для просмотра пароля.");
+        return await _db.ExecuteScalarAsync<string>(
+            SQLQueries.SELECT_ОборудованиеУчётнаяЗаписьПароль,
+            new { EquipmentId = equipmentId, Login = login }, commandType: CommandType.Text) ?? string.Empty;
+    }
+
+    /// <summary>Добавляет учётную запись.</summary>
+    public virtual Task AddAccountAsync(EquipmentAccount account) => account.InsertAsync(_db);
+
+    /// <summary>Обновляет учётную запись.</summary>
+    public virtual Task UpdateAccountAsync(EquipmentAccount account) => account.UpdateAsync(_db);
+
+    /// <summary>Удаляет учётную запись.</summary>
+    public virtual Task DeleteAccountAsync(EquipmentAccount account) => account.DeleteAsync(_db);
+
     /// <summary>Атомарно сохраняет основную запись и телефонный diff.</summary>
     public virtual Task UpdateWithPhonesAsync(
         Equipment equipment,

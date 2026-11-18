@@ -1,0 +1,101 @@
+@using Clayzor.Lib.Web.Controls.Components.Form
+@inject Kesco.App.Web.Inventory.Services.EquipmentFormService Service
+
+<MudDialog>
+    <TitleContent>@(IsEdit ? "Изменение учётной записи" : "Новая учётная запись")</TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Error">@_error</MudAlert>
+        }
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Логин:</span>
+            <ClayTextBox @bind-Value="Login" Options="_loginOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Пароль:</span>
+            <ClayTextBox @bind-Value="Password" Options="_passwordOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Права:</span>
+            <ClayCheckbox @bind-State="LimitedRights" Label="Ограниченные права" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Примечание:</span>
+            <ClayTextBox @bind-Value="Notes" Options="_notesOptions" />
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Отмена</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply" Disabled="_loading">OK</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private readonly ClayTextBoxOptions _loginOptions = new() { Required = true, MaxLength = 50 };
+    private readonly ClayTextBoxOptions _passwordOptions = new() { MaxLength = 128, InputType = InputType.Password };
+    private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300 };
+    private bool _loading = true;
+    private string? _error;
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+
+    /// <summary>Идентификатор оборудования.</summary>
+    [Parameter] public int EquipmentId { get; set; }
+
+    /// <summary>Исходный логин; null означает новую запись.</summary>
+    [Parameter] public string? OriginalLogin { get; set; }
+
+    /// <summary>Логин.</summary>
+    [Parameter] public string Login { get; set; } = string.Empty;
+
+    /// <summary>Признак ограниченных прав.</summary>
+    [Parameter] public bool? LimitedRights { get; set; }
+
+    /// <summary>Примечание.</summary>
+    [Parameter] public string Notes { get; set; } = string.Empty;
+
+    /// <summary>Пароль, не передаваемый параметром из общего списка.</summary>
+    public string Password { get; private set; } = string.Empty;
+
+    private bool IsEdit => OriginalLogin is not null;
+
+    /// <inheritdoc />
+    protected override void OnParametersSet() => _loginOptions.ReadOnly = IsEdit;
+
+    /// <inheritdoc />
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+        if (IsEdit)
+        {
+            try
+            {
+                Password = await Service.GetAccountPasswordAsync(EquipmentId, OriginalLogin!);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _error = ex.Message;
+            }
+        }
+        _loading = false;
+        StateHasChanged();
+    }
+
+    private void Cancel() => Dialog.Cancel();
+
+    private void Apply()
+    {
+        Login = Login.Trim();
+        if (Login.Length == 0)
+        {
+            _error = "Укажите логин.";
+            return;
+        }
+        if (_error is not null)
+            return;
+        Dialog.Close(DialogResult.Ok(new EquipmentAccountDialogResult(
+            Login, Password, LimitedRights == true, Notes ?? string.Empty)));
+    }
+}

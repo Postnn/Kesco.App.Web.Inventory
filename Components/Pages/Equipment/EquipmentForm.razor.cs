@@ -41,6 +41,15 @@ public partial class EquipmentForm : IDisposable
     private readonly ClayDetailGridOptions _responsibleGridOptions = new() { EmptyText = "Нет ответственных", AddTooltip = "Выдать оборудование" };
     private IReadOnlyList<ClayDetailColumn<EquipmentResponsiblePeriod>> _responsibleColumns = null!;
     private List<EquipmentResponsiblePeriod> _responsibles = [];
+    private readonly ClayDetailGridOptions _accountGridOptions = new() { EmptyText = "Нет учётных записей", AddTooltip = "Добавить учётную запись" };
+    private readonly IReadOnlyList<ClayDetailColumn<EquipmentAccount>> _accountColumns =
+    [
+        new() { Title = "Логин", TextSelector = item => item.Login },
+        new() { Title = "Пароль", TextSelector = _ => "*****" },
+        new() { Title = "Ограниченные права", TextSelector = item => item.LimitedRights > 0 ? "Да" : "Нет" },
+        new() { Title = "Примечание", TextSelector = item => item.Notes },
+    ];
+    private List<EquipmentAccount> _accounts = [];
     private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
     private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Введите документ поступления" };
     private readonly ClaySelectOptions _writeOffDocumentOptions = new() { Placeholder = "Введите документ списания" };
@@ -67,6 +76,7 @@ public partial class EquipmentForm : IDisposable
     private int? _phoneToAdd;
     private int _phoneVersion;
     private int _locationVersion;
+    private int _accountVersion;
     private string? _warningMessage;
     private DateTime? _writeOffDate;
     private TimeSpan? _writeOffTime;
@@ -145,6 +155,7 @@ public partial class EquipmentForm : IDisposable
         _modelVersion++;
         _ownerVersion++;
         _shipperVersion++;
+        _accountVersion++;
         _loading = true;
         _loaded = false;
         _notFound = false;
@@ -186,6 +197,9 @@ public partial class EquipmentForm : IDisposable
             var responsibles = await Service.GetResponsiblesAsync(id);
             if (!IsCurrent(version, id))
                 return;
+            var accounts = await Service.GetAccountsAsync(id);
+            if (!IsCurrent(version, id))
+                return;
             DateTime? localWriteOff = null;
             if (model.WriteOffAtUtc is not null)
             {
@@ -203,6 +217,7 @@ public partial class EquipmentForm : IDisposable
             _originalPhones = ClonePhones(phones);
             _locations = locations.ToList();
             _responsibles = responsibles.ToList();
+            _accounts = accounts.ToList();
             await RefreshLocationDisplayDatesAsync();
             _phoneToAdd = null;
             _phoneVersion++;
@@ -664,6 +679,104 @@ public partial class EquipmentForm : IDisposable
                 StateHasChanged();
             }
         }
+    }
+
+    private async Task OpenAccountDialogAsync(EquipmentAccount? existing)
+    {
+        if (_model is null || !_canEdit || _saving)
+            return;
+        var parameters = new DialogParameters<EquipmentAccountDialog>
+        {
+            { dialog => dialog.EquipmentId, _model.Id },
+            { dialog => dialog.OriginalLogin, existing?.Login },
+            { dialog => dialog.Login, existing?.Login ?? string.Empty },
+            { dialog => dialog.LimitedRights, existing?.LimitedRights > 0 },
+            { dialog => dialog.Notes, existing?.Notes ?? string.Empty },
+        };
+        var dialog = await DialogService.ShowAsync<EquipmentAccountDialog>("Учётная запись", parameters);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not EquipmentAccountDialogResult value)
+            return;
+        var version = ++_accountVersion;
+        var equipmentId = _model.Id;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        try
+        {
+            var account = new EquipmentAccount
+            {
+                EquipmentId = equipmentId,
+                Login = value.Login,
+                Password = value.Password,
+                LimitedRights = value.LimitedRights ? (byte)1 : (byte)0,
+                Notes = value.Notes,
+            };
+            if (existing is null)
+                await Service.AddAccountAsync(account);
+            else
+                await Service.UpdateAccountAsync(account);
+            if (_disposed || version != _accountVersion || _model.Id != equipmentId)
+                return;
+            await RefreshAccountsAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _accountVersion)
+                _validationMessage = "Учётная запись не сохранена. Подробности — в сообщении базы данных.";
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task DeleteAccountAsync(EquipmentAccount account)
+    {
+        if (_model is null || !_canEdit || _saving ||
+            !await ConfirmAsync("Удаление учётной записи", $"Удалить учётную запись «{account.Login}»?"))
+            return;
+        var version = ++_accountVersion;
+        var equipmentId = _model.Id;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        try
+        {
+            await Service.DeleteAccountAsync(account);
+            if (_disposed || version != _accountVersion || _model.Id != equipmentId)
+                return;
+            await RefreshAccountsAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _accountVersion)
+                _validationMessage = "Учётная запись не удалена. Подробности — в сообщении базы данных.";
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task RefreshAccountsAsync()
+    {
+        if (_model is null)
+            return;
+        var version = _accountVersion;
+        var equipmentId = _model.Id;
+        var accounts = await Service.GetAccountsAsync(equipmentId);
+        if (_disposed || version != _accountVersion || _model.Id != equipmentId)
+            return;
+        _accounts = accounts.ToList();
     }
 
     private async Task RefreshLocationDisplayDatesAsync()
