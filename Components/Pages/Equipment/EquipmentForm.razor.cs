@@ -122,6 +122,14 @@ public partial class EquipmentForm : IDisposable
     ];
     private List<EquipmentAccounting> _accounting = [];
     private bool _canUseAccounting;
+    private EquipmentRouterInfo? _routerInfo;
+    private readonly ClayDetailGridOptions _routerGridOptions = new() { EmptyText = "Нет данных маршрутизатора" };
+    private readonly IReadOnlyList<ClayDetailColumn<EquipmentRouterInventoryItem>> _routerColumns =
+    [
+        new() { Title = "Модуль", TextSelector = item => item.Module },
+        new() { Title = "Характеристика", TextSelector = item => item.Characteristic },
+    ];
+    private List<EquipmentRouterInventoryItem> _routerInventory = [];
     private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
     private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Введите документ поступления" };
     private readonly ClaySelectOptions _writeOffDocumentOptions = new() { Placeholder = "Введите документ списания" };
@@ -192,6 +200,7 @@ public partial class EquipmentForm : IDisposable
     private bool ShowComputer => _selectedType?.HasComputerCharacteristics > 0;
     private bool ShowSim => _selectedType?.HasSimCharacteristics > 0;
     private bool ShowLicense => _selectedType?.HasSoftwareCharacteristics > 0;
+    private bool ShowRouter => _routerInfo is not null || _routerInventory.Count > 0;
     private bool PhonesModified => JsonSerializer.Serialize(_phones) != JsonSerializer.Serialize(_originalPhones);
     private bool ShowCamera => _selectedType?.HasMonitorCharacteristics > 0;
     private int MacCount => Math.Min(3, _selectedModel?.NetworkInterfaces ?? 0);
@@ -331,6 +340,8 @@ public partial class EquipmentForm : IDisposable
                 ? await Service.GetSoftwareInstallationsAsync(id)
                 : (IReadOnlyList<EquipmentSoftwareInstallation>)[];
             var accounting = await Service.GetAccountingAsync(id);
+            var routerInfo = await Service.GetRouterInfoAsync(id);
+            var routerInventory = await Service.GetRouterInventoryAsync(id);
             if (!IsCurrent(version, id))
                 return;
             DateTime? localWriteOff = null;
@@ -360,6 +371,8 @@ public partial class EquipmentForm : IDisposable
             _licenseTypes = licenseTypes;
             _softwareInstallations = softwareInstallations.ToList();
             _accounting = accounting.ToList();
+            _routerInfo = routerInfo;
+            _routerInventory = routerInventory.ToList();
             await RefreshLocationDisplayDatesAsync();
             _phoneToAdd = null;
             _phoneVersion++;

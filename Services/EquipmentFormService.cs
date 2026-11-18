@@ -150,6 +150,16 @@ public class EquipmentFormService
         return service.SaveAsync(_db);
     }
 
+    /// <summary>Загружает основные сведения маршрутизатора.</summary>
+    public virtual async Task<EquipmentRouterInfo?> GetRouterInfoAsync(int equipmentId) =>
+        (await _db.QueryAsync<EquipmentRouterInfo>(
+            SQLQueries.SELECT_Routers_КодОборудования, new { EquipmentId = equipmentId })).SingleOrDefault();
+
+    /// <summary>Загружает инвентаризацию маршрутизатора.</summary>
+    public virtual async Task<IReadOnlyList<EquipmentRouterInventoryItem>> GetRouterInventoryAsync(int equipmentId) =>
+        (await _db.QueryAsync<EquipmentRouterInventoryItem>(
+            SQLQueries.SELECT_КодОборудования_RouterInventory, new { EquipmentId = equipmentId })).ToList();
+
     /// <summary>Проверяет роли 66/68 и ведение бухгалтерского учёта владельцем.</summary>
     public virtual async Task<bool> CanUseAccountingAsync(int? personId)
     {

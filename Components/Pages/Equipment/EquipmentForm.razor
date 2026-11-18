@@ -372,6 +372,19 @@
                     </Actions>
                 </ClayDetailGrid>
             }
+            @if (ShowRouter)
+            {
+                @if (!string.IsNullOrWhiteSpace(_routerInfo?.Description))
+                {
+                    <div class="equipment-router-description">@_routerInfo.Description</div>
+                }
+                <ClayDetailGrid TItem="EquipmentRouterInventoryItem"
+                                Title="Маршрутизатор"
+                                Items="_routerInventory"
+                                Columns="_routerColumns"
+                                Options="_routerGridOptions"
+                                ReadOnly="true" />
+            }
         }
     </ChildContent>
     <Footer>
