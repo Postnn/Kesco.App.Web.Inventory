@@ -276,6 +276,17 @@
                                 Disabled="@(!_canEdit || _saving)" OnClick="@(() => DeleteAccountAsync(item))" />
                 </Actions>
             </ClayDetailGrid>
+            @if (ShowComputer)
+            {
+                <ClayDetailGrid TItem="EquipmentComputerSnapshot"
+                                Title="Компьютер"
+                                Items="_computerHistory"
+                                Columns="_computerColumns"
+                                Options="_computerGridOptions"
+                                OnAdd="OpenComputerDialogAsync"
+                                AddDisabled="@(!_canEdit || _saving)"
+                                ReadOnly="@(!_canEdit)" />
+            }
         }
     </ChildContent>
     <Footer>

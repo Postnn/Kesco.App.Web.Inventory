@@ -50,6 +50,19 @@ public partial class EquipmentForm : IDisposable
         new() { Title = "Примечание", TextSelector = item => item.Notes },
     ];
     private List<EquipmentAccount> _accounts = [];
+    private readonly ClayDetailGridOptions _computerGridOptions = new() { EmptyText = "Нет снимков конфигурации", AddTooltip = "Добавить или обновить текущий снимок" };
+    private readonly IReadOnlyList<ClayDetailColumn<EquipmentComputerSnapshot>> _computerColumns =
+    [
+        new() { Title = "Дата", TextSelector = item => item.Date.ToString("dd.MM.yyyy") },
+        new() { Title = "RAM, Мб", TextSelector = item => item.RamMb.ToString() },
+        new() { Title = "HD, Гб", TextSelector = item => item.HdGb.ToString("0.###") },
+        new() { Title = "SSD, Гб", TextSelector = item => item.SsdGb.ToString() },
+        new() { Title = "Лицензия", TextSelector = item => item.License },
+        new() { Title = "Примечания", TextSelector = item => item.Notes },
+        new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
+    ];
+    private List<EquipmentComputerSnapshot> _computerHistory = [];
+    private IReadOnlyList<StandardConfiguration> _standardConfigurations = [];
     private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
     private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Введите документ поступления" };
     private readonly ClaySelectOptions _writeOffDocumentOptions = new() { Placeholder = "Введите документ списания" };
@@ -77,6 +90,7 @@ public partial class EquipmentForm : IDisposable
     private int _phoneVersion;
     private int _locationVersion;
     private int _accountVersion;
+    private int _computerVersion;
     private string? _warningMessage;
     private DateTime? _writeOffDate;
     private TimeSpan? _writeOffTime;
@@ -109,6 +123,7 @@ public partial class EquipmentForm : IDisposable
     private bool ShowNetworkName => _selectedType?.HasNetworkName > 0;
     private bool ShowPhonePool => _selectedType?.HasPhoneNumber > 0;
     private bool ShowPhones => _selectedType?.HasPhoneNumber > 0;
+    private bool ShowComputer => _selectedType?.HasComputerCharacteristics > 0;
     private bool PhonesModified => JsonSerializer.Serialize(_phones) != JsonSerializer.Serialize(_originalPhones);
     private bool ShowCamera => _selectedType?.HasMonitorCharacteristics > 0;
     private int MacCount => Math.Min(3, _selectedModel?.NetworkInterfaces ?? 0);
@@ -156,6 +171,7 @@ public partial class EquipmentForm : IDisposable
         _ownerVersion++;
         _shipperVersion++;
         _accountVersion++;
+        _computerVersion++;
         _loading = true;
         _loaded = false;
         _notFound = false;
@@ -200,6 +216,14 @@ public partial class EquipmentForm : IDisposable
             var accounts = await Service.GetAccountsAsync(id);
             if (!IsCurrent(version, id))
                 return;
+            var computerHistory = selectedType?.HasComputerCharacteristics > 0
+                ? await Service.GetComputerHistoryAsync(id)
+                : (IReadOnlyList<EquipmentComputerSnapshot>)[];
+            var configurations = selectedType?.HasComputerCharacteristics > 0
+                ? await Service.GetStandardConfigurationsAsync()
+                : (IReadOnlyList<StandardConfiguration>)[];
+            if (!IsCurrent(version, id))
+                return;
             DateTime? localWriteOff = null;
             if (model.WriteOffAtUtc is not null)
             {
@@ -218,6 +242,8 @@ public partial class EquipmentForm : IDisposable
             _locations = locations.ToList();
             _responsibles = responsibles.ToList();
             _accounts = accounts.ToList();
+            _computerHistory = computerHistory.ToList();
+            _standardConfigurations = configurations;
             await RefreshLocationDisplayDatesAsync();
             _phoneToAdd = null;
             _phoneVersion++;
@@ -777,6 +803,77 @@ public partial class EquipmentForm : IDisposable
         if (_disposed || version != _accountVersion || _model.Id != equipmentId)
             return;
         _accounts = accounts.ToList();
+    }
+
+    private async Task OpenComputerDialogAsync()
+    {
+        if (_model is null || !_canEdit || _saving)
+            return;
+        var latest = _computerHistory.LastOrDefault();
+        var parameters = new DialogParameters<EquipmentComputerDialog>
+        {
+            { dialog => dialog.EquipmentId, _model.Id },
+            { dialog => dialog.Date, DateTime.Today },
+            { dialog => dialog.MemoryBanks, _selectedModel?.MemoryBanks ?? 0 },
+            { dialog => dialog.RamDetail, latest?.RamDetail ?? string.Empty },
+            { dialog => dialog.HdDetail, latest?.HdDetail ?? string.Empty },
+            { dialog => dialog.SsdDetail, latest?.SsdDetail ?? string.Empty },
+            { dialog => dialog.Configuration1Id, latest?.Configuration1Id },
+            { dialog => dialog.Configuration1Date, latest?.Configuration1Date },
+            { dialog => dialog.Configuration2Id, latest?.Configuration2Id },
+            { dialog => dialog.Configuration2Date, latest?.Configuration2Date },
+            { dialog => dialog.License, latest?.License ?? string.Empty },
+            { dialog => dialog.Notes, latest?.Notes ?? string.Empty },
+            { dialog => dialog.Configurations, _standardConfigurations },
+        };
+        var dialog = await DialogService.ShowAsync<EquipmentComputerDialog>("Компьютер", parameters);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not EquipmentComputerSnapshot snapshot)
+            return;
+        var version = ++_computerVersion;
+        var equipmentId = _model.Id;
+        snapshot.EquipmentId = equipmentId;
+        snapshot.Date = DateTime.Today;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        try
+        {
+            await Service.SaveComputerAsync(snapshot);
+            if (_disposed || version != _computerVersion || _model.Id != equipmentId)
+                return;
+            await RefreshComputerAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _computerVersion)
+                _validationMessage = "Конфигурация компьютера не сохранена. Подробности — в сообщении базы данных.";
+        }
+        catch (Exception ex) when (ex is FormatException or OverflowException)
+        {
+            if (!_disposed && version == _computerVersion)
+                _validationMessage = ex.Message;
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task RefreshComputerAsync()
+    {
+        if (_model is null)
+            return;
+        var version = _computerVersion;
+        var equipmentId = _model.Id;
+        var history = await Service.GetComputerHistoryAsync(equipmentId);
+        if (_disposed || version != _computerVersion || _model.Id != equipmentId)
+            return;
+        _computerHistory = history.ToList();
     }
 
     private async Task RefreshLocationDisplayDatesAsync()

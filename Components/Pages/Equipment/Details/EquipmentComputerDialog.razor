@@ -1,0 +1,202 @@
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Form
+
+<MudDialog>
+    <TitleContent>Конфигурация компьютера</TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Error">@_error</MudAlert>
+        }
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">RAM, Мб:</span>
+            <div>
+                @for (var i = 0; i < Ram.Count; i++)
+                {
+                    var index = i;
+                    <div class="d-flex gap-1">
+                        <ClayNumber Value="Ram[index]" ValueChanged="value => Ram[index] = value" Options="_integerOptions" />
+                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить компонент RAM" OnClick="() => Ram.RemoveAt(index)" />
+                    </div>
+                }
+                <MudButton OnClick="() => Ram.Add(0)">Добавить RAM</MudButton>
+            </div>
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">HD, Гб:</span>
+            <div>
+                @for (var i = 0; i < Hd.Count; i++)
+                {
+                    var index = i;
+                    <div class="d-flex gap-1">
+                        <ClayNumber Value="Hd[index]" ValueChanged="value => Hd[index] = value" Options="_diskOptions" />
+                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить компонент HD" OnClick="() => Hd.RemoveAt(index)" />
+                    </div>
+                }
+                <MudButton OnClick="() => Hd.Add(0)">Добавить HD</MudButton>
+            </div>
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">SSD, Гб:</span>
+            <div>
+                @for (var i = 0; i < Ssd.Count; i++)
+                {
+                    var index = i;
+                    <div class="d-flex gap-1">
+                        <ClayNumber Value="Ssd[index]" ValueChanged="value => Ssd[index] = value" Options="_integerOptions" />
+                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить компонент SSD" OnClick="() => Ssd.RemoveAt(index)" />
+                    </div>
+                }
+                <MudButton OnClick="() => Ssd.Add(0)">Добавить SSD</MudButton>
+            </div>
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Конфигурация 1:</span>
+            <ClayDropDownList TItem="StandardConfiguration" TValue="int?"
+                              Items="Configurations"
+                              ValueSelector="@(item => (int?)item.Id)"
+                              TextSelector="@(item => item.Name)"
+                              @bind-Value="Configuration1Id" />
+            <ClayDatePicker @bind-Value="Configuration1Date" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Конфигурация 2:</span>
+            <ClayDropDownList TItem="StandardConfiguration" TValue="int?"
+                              Items="Configurations"
+                              ValueSelector="@(item => (int?)item.Id)"
+                              TextSelector="@(item => item.Name)"
+                              @bind-Value="Configuration2Id" />
+            <ClayDatePicker @bind-Value="Configuration2Date" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Лицензия:</span>
+            <ClayTextBox @bind-Value="License" Options="_licenseOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Примечания:</span>
+            <ClayTextBox @bind-Value="Notes" Options="_notesOptions" />
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Отмена</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply">OK</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private readonly ClayNumberOptions _integerOptions = new() { Min = 0, Precision = 0 };
+    private readonly ClayNumberOptions _diskOptions = new() { Min = 0, Precision = 2, Step = 0.5m };
+    private readonly ClayTextBoxOptions _licenseOptions = new() { MaxLength = 50 };
+    private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300 };
+    private bool _initialized;
+    private string? _error;
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+
+    /// <summary>Идентификатор оборудования.</summary>
+    [Parameter] public int EquipmentId { get; set; }
+
+    /// <summary>Дата дневного снимка.</summary>
+    [Parameter] public DateTime Date { get; set; }
+
+    /// <summary>Максимальное число банков RAM.</summary>
+    [Parameter] public int MemoryBanks { get; set; }
+
+    /// <summary>Сериализованные компоненты RAM.</summary>
+    [Parameter] public string RamDetail { get; set; } = string.Empty;
+
+    /// <summary>Сериализованные компоненты HD.</summary>
+    [Parameter] public string HdDetail { get; set; } = string.Empty;
+
+    /// <summary>Сериализованные компоненты SSD.</summary>
+    [Parameter] public string SsdDetail { get; set; } = string.Empty;
+
+    /// <summary>Первая конфигурация.</summary>
+    [Parameter] public int? Configuration1Id { get; set; }
+
+    /// <summary>Дата первой конфигурации.</summary>
+    [Parameter] public DateTime? Configuration1Date { get; set; }
+
+    /// <summary>Вторая конфигурация.</summary>
+    [Parameter] public int? Configuration2Id { get; set; }
+
+    /// <summary>Дата второй конфигурации.</summary>
+    [Parameter] public DateTime? Configuration2Date { get; set; }
+
+    /// <summary>Лицензия.</summary>
+    [Parameter] public string License { get; set; } = string.Empty;
+
+    /// <summary>Примечания.</summary>
+    [Parameter] public string Notes { get; set; } = string.Empty;
+
+    /// <summary>Стандартные конфигурации.</summary>
+    [Parameter] public IReadOnlyList<StandardConfiguration> Configurations { get; set; } = [];
+
+    /// <summary>Редактируемые компоненты RAM.</summary>
+    public List<decimal?> Ram { get; } = [];
+
+    /// <summary>Редактируемые компоненты HD.</summary>
+    public List<decimal?> Hd { get; } = [];
+
+    /// <summary>Редактируемые компоненты SSD.</summary>
+    public List<decimal?> Ssd { get; } = [];
+
+    /// <inheritdoc />
+    protected override void OnParametersSet()
+    {
+        if (_initialized)
+            return;
+        _initialized = true;
+        try
+        {
+            Ram.AddRange(EquipmentComputerDetail.Parse(RamDetail).Select(value => (decimal?)value));
+            Hd.AddRange(EquipmentComputerDetail.Parse(HdDetail).Select(value => (decimal?)value));
+            Ssd.AddRange(EquipmentComputerDetail.Parse(SsdDetail).Select(value => (decimal?)value));
+        }
+        catch (FormatException ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private void Cancel() => Dialog.Cancel();
+
+    private void Apply()
+    {
+        if (_error is not null)
+            return;
+        if (MemoryBanks > 0 && Ram.Count > MemoryBanks)
+        {
+            _error = $"Число компонентов RAM не может превышать {MemoryBanks}.";
+            return;
+        }
+        try
+        {
+            var snapshot = new EquipmentComputerSnapshot
+            {
+                EquipmentId = EquipmentId,
+                Date = Date,
+                RamComponents = Values(Ram),
+                HdComponents = Values(Hd),
+                SsdComponents = Values(Ssd),
+                Configuration1Id = Configuration1Id,
+                Configuration1Date = Configuration1Date,
+                Configuration2Id = Configuration2Id,
+                Configuration2Date = Configuration2Date,
+                License = License ?? string.Empty,
+                Notes = Notes ?? string.Empty,
+            };
+            snapshot.RamDetail = EquipmentComputerDetail.Serialize(snapshot.RamComponents, false);
+            snapshot.HdDetail = EquipmentComputerDetail.Serialize(snapshot.HdComponents, true);
+            snapshot.SsdDetail = EquipmentComputerDetail.Serialize(snapshot.SsdComponents, false);
+            Dialog.Close(DialogResult.Ok(snapshot));
+        }
+        catch (FormatException ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private static IReadOnlyList<decimal> Values(IEnumerable<decimal?> values) =>
+        values.Where(value => value is not null).Select(value => value!.Value).ToList();
+}

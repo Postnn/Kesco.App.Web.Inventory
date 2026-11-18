@@ -93,6 +93,23 @@ public class EquipmentFormService
     /// <summary>Удаляет учётную запись.</summary>
     public virtual Task DeleteAccountAsync(EquipmentAccount account) => account.DeleteAsync(_db);
 
+    /// <summary>Загружает историю дневных конфигураций компьютера.</summary>
+    public virtual async Task<IReadOnlyList<EquipmentComputerSnapshot>> GetComputerHistoryAsync(int equipmentId)
+    {
+        var history = (await _db.QueryAsync<EquipmentComputerSnapshot>(
+            SQLQueries.SELECT_Компьютеры_КодОборудования, new { EquipmentId = equipmentId })).ToList();
+        foreach (var snapshot in history)
+            snapshot.ParseDetails();
+        return history;
+    }
+
+    /// <summary>Загружает стандартные конфигурации.</summary>
+    public virtual async Task<IReadOnlyList<StandardConfiguration>> GetStandardConfigurationsAsync() =>
+        (await _db.QueryAsync<StandardConfiguration>(SQLQueries.SELECT_СтандартныеКонфигурации)).ToList();
+
+    /// <summary>Добавляет или обновляет дневной снимок компьютера.</summary>
+    public virtual Task SaveComputerAsync(EquipmentComputerSnapshot snapshot) => snapshot.SaveAsync(_db);
+
     /// <summary>Атомарно сохраняет основную запись и телефонный diff.</summary>
     public virtual Task UpdateWithPhonesAsync(
         Equipment equipment,
