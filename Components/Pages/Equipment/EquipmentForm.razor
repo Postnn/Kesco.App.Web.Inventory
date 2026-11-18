@@ -559,8 +559,11 @@
                     <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="5" TextSelector="@(item => FormatDisplayDate(item.ChangedAtUtc, true))" />
                 </Columns>
                 <RowActions Context="item">
-                    <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить срок возврата и примечания"
-                                Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenLocationDialogAsync(item))" />
+                    @if (_locations.LastOrDefault() == item)
+                    {
+                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить срок возврата и примечания"
+                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenLocationDialogAsync(item))" />
+                    }
                 </RowActions>
             </ClayGrid>
             @if (_lastInventory is not null)
@@ -607,8 +610,11 @@
                     <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="5" TextSelector="@(item => FormatDisplayDate(item.ChangedAtUtc, true))" />
                 </Columns>
                 <RowActions Context="item">
-                    <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить срок возврата и примечания"
-                                Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenResponsibleDialogAsync(EquipmentResponsibleDialogMode.Edit, item))" />
+                    @if (_responsibles.LastOrDefault() == item)
+                    {
+                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить срок возврата и примечания"
+                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenResponsibleDialogAsync(EquipmentResponsibleDialogMode.Edit, item))" />
+                    }
                     @if (item.ToUtc is null)
                     {
                         <ClayButton Icon="@Icons.Material.Filled.PersonRemove" Text="Изыять оборудование"
