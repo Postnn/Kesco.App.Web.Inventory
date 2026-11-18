@@ -1,0 +1,68 @@
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Form
+
+<MudDialog>
+    <TitleContent>Тестирование UPS</TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Error">@_error</MudAlert>
+        }
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Дата и время:</span>
+            <div class="equipment-ins-date">
+                <ClayDatePicker @bind-Value="Date" Options="_dateOptions" />
+                <ClayTime @bind-Value="Time" Options="_timeOptions" />
+            </div>
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Время батарей:</span>
+            <ClayNumber Value="@((decimal?)Value.BatteryTime)" ValueChanged="value => Value.BatteryTime = (int)(value ?? 0)" Options="_batteryOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Серверы:</span>
+            <ClayTextBox @bind-Value="Value.Servers" Options="_serversOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Ошибки:</span>
+            <ClayTextArea @bind-Value="Value.Issues" Options="_issuesOptions" />
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Отмена</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply">OK</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private readonly ClayDatePickerOptions _dateOptions = new() { Required = true };
+    private readonly ClayTimeOptions _timeOptions = new() { Required = true };
+    private readonly ClayNumberOptions _batteryOptions = new() { Required = true, Min = 0 };
+    private readonly ClayTextBoxOptions _serversOptions = new() { MaxLength = 4000 };
+    private readonly ClayTextAreaOptions _issuesOptions = new() { MaxLength = 4000, Lines = 3 };
+    private string? _error;
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+
+    /// <summary>Редактируемый тест.</summary>
+    [Parameter] public UpsTest Value { get; set; } = new();
+
+    /// <summary>Дата тестирования.</summary>
+    [Parameter] public DateTime? Date { get; set; }
+
+    /// <summary>Время тестирования.</summary>
+    [Parameter] public TimeSpan? Time { get; set; }
+
+    private void Cancel() => Dialog.Cancel();
+
+    private void Apply()
+    {
+        if (Date is null || Time is null)
+        {
+            _error = "Укажите дату и время тестирования.";
+            return;
+        }
+        Value.TestedAt = Date.Value.Date.Add(Time.Value);
+        Dialog.Close(DialogResult.Ok(Value));
+    }
+}

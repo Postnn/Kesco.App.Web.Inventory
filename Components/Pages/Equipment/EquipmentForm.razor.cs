@@ -5,6 +5,7 @@ using Clayzor.Lib.Web.Controls.Components.Form;
 using Clayzor.Lib.Web.Controls.Components.Detail;
 using Clayzor.Lib.Web.Controls.Components.Select;
 using Clayzor.Lib.Web.DBSelect.Documents;
+using Clayzor.Lib.Web.DBSelect.Equipment;
 using Kesco.App.Web.Inventory.Components.Pages.Equipment.Details;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Routing;
@@ -130,6 +131,15 @@ public partial class EquipmentForm : IDisposable
         new() { Title = "Характеристика", TextSelector = item => item.Characteristic },
     ];
     private List<EquipmentRouterInventoryItem> _routerInventory = [];
+    private readonly ClayDetailGridOptions _upsGridOptions = new() { EmptyText = "Нет подключённых UPS" };
+    private readonly IReadOnlyList<ClayDetailColumn<UpsServerLink>> _upsColumns =
+    [
+        new() { Title = "UPS", TextSelector = item => item.EquipmentName },
+    ];
+    private List<UpsServerLink> _upsLinks = [];
+    private int? _upsToAdd;
+    private readonly ClaySelectOptions _upsSelectOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите UPS" };
+    private EquipmentActualInventory? _lastInventory;
     private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
     private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Введите документ поступления" };
     private readonly ClaySelectOptions _writeOffDocumentOptions = new() { Placeholder = "Введите документ списания" };
@@ -163,6 +173,7 @@ public partial class EquipmentForm : IDisposable
     private int _licenseVersion;
     private int _softwareVersion;
     private int _accountingVersion;
+    private int _upsVersion;
     private string? _warningMessage;
     private DateTime? _writeOffDate;
     private TimeSpan? _writeOffTime;
@@ -262,6 +273,7 @@ public partial class EquipmentForm : IDisposable
         _licenseVersion++;
         _softwareVersion++;
         _accountingVersion++;
+        _upsVersion++;
         _loading = true;
         _loaded = false;
         _notFound = false;
@@ -342,6 +354,8 @@ public partial class EquipmentForm : IDisposable
             var accounting = await Service.GetAccountingAsync(id);
             var routerInfo = await Service.GetRouterInfoAsync(id);
             var routerInventory = await Service.GetRouterInventoryAsync(id);
+            var upsLinks = await Service.GetUpsLinksAsync(id);
+            var lastInventory = await Service.GetLastInventoryAsync(id);
             if (!IsCurrent(version, id))
                 return;
             DateTime? localWriteOff = null;
@@ -373,6 +387,8 @@ public partial class EquipmentForm : IDisposable
             _accounting = accounting.ToList();
             _routerInfo = routerInfo;
             _routerInventory = routerInventory.ToList();
+            _upsLinks = upsLinks.ToList();
+            _lastInventory = lastInventory;
             await RefreshLocationDisplayDatesAsync();
             _phoneToAdd = null;
             _phoneVersion++;
@@ -1489,12 +1505,177 @@ public partial class EquipmentForm : IDisposable
         _canUseAccounting = await Service.CanUseAccountingAsync(_model.OwnerId);
     }
 
+    private UpsEquipmentSelectDataSource UpsSource => Services.GetRequiredKeyedService<UpsEquipmentSelectDataSource>("ups");
+
+    private async Task AddUpsLinkAsync()
+    {
+        if (_model is null || _upsToAdd is null || !_canEdit || _saving)
+            return;
+        var version = ++_upsVersion;
+        var equipmentId = _model.Id;
+        var upsId = _upsToAdd.Value;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        try
+        {
+            await Service.AddUpsLinkAsync(upsId, equipmentId);
+            if (_disposed || version != _upsVersion || _model.Id != equipmentId)
+                return;
+            _upsToAdd = null;
+            await RefreshUpsLinksAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _upsVersion)
+                _validationMessage = "UPS не подключён. Подробности — в сообщении базы данных.";
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task DeleteUpsLinkAsync(UpsServerLink link)
+    {
+        if (_model is null || !_canEdit || _saving ||
+            !await ConfirmAsync("Удаление связи UPS", $"Удалить связь с UPS #{link.UpsEquipmentId}?"))
+            return;
+        var version = ++_upsVersion;
+        var equipmentId = _model.Id;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        try
+        {
+            await Service.DeleteUpsLinkAsync(link.UpsEquipmentId, equipmentId);
+            if (_disposed || version != _upsVersion || _model.Id != equipmentId)
+                return;
+            await RefreshUpsLinksAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _upsVersion)
+                _validationMessage = "Связь UPS не удалена. Подробности — в сообщении базы данных.";
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task OpenUpsDialogAsync(UpsServerLink link)
+    {
+        if (_model is null || !_canEdit || _saving)
+            return;
+        var version = ++_upsVersion;
+        var equipmentId = _model.Id;
+        var originalServers = (await Service.GetUpsServersAsync(link.UpsEquipmentId)).ToList();
+        var originalTests = (await Service.GetUpsTestsAsync(link.UpsEquipmentId)).ToList();
+        if (_disposed || version != _upsVersion || _model.Id != equipmentId)
+            return;
+        var dialogServers = CloneUpsServers(originalServers);
+        var dialogTests = new List<UpsTest>();
+        foreach (var test in originalTests)
+        {
+            var utc = DateTime.SpecifyKind(test.TestedAt, DateTimeKind.Utc);
+            var offset = await JS.InvokeAsync<int>("clayGridTimeZone.getOffsetMinutes", utc.ToString("O"));
+            dialogTests.Add(CloneUpsTest(test, utc.AddMinutes(offset)));
+        }
+        var parameters = new DialogParameters<EquipmentUpsDialog>
+        {
+            { dialog => dialog.UpsEquipmentId, link.UpsEquipmentId },
+            { dialog => dialog.Servers, dialogServers },
+            { dialog => dialog.Tests, dialogTests },
+        };
+        var dialog = await DialogService.ShowAsync<EquipmentUpsDialog>("Подключение UPS", parameters);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not EquipmentUpsDialogResult value)
+            return;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        try
+        {
+            var currentTests = new List<UpsTest>();
+            foreach (var test in value.Tests)
+                currentTests.Add(CloneUpsTest(test, await ConvertLocalToUtcAsync(test.TestedAt)));
+            if (_disposed || version != _upsVersion || _model.Id != equipmentId)
+                return;
+            await Service.SaveUpsDetailsAsync(
+                link.UpsEquipmentId, originalServers, value.Servers, originalTests, currentTests);
+            if (_disposed || version != _upsVersion || _model.Id != equipmentId)
+                return;
+            await RefreshUpsLinksAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _upsVersion)
+                _validationMessage = "Подключение UPS не сохранено. Подробности — в сообщении базы данных.";
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (!_disposed && version == _upsVersion)
+                _validationMessage = ex.Message;
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task RefreshUpsLinksAsync()
+    {
+        if (_model is null)
+            return;
+        var version = _upsVersion;
+        var equipmentId = _model.Id;
+        var links = await Service.GetUpsLinksAsync(equipmentId);
+        if (_disposed || version != _upsVersion || _model.Id != equipmentId)
+            return;
+        _upsLinks = links.ToList();
+    }
+
+    private static List<UpsServerLink> CloneUpsServers(IEnumerable<UpsServerLink> source) => source.Select(item => new UpsServerLink
+    {
+        UpsEquipmentId = item.UpsEquipmentId,
+        ServerEquipmentId = item.ServerEquipmentId,
+        TurnOffConfigured = item.TurnOffConfigured,
+        ServerName = item.ServerName,
+        EquipmentName = item.EquipmentName,
+    }).ToList();
+
+    private static UpsTest CloneUpsTest(UpsTest item, DateTime testedAt) => new()
+    {
+        Id = item.Id,
+        UpsEquipmentId = item.UpsEquipmentId,
+        TestedAt = testedAt,
+        BatteryTime = item.BatteryTime,
+        Servers = item.Servers,
+        Issues = item.Issues,
+        ChangedByName = item.ChangedByName,
+        ChangedAt = item.ChangedAt,
+    };
+
     private async Task RefreshLocationDisplayDatesAsync()
     {
         _localDates.Clear();
         var dates = _locations.SelectMany(item => new[] { item.FromUtc, item.ChangedAtUtc })
             .Concat(_responsibles.SelectMany(item => new[] { item.FromUtc, item.ToUtc ?? default, item.ChangedAtUtc }))
             .Concat(_simCards.SelectMany(item => new[] { item.ActivatedAtUtc, item.ChangedAt }))
+            .Concat(_lastInventory is null ? Array.Empty<DateTime>() : new[] { _lastInventory.CheckedAt, _lastInventory.ChangedAt })
             .Where(item => item != default)
             .Distinct();
         foreach (var utc in dates)

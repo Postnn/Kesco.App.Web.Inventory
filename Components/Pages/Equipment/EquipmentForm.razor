@@ -385,6 +385,48 @@
                                 Options="_routerGridOptions"
                                 ReadOnly="true" />
             }
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Подключить UPS:</span>
+                <ClaySelect TItem="UpsEquipmentLookup" TValue="int?"
+                            DataSource="UpsSource"
+                            ValueSelector="@(item => (int?)item.Id)"
+                            TextSelector="@(item => item.Name)"
+                            @bind-Value="_upsToAdd"
+                            Options="_upsSelectOptions" />
+                <MudButton OnClick="AddUpsLinkAsync" Disabled="@(!_canEdit || _upsToAdd is null || _saving)">Подключить</MudButton>
+            </div>
+            <ClayDetailGrid TItem="UpsServerLink"
+                            Title="Подключённые UPS"
+                            Items="_upsLinks"
+                            Columns="_upsColumns"
+                            Options="_upsGridOptions"
+                            ReadOnly="@(!_canEdit)">
+                <Actions Context="item">
+                    <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Серверы и тесты UPS"
+                                Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenUpsDialogAsync(item))" />
+                    <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить связь UPS"
+                                Disabled="@(!_canEdit || _saving)" OnClick="@(() => DeleteUpsLinkAsync(item))" />
+                </Actions>
+            </ClayDetailGrid>
+            @if (_lastInventory is not null)
+            {
+                <section class="equipment-last-inventory">
+                    <h3>Последняя инвентаризация</h3>
+                    <div>@FormatDisplayDate(_lastInventory.CheckedAt, true) — @_lastInventory.ChangedByName</div>
+                    @if (_lastInventory.IsBeyondRepair > 0)
+                    {
+                        <div>Оборудование сломано и ремонту не подлежит.</div>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(_lastInventory.Notes))
+                    {
+                        <div>@_lastInventory.Notes</div>
+                    }
+                    @if (_lastInventory.LocationId != _model.LocationId)
+                    {
+                        <MudAlert Severity="Severity.Warning">Фактическое расположение не совпадает с учётным (ID @_lastInventory.LocationId).</MudAlert>
+                    }
+                </section>
+            }
         }
     </ChildContent>
     <Footer>

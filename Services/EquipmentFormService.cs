@@ -150,6 +150,53 @@ public class EquipmentFormService
         return service.SaveAsync(_db);
     }
 
+    /// <summary>Загружает UPS, подключённые к серверу.</summary>
+    public virtual async Task<IReadOnlyList<UpsServerLink>> GetUpsLinksAsync(int serverEquipmentId) =>
+        (await _db.QueryAsync<UpsServerLink>(
+            SQLQueries.SELECT_ID_vwПодключенияUPS, new { ServerEquipmentId = serverEquipmentId })).ToList();
+
+    /// <summary>Быстро подключает UPS к серверу.</summary>
+    public virtual Task AddUpsLinkAsync(int upsEquipmentId, int serverEquipmentId) =>
+        _db.ExecuteAsync(SQLQueries.INSERT_СерверПодключенияUPSОборудование,
+            new { КодОборудованияUPS = upsEquipmentId, КодОборудованияСервера = serverEquipmentId },
+            commandType: CommandType.Text);
+
+    /// <summary>Удаляет связь UPS и сервера.</summary>
+    public virtual Task DeleteUpsLinkAsync(int upsEquipmentId, int serverEquipmentId) =>
+        _db.ExecuteAsync(SQLQueries.DELETE_СерверПодключенияUPS,
+            new { КодОборудованияUPS = upsEquipmentId, КодОборудованияСервера = serverEquipmentId },
+            commandType: CommandType.Text);
+
+    /// <summary>Загружает серверы выбранного UPS.</summary>
+    public virtual async Task<IReadOnlyList<UpsServerLink>> GetUpsServersAsync(int upsEquipmentId) =>
+        (await _db.QueryAsync<UpsServerLink>(
+            SQLQueries.SELECT_ID_СервераПодключенияUPS, new { UpsEquipmentId = upsEquipmentId })).ToList();
+
+    /// <summary>Загружает тесты выбранного UPS.</summary>
+    public virtual async Task<IReadOnlyList<UpsTest>> GetUpsTestsAsync(int upsEquipmentId) =>
+        (await _db.QueryAsync<UpsTest>(
+            SQLQueries.SELECT_ID_ТестыПодключенияUPS, new { UpsEquipmentId = upsEquipmentId })).ToList();
+
+    /// <summary>Сохраняет diff серверов и тестов одной транзакцией.</summary>
+    public virtual Task SaveUpsDetailsAsync(
+        int upsEquipmentId,
+        IReadOnlyCollection<UpsServerLink> originalServers,
+        IReadOnlyCollection<UpsServerLink> currentServers,
+        IReadOnlyCollection<UpsTest> originalTests,
+        IReadOnlyCollection<UpsTest> currentTests)
+    {
+        if (upsEquipmentId <= 0)
+            throw new InvalidOperationException("Подключение UPS отсутствует в БД.");
+        return UpsServerLink.SaveDetailsAsync(
+            _db, upsEquipmentId, originalServers, currentServers, originalTests, currentTests);
+    }
+
+    /// <summary>Загружает последнюю инвентаризацию оборудования.</summary>
+    public virtual async Task<EquipmentActualInventory?> GetLastInventoryAsync(int equipmentId) =>
+        (await _db.QueryAsync<EquipmentActualInventory>(
+            SQLQueries.SELECT_ID_РеальноеРасположениеОборудования_ПоследнееРасположение,
+            new { EquipmentId = equipmentId })).SingleOrDefault();
+
     /// <summary>Загружает основные сведения маршрутизатора.</summary>
     public virtual async Task<EquipmentRouterInfo?> GetRouterInfoAsync(int equipmentId) =>
         (await _db.QueryAsync<EquipmentRouterInfo>(

@@ -101,6 +101,12 @@ builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Equipment.AccountingDoc
     return new Clayzor.Lib.Web.DBSelect.Equipment.AccountingDocumentSelectDataSource(
         new DbManager(connectionString, sp.GetRequiredService<ISqlErrorHandler>()), writeOff: true);
 });
+builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Equipment.UpsEquipmentSelectDataSource>("ups", (sp, _) =>
+    new Clayzor.Lib.Web.DBSelect.Equipment.UpsEquipmentSelectDataSource(
+        sp.GetRequiredService<DbManager>(), upsOnly: true));
+builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Equipment.UpsEquipmentSelectDataSource>("server", (sp, _) =>
+    new Clayzor.Lib.Web.DBSelect.Equipment.UpsEquipmentSelectDataSource(
+        sp.GetRequiredService<DbManager>(), upsOnly: false));
 builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.ModelEquipmentFormService>();
 builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.EquipmentInsService>();
 builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.EquipmentFormService>();
