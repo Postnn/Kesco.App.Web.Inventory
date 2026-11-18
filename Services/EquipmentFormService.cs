@@ -51,6 +51,24 @@ public class EquipmentFormService
     /// <summary>Обновляет срок возврата и примечания расположения.</summary>
     public virtual Task UpdateLocationAsync(EquipmentLocationPeriod location) => location.UpdateAsync(_db);
 
+    /// <summary>Загружает историю ответственных сотрудников.</summary>
+    public virtual async Task<IReadOnlyList<EquipmentResponsiblePeriod>> GetResponsiblesAsync(int equipmentId) =>
+        (await _db.QueryAsync<EquipmentResponsiblePeriod>(
+            SQLQueries.SELECT_ОборудованиеСотрудники, new { EquipmentId = equipmentId })).ToList();
+
+    /// <summary>Добавляет нового ответственного.</summary>
+    public virtual Task IssueResponsibleAsync(EquipmentResponsiblePeriod responsible) => responsible.InsertAsync(_db);
+
+    /// <summary>Обновляет срок возврата, примечания и окончание ответственного.</summary>
+    public virtual Task UpdateResponsibleAsync(EquipmentResponsiblePeriod responsible) => responsible.UpdateAsync(_db);
+
+    /// <summary>Изымает оборудование и атомарно сохраняет связанные записи.</summary>
+    public virtual Task WithdrawResponsibleAsync(
+        EquipmentResponsiblePeriod current,
+        EquipmentResponsiblePeriod? next,
+        EquipmentLocationPeriod? location) =>
+        current.WithdrawAsync(_db, next, location);
+
     /// <summary>Атомарно сохраняет основную запись и телефонный diff.</summary>
     public virtual Task UpdateWithPhonesAsync(
         Equipment equipment,

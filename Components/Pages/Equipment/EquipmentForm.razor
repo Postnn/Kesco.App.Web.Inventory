@@ -243,6 +243,24 @@
                                 Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenLocationDialogAsync(item))" />
                 </Actions>
             </ClayDetailGrid>
+            <ClayDetailGrid TItem="EquipmentResponsiblePeriod"
+                            Title="Ответственные"
+                            Items="_responsibles"
+                            Columns="_responsibleColumns"
+                            Options="_responsibleGridOptions"
+                            OnAdd="@(() => OpenResponsibleDialogAsync(EquipmentResponsibleDialogMode.Issue, null))"
+                            AddDisabled="@(!_canEdit || _saving)"
+                            ReadOnly="@(!_canEdit)">
+                <Actions Context="item">
+                    <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить срок возврата и примечания"
+                                Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenResponsibleDialogAsync(EquipmentResponsibleDialogMode.Edit, item))" />
+                    @if (item.ToUtc is null)
+                    {
+                        <ClayButton Icon="@Icons.Material.Filled.PersonRemove" Text="Изыять оборудование"
+                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenResponsibleDialogAsync(EquipmentResponsibleDialogMode.Withdraw, item))" />
+                    }
+                </Actions>
+            </ClayDetailGrid>
         }
     </ChildContent>
     <Footer>
