@@ -150,6 +150,29 @@ public class EquipmentFormService
         return service.SaveAsync(_db);
     }
 
+    /// <summary>Загружает лицензию оборудования.</summary>
+    public virtual async Task<IReadOnlyList<EquipmentLicense>> GetLicensesAsync(int equipmentId) =>
+        (await _db.QueryAsync<EquipmentLicense>(
+            SQLQueries.SELECT_Soft_КодОборудования, new { EquipmentId = equipmentId })).ToList();
+
+    /// <summary>Загружает типы лицензирования.</summary>
+    public virtual async Task<IReadOnlyList<LicenseType>> GetLicenseTypesAsync() =>
+        (await _db.QueryAsync<LicenseType>(SQLQueries.SELECT_ТипыЛицензирования)).ToList();
+
+    /// <summary>Проверяет и сохраняет лицензию.</summary>
+    public virtual Task SaveLicenseAsync(EquipmentLicense license, LicenseType? type)
+    {
+        var validation = license.Validate(type);
+        if (validation is not null)
+            throw new InvalidOperationException(validation);
+        return license.SaveAsync(_db);
+    }
+
+    /// <summary>Проверяет роль текущего пользователя по конкретному лицу.</summary>
+    public virtual async Task<bool> HasRoleForPersonAsync(int roleId, int? personId) =>
+        await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_ТекущийПользовательИмеетРольПоЛицу,
+            new { RoleId = roleId, PersonId = personId }, commandType: CommandType.Text) == 1;
+
     /// <summary>Загружает историю дневных конфигураций компьютера.</summary>
     public virtual async Task<IReadOnlyList<EquipmentComputerSnapshot>> GetComputerHistoryAsync(int equipmentId)
     {

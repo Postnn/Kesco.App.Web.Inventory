@@ -19,6 +19,7 @@ public partial class EquipmentForm : IDisposable
 {
     private const int InventorySpecialistRoleId = 43;
     private const int SimSpecialistRoleId = 42;
+    private const int LicenseSpecialistRoleId = 44;
     private const int SimEquipmentTypeId = 27;
     private const int OnHandsLocationId = 55;
 
@@ -82,6 +83,20 @@ public partial class EquipmentForm : IDisposable
     private IReadOnlyList<SimServiceType> _simServiceTypes = [];
     private bool _showServiceHistory;
     private bool _showCompanyRequiredServices;
+    private readonly ClayDetailGridOptions _licenseGridOptions = new() { EmptyText = "Нет лицензии", AddTooltip = "Добавить лицензию" };
+    private readonly IReadOnlyList<ClayDetailColumn<EquipmentLicense>> _licenseColumns =
+    [
+        new() { Title = "Тип", TextSelector = item => item.LicenseTypeName },
+        new() { Title = "Номер", TextSelector = item => item.LicenseeNumber },
+        new() { Title = "Серверы", TextSelector = item => item.ServerCount?.ToString() ?? string.Empty },
+        new() { Title = "Клиенты", TextSelector = item => item.ClientCount?.ToString() ?? string.Empty },
+        new() { Title = "С", TextSelector = item => item.DateFrom?.ToString("dd.MM.yyyy") ?? string.Empty },
+        new() { Title = "По", TextSelector = item => item.DateTo?.ToString("dd.MM.yyyy") ?? string.Empty },
+        new() { Title = "Дистрибутив", TextSelector = item => item.Distribution },
+        new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
+    ];
+    private List<EquipmentLicense> _licenses = [];
+    private IReadOnlyList<LicenseType> _licenseTypes = [];
     private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
     private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Введите документ поступления" };
     private readonly ClaySelectOptions _writeOffDocumentOptions = new() { Placeholder = "Введите документ списания" };
@@ -112,12 +127,14 @@ public partial class EquipmentForm : IDisposable
     private int _computerVersion;
     private int _simVersion;
     private int _simServiceVersion;
+    private int _licenseVersion;
     private string? _warningMessage;
     private DateTime? _writeOffDate;
     private TimeSpan? _writeOffTime;
     private bool _sortTypesByName;
     private bool _canEdit;
     private bool _canEditSim;
+    private bool _canEditLicense;
     private bool _loading = true;
     private bool _saving;
     private bool _loaded;
@@ -147,6 +164,7 @@ public partial class EquipmentForm : IDisposable
     private bool ShowPhones => _selectedType?.HasPhoneNumber > 0;
     private bool ShowComputer => _selectedType?.HasComputerCharacteristics > 0;
     private bool ShowSim => _selectedType?.HasSimCharacteristics > 0;
+    private bool ShowLicense => _selectedType?.HasSoftwareCharacteristics > 0;
     private bool PhonesModified => JsonSerializer.Serialize(_phones) != JsonSerializer.Serialize(_originalPhones);
     private bool ShowCamera => _selectedType?.HasMonitorCharacteristics > 0;
     private int MacCount => Math.Min(3, _selectedModel?.NetworkInterfaces ?? 0);
@@ -205,6 +223,7 @@ public partial class EquipmentForm : IDisposable
         _computerVersion++;
         _simVersion++;
         _simServiceVersion++;
+        _licenseVersion++;
         _loading = true;
         _loaded = false;
         _notFound = false;
@@ -232,6 +251,10 @@ public partial class EquipmentForm : IDisposable
                 return;
             var canEditSim = selectedType?.HasSimCharacteristics > 0 &&
                              await Service.HasRoleAsync(SimSpecialistRoleId);
+            var canEditLicense = selectedType?.HasSoftwareCharacteristics > 0 &&
+                                 (await Service.HasRoleForPersonAsync(LicenseSpecialistRoleId, model.OwnerId) ||
+                                  model.TenantId is not null && model.TenantId != model.OwnerId &&
+                                  await Service.HasRoleForPersonAsync(LicenseSpecialistRoleId, model.TenantId));
             if (!IsCurrent(version, id))
                 return;
             var selectedModel = model.ModelId is > 0
@@ -268,6 +291,12 @@ public partial class EquipmentForm : IDisposable
             var simServiceTypes = selectedType?.HasSimCharacteristics > 0
                 ? await Service.GetSimServiceTypesAsync()
                 : (IReadOnlyList<SimServiceType>)[];
+            var licenses = selectedType?.HasSoftwareCharacteristics > 0
+                ? await Service.GetLicensesAsync(id)
+                : (IReadOnlyList<EquipmentLicense>)[];
+            var licenseTypes = selectedType?.HasSoftwareCharacteristics > 0
+                ? await Service.GetLicenseTypesAsync()
+                : (IReadOnlyList<LicenseType>)[];
             if (!IsCurrent(version, id))
                 return;
             DateTime? localWriteOff = null;
@@ -293,6 +322,8 @@ public partial class EquipmentForm : IDisposable
             _simCards = simCards.ToList();
             _simServices = simServices.ToList();
             _simServiceTypes = simServiceTypes;
+            _licenses = licenses.ToList();
+            _licenseTypes = licenseTypes;
             await RefreshLocationDisplayDatesAsync();
             _phoneToAdd = null;
             _phoneVersion++;
@@ -304,6 +335,7 @@ public partial class EquipmentForm : IDisposable
             _writeOffTime = localWriteOff?.TimeOfDay;
             _canEdit = canEdit;
             _canEditSim = canEditSim;
+            _canEditLicense = canEditLicense;
             _loaded = true;
             UpdateOptions();
             _originalSnapshot = Snapshot();
@@ -1130,6 +1162,81 @@ public partial class EquipmentForm : IDisposable
         if (_disposed || version != _simServiceVersion || _model.Id != equipmentId)
             return;
         _simServices = services.ToList();
+    }
+
+    private async Task OpenLicenseDialogAsync()
+    {
+        if (_model is null || !_canEditLicense || _saving)
+            return;
+        var existing = _licenses.SingleOrDefault();
+        var value = existing is null
+            ? new EquipmentLicense { EquipmentId = _model.Id }
+            : new EquipmentLicense
+            {
+                EquipmentId = _model.Id,
+                LicenseTypeId = existing.LicenseTypeId,
+                LicenseTypeName = existing.LicenseTypeName,
+                LicenseeNumber = existing.LicenseeNumber,
+                VerificationUrl = existing.VerificationUrl,
+                ServerCount = existing.ServerCount,
+                ClientCount = existing.ClientCount,
+                DateFrom = existing.DateFrom,
+                DateTo = existing.DateTo,
+                Distribution = existing.Distribution,
+            };
+        var parameters = new DialogParameters<EquipmentLicenseDialog>
+        {
+            { dialog => dialog.Value, value },
+            { dialog => dialog.Types, _licenseTypes },
+        };
+        var dialog = await DialogService.ShowAsync<EquipmentLicenseDialog>("Лицензия", parameters);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not EquipmentLicense license)
+            return;
+        var version = ++_licenseVersion;
+        var equipmentId = _model.Id;
+        license.EquipmentId = equipmentId;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        try
+        {
+            await Service.SaveLicenseAsync(license,
+                _licenseTypes.FirstOrDefault(item => item.Id == license.LicenseTypeId));
+            if (_disposed || version != _licenseVersion || _model.Id != equipmentId)
+                return;
+            await RefreshLicensesAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _licenseVersion)
+                _validationMessage = "Лицензия не сохранена. Подробности — в сообщении базы данных.";
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (!_disposed && version == _licenseVersion)
+                _validationMessage = ex.Message;
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task RefreshLicensesAsync()
+    {
+        if (_model is null)
+            return;
+        var version = _licenseVersion;
+        var equipmentId = _model.Id;
+        var licenses = await Service.GetLicensesAsync(equipmentId);
+        if (_disposed || version != _licenseVersion || _model.Id != equipmentId)
+            return;
+        _licenses = licenses.ToList();
     }
 
     private async Task RefreshLocationDisplayDatesAsync()

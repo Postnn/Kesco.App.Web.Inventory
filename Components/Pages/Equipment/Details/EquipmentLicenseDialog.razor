@@ -1,0 +1,102 @@
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Form
+
+<MudDialog>
+    <TitleContent>Лицензия</TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Error">@_error</MudAlert>
+        }
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Тип:</span>
+            <ClayDropDownList TItem="LicenseType" TValue="int?"
+                              Items="Types"
+                              ValueSelector="@(item => (int?)item.Id)"
+                              TextSelector="@(item => item.Name)"
+                              Value="Value.LicenseTypeId"
+                              ValueChanged="OnTypeChanged"
+                              Options="_typeOptions" />
+        </div>
+        @if (SelectedType?.Resale == 0)
+        {
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Номер лицензиата:</span>
+                <ClayTextBox @bind-Value="Value.LicenseeNumber" Options="_numberOptions" />
+            </div>
+        }
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">URL проверки:</span>
+            <ClayTextBox @bind-Value="Value.VerificationUrl" Options="_urlOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Серверов:</span>
+            <ClayNumber Value="@((decimal?)Value.ServerCount)" ValueChanged="value => Value.ServerCount = (int?)value" Options="_serverOptions" />
+            <span class="equipment-ins-label">Клиентов:</span>
+            <ClayNumber Value="@((decimal?)Value.ClientCount)" ValueChanged="value => Value.ClientCount = (int?)value" Options="_clientOptions" />
+        </div>
+        @if (SelectedType?.Temporary > 0)
+        {
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Действует с:</span>
+                <ClayDatePicker @bind-Value="Value.DateFrom" Options="_dateOptions" />
+                <span class="equipment-ins-label">по:</span>
+                <ClayDatePicker @bind-Value="Value.DateTo" Options="_dateOptions" />
+            </div>
+        }
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Дистрибутив:</span>
+            <ClayTextBox @bind-Value="Value.Distribution" Options="_distributionOptions" />
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Отмена</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply">OK</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private readonly ClayDropDownListOptions _typeOptions = new() { Required = true };
+    private readonly ClayTextBoxOptions _numberOptions = new() { Required = true, MaxLength = 50 };
+    private readonly ClayTextBoxOptions _urlOptions = new() { MaxLength = 50 };
+    private readonly ClayNumberOptions _serverOptions = new() { Required = true, Min = 0 };
+    private readonly ClayNumberOptions _clientOptions = new() { Required = true, Min = 1 };
+    private readonly ClayDatePickerOptions _dateOptions = new();
+    private readonly ClayTextBoxOptions _distributionOptions = new() { MaxLength = 100 };
+    private string? _error;
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+
+    /// <summary>Редактируемая лицензия.</summary>
+    [Parameter] public EquipmentLicense Value { get; set; } = new();
+
+    /// <summary>Типы лицензирования.</summary>
+    [Parameter] public IReadOnlyList<LicenseType> Types { get; set; } = [];
+
+    private LicenseType? SelectedType => Types.FirstOrDefault(item => item.Id == Value.LicenseTypeId);
+
+    /// <inheritdoc />
+    protected override void OnParametersSet() => _dateOptions.Required = SelectedType?.Temporary > 0;
+
+    private void OnTypeChanged(int? id)
+    {
+        var type = Types.FirstOrDefault(item => item.Id == id);
+        if (type is null)
+        {
+            Value.LicenseTypeId = null;
+            return;
+        }
+        Value.ApplyTypeRules(type);
+        _dateOptions.Required = type.Temporary > 0;
+    }
+
+    private void Cancel() => Dialog.Cancel();
+
+    private void Apply()
+    {
+        _error = Value.Validate(SelectedType);
+        if (_error is not null)
+            return;
+        Dialog.Close(DialogResult.Ok(Value));
+    }
+}

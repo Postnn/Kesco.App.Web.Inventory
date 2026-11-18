@@ -322,6 +322,22 @@
                     </Actions>
                 </ClayDetailGrid>
             }
+            @if (ShowLicense)
+            {
+                <ClayDetailGrid TItem="EquipmentLicense"
+                                Title="Лицензия"
+                                Items="_licenses"
+                                Columns="_licenseColumns"
+                                Options="_licenseGridOptions"
+                                OnAdd="OpenLicenseDialogAsync"
+                                AddDisabled="@(!_canEditLicense || _saving)"
+                                ReadOnly="@(!_canEditLicense)">
+                    <Actions Context="item">
+                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить лицензию"
+                                    Disabled="@(!_canEditLicense || _saving)" OnClick="OpenLicenseDialogAsync" />
+                    </Actions>
+                </ClayDetailGrid>
+            }
         }
     </ChildContent>
     <Footer>
