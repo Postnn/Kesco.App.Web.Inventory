@@ -1,0 +1,126 @@
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Form
+@using Clayzor.Lib.Web.Controls.Components.Select
+@using Clayzor.Lib.Web.DBSelect.Equipment
+@using Clayzor.Lib.Web.DBSelect.Persons
+@inject AccountingPersonSelectDataSource OwnerSource
+@inject PersonSelectDataSource TenantSource
+@inject IServiceProvider Services
+
+<MudDialog>
+    <TitleContent>Бухгалтерский учёт</TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Error">@_error</MudAlert>
+        }
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Владелец:</span>
+            <ClaySelect TItem="PersonLookup" TValue="int?"
+                        DataSource="OwnerSource"
+                        ValueSelector="@(item => (int?)item.Id)"
+                        TextSelector="@(item => item.Name)"
+                        @bind-Value="Value.OwnerId"
+                        SelectedItemChanged="OnOwnerChanged"
+                        Options="_ownerOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Тип:</span>
+            <ClayCheckbox State="Value.IsMaterial" StateChanged="OnMaterialChanged" Label="Материал (иначе — основное средство)" />
+        </div>
+        @if (!Value.IsMaterial)
+        {
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Арендатор:</span>
+                <ClaySelect TItem="PersonLookup" TValue="int?"
+                            DataSource="TenantSource"
+                            ValueSelector="@(item => (int?)item.Id)"
+                            TextSelector="@(item => item.Name)"
+                            @bind-Value="Value.TenantId"
+                            Options="_tenantOptions" />
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Инв. номер:</span>
+                <ClayTextBox @bind-Value="Value.InventoryNumber" Options="_inventoryOptions" />
+            </div>
+        }
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Поступление:</span>
+            <ClayDatePicker @bind-Value="Value.DateFrom" Options="_fromOptions" />
+            <ClaySelect TItem="DocumentLookup" TValue="int?"
+                        DataSource="ReceiptSource"
+                        ValueSelector="@(item => (int?)item.Id)"
+                        TextSelector="@(item => item.Name)"
+                        @bind-Value="Value.ReceiptDocumentId"
+                        Options="_documentOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Списание:</span>
+            <ClayDatePicker @bind-Value="Value.DateTo" />
+            <ClaySelect TItem="DocumentLookup" TValue="int?"
+                        DataSource="WriteOffSource"
+                        ValueSelector="@(item => (int?)item.Id)"
+                        TextSelector="@(item => item.Name)"
+                        @bind-Value="Value.WriteOffDocumentId"
+                        Options="_documentOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Примечания:</span>
+            <ClayTextArea @bind-Value="Value.Notes" Options="_notesOptions" />
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Отмена</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply">OK</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
+    private readonly ClaySelectOptions _tenantOptions = new() { AutoSelectSingle = true, Placeholder = "Введите арендатора" };
+    private readonly ClaySelectOptions _documentOptions = new() { AutoSelectSingle = true, Placeholder = "Введите документ" };
+    private readonly ClayTextBoxOptions _inventoryOptions = new() { Required = true, MaxLength = 50 };
+    private readonly ClayDatePickerOptions _fromOptions = new() { Required = true };
+    private readonly ClayTextAreaOptions _notesOptions = new() { MaxLength = 255, Lines = 2 };
+    private bool _ready;
+    private string? _error;
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+
+    /// <summary>Редактируемая запись.</summary>
+    [Parameter] public EquipmentAccounting Value { get; set; } = new();
+
+    private AccountingDocumentSelectDataSource ReceiptSource => Services.GetRequiredKeyedService<AccountingDocumentSelectDataSource>("accountingReceipt");
+    private AccountingDocumentSelectDataSource WriteOffSource => Services.GetRequiredKeyedService<AccountingDocumentSelectDataSource>("accountingWriteOff");
+
+    /// <inheritdoc />
+    protected override void OnParametersSet() => ReceiptSource.PersonId = WriteOffSource.PersonId = Value.OwnerId;
+
+    /// <inheritdoc />
+    protected override void OnAfterRender(bool firstRender) => _ready |= firstRender;
+
+    private void OnOwnerChanged(PersonLookup? owner)
+    {
+        ReceiptSource.PersonId = WriteOffSource.PersonId = Value.OwnerId;
+        if (!_ready)
+            return;
+        Value.ReceiptDocumentId = null;
+        Value.WriteOffDocumentId = null;
+    }
+
+    private void OnMaterialChanged(bool? value)
+    {
+        Value.IsMaterial = value == true;
+        Value.ApplyMaterialRules();
+    }
+
+    private void Cancel() => Dialog.Cancel();
+
+    private void Apply()
+    {
+        _error = Value.Validate();
+        if (_error is not null)
+            return;
+        Dialog.Close(DialogResult.Ok(Value));
+    }
+}

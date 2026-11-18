@@ -150,6 +150,44 @@ public class EquipmentFormService
         return service.SaveAsync(_db);
     }
 
+    /// <summary>Проверяет роли 66/68 и ведение бухгалтерского учёта владельцем.</summary>
+    public virtual async Task<bool> CanUseAccountingAsync(int? personId)
+    {
+        if (personId is null or <= 0)
+            return false;
+        var hasRole = await HasRoleForPersonAsync(66, personId) ||
+                      await HasRoleForPersonAsync(68, personId);
+        if (!hasRole)
+            return false;
+        return await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_ЛицоВедетБухгалтерскийУчет,
+            new { PersonId = personId.Value }, commandType: CommandType.Text) == 1;
+    }
+
+    /// <summary>Загружает историю бухгалтерского учёта.</summary>
+    public virtual async Task<IReadOnlyList<EquipmentAccounting>> GetAccountingAsync(int equipmentId) =>
+        (await _db.QueryAsync<EquipmentAccounting>(
+            SQLQueries.SELECT_ОборудованиеБухУчета_КодОборудования, new { EquipmentId = equipmentId })).ToList();
+
+    /// <summary>Проверяет права и сохраняет запись бухгалтерского учёта.</summary>
+    public virtual async Task SaveAccountingAsync(EquipmentAccounting accounting)
+    {
+        if (!await CanUseAccountingAsync(accounting.OwnerId))
+            throw new UnauthorizedAccessException("Недостаточно прав для изменения бухгалтерского учёта.");
+        var validation = accounting.Validate();
+        if (validation is not null)
+            throw new InvalidOperationException(validation);
+        await accounting.SaveAsync(_db);
+    }
+
+    /// <summary>Проверяет права и удаляет только последнюю запись бухгалтерского учёта.</summary>
+    public virtual async Task DeleteAccountingAsync(int equipmentId, int? ownerId)
+    {
+        if (!await CanUseAccountingAsync(ownerId))
+            throw new UnauthorizedAccessException("Недостаточно прав для удаления бухгалтерского учёта.");
+        await _db.ExecuteAsync(SQLQueries.DELETE_КодОборудования_ОборудованиеБухУчета,
+            new { КодОборудования = equipmentId }, commandType: CommandType.Text);
+    }
+
     /// <summary>Загружает установленное ПО оборудования.</summary>
     public virtual async Task<IReadOnlyList<EquipmentSoftwareInstallation>> GetSoftwareInstallationsAsync(int equipmentId) =>
         (await _db.QueryAsync<EquipmentSoftwareInstallation>(

@@ -109,6 +109,19 @@ public partial class EquipmentForm : IDisposable
         new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
     ];
     private List<EquipmentSoftwareInstallation> _softwareInstallations = [];
+    private readonly ClayDetailGridOptions _accountingGridOptions = new() { EmptyText = "Нет записей бухгалтерского учёта", AddTooltip = "Добавить запись бухгалтерского учёта" };
+    private readonly IReadOnlyList<ClayDetailColumn<EquipmentAccounting>> _accountingColumns =
+    [
+        new() { Title = "Владелец", TextSelector = item => item.OwnerName },
+        new() { Title = "Инв. номер", TextSelector = item => item.InventoryNumber },
+        new() { Title = "Арендатор", TextSelector = item => item.TenantName },
+        new() { Title = "Поступление", TextSelector = item => item.DateFrom?.ToString("dd.MM.yyyy") ?? string.Empty },
+        new() { Title = "Списание", TextSelector = item => item.DateTo?.ToString("dd.MM.yyyy") ?? string.Empty },
+        new() { Title = "Примечания", TextSelector = item => item.Notes },
+        new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
+    ];
+    private List<EquipmentAccounting> _accounting = [];
+    private bool _canUseAccounting;
     private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
     private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Введите документ поступления" };
     private readonly ClaySelectOptions _writeOffDocumentOptions = new() { Placeholder = "Введите документ списания" };
@@ -141,6 +154,7 @@ public partial class EquipmentForm : IDisposable
     private int _simServiceVersion;
     private int _licenseVersion;
     private int _softwareVersion;
+    private int _accountingVersion;
     private string? _warningMessage;
     private DateTime? _writeOffDate;
     private TimeSpan? _writeOffTime;
@@ -238,6 +252,7 @@ public partial class EquipmentForm : IDisposable
         _simServiceVersion++;
         _licenseVersion++;
         _softwareVersion++;
+        _accountingVersion++;
         _loading = true;
         _loaded = false;
         _notFound = false;
@@ -269,6 +284,7 @@ public partial class EquipmentForm : IDisposable
                                  (await Service.HasRoleForPersonAsync(LicenseSpecialistRoleId, model.OwnerId) ||
                                   model.TenantId is not null && model.TenantId != model.OwnerId &&
                                   await Service.HasRoleForPersonAsync(LicenseSpecialistRoleId, model.TenantId));
+            var canUseAccounting = await Service.CanUseAccountingAsync(model.OwnerId);
             if (!IsCurrent(version, id))
                 return;
             var selectedModel = model.ModelId is > 0
@@ -314,6 +330,7 @@ public partial class EquipmentForm : IDisposable
             var softwareInstallations = selectedType?.HasSoftwareCharacteristics > 0
                 ? await Service.GetSoftwareInstallationsAsync(id)
                 : (IReadOnlyList<EquipmentSoftwareInstallation>)[];
+            var accounting = await Service.GetAccountingAsync(id);
             if (!IsCurrent(version, id))
                 return;
             DateTime? localWriteOff = null;
@@ -342,6 +359,7 @@ public partial class EquipmentForm : IDisposable
             _licenses = licenses.ToList();
             _licenseTypes = licenseTypes;
             _softwareInstallations = softwareInstallations.ToList();
+            _accounting = accounting.ToList();
             await RefreshLocationDisplayDatesAsync();
             _phoneToAdd = null;
             _phoneVersion++;
@@ -354,6 +372,7 @@ public partial class EquipmentForm : IDisposable
             _canEdit = canEdit;
             _canEditSim = canEditSim;
             _canEditLicense = canEditLicense;
+            _canUseAccounting = canUseAccounting;
             _loaded = true;
             UpdateOptions();
             _originalSnapshot = Snapshot();
@@ -450,13 +469,16 @@ public partial class EquipmentForm : IDisposable
         {
             _ownerVersion++;
             _shipperVersion++;
+            _accountingVersion++;
             _model.OwnerId = null;
+            _canUseAccounting = false;
             return;
         }
         if (_confirmedOwnerId == id)
         {
             _model.OwnerId = id;
             SetDocumentOwner(id);
+            await RefreshAccountingAccessAsync(id);
             return;
         }
         _ownerVersion++;
@@ -467,7 +489,16 @@ public partial class EquipmentForm : IDisposable
         _model.DocumentWriteOffId = null;
         _model.ShipperId = null;
         SetDocumentOwner(id);
-        await Task.CompletedTask;
+        await RefreshAccountingAccessAsync(id);
+    }
+
+    private async Task RefreshAccountingAccessAsync(int? personId)
+    {
+        var version = ++_accountingVersion;
+        var available = await Service.CanUseAccountingAsync(personId);
+        if (_disposed || version != _accountingVersion || _model?.OwnerId != personId)
+            return;
+        _canUseAccounting = available;
     }
 
     private void SetDocumentOwner(int? id) => ReceiptDocumentSource.PersonId = WriteOffDocumentSource.PersonId = id;
@@ -1323,6 +1354,126 @@ public partial class EquipmentForm : IDisposable
         if (_disposed || version != _softwareVersion || _model.Id != equipmentId)
             return;
         _softwareInstallations = installations.ToList();
+    }
+
+    private async Task OpenAccountingDialogAsync(EquipmentAccounting? existing)
+    {
+        if (_model is null || !_canUseAccounting || _saving)
+            return;
+        var value = existing is null
+            ? new EquipmentAccounting { EquipmentId = _model.Id, OwnerId = _model.OwnerId, DateFrom = DateTime.Today }
+            : new EquipmentAccounting
+            {
+                Id = existing.Id,
+                EquipmentId = _model.Id,
+                OwnerId = existing.OwnerId,
+                OwnerName = existing.OwnerName,
+                IsMaterial = existing.IsMaterial,
+                TenantId = existing.TenantId,
+                TenantName = existing.TenantName,
+                InventoryNumber = existing.InventoryNumber,
+                DateFrom = existing.DateFrom,
+                ReceiptDocumentId = existing.ReceiptDocumentId,
+                DateTo = existing.DateTo,
+                WriteOffDocumentId = existing.WriteOffDocumentId,
+                Notes = existing.Notes,
+            };
+        var parameters = new DialogParameters<EquipmentAccountingDialog> { { dialog => dialog.Value, value } };
+        var dialog = await DialogService.ShowAsync<EquipmentAccountingDialog>("Бухгалтерский учёт", parameters);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not EquipmentAccounting accounting)
+            return;
+        var version = ++_accountingVersion;
+        var equipmentId = _model.Id;
+        accounting.EquipmentId = equipmentId;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        try
+        {
+            await Service.SaveAccountingAsync(accounting);
+            if (_disposed || version != _accountingVersion || _model.Id != equipmentId)
+                return;
+            await RefreshAccountingAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _accountingVersion)
+                _validationMessage = "Бухгалтерский учёт не сохранён. Подробности — в сообщении базы данных.";
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+        {
+            if (!_disposed && version == _accountingVersion)
+                _validationMessage = ex.Message;
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task DeleteAccountingAsync(EquipmentAccounting latest)
+    {
+        if (_model is null || !_canUseAccounting || _saving || _accounting.LastOrDefault()?.Id != latest.Id ||
+            !await ConfirmAsync("Удаление бухгалтерского учёта", "Удалить последнюю запись бухгалтерского учёта?"))
+            return;
+        var version = ++_accountingVersion;
+        var equipmentId = _model.Id;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        try
+        {
+            await Service.DeleteAccountingAsync(equipmentId, latest.OwnerId);
+            if (_disposed || version != _accountingVersion || _model.Id != equipmentId)
+                return;
+            await RefreshAccountingAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _accountingVersion)
+                _validationMessage = "Запись бухгалтерского учёта не удалена. Подробности — в сообщении базы данных.";
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            if (!_disposed && version == _accountingVersion)
+                _validationMessage = ex.Message;
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task RefreshAccountingAsync()
+    {
+        if (_model is null)
+            return;
+        var version = _accountingVersion;
+        var equipmentId = _model.Id;
+        var accounting = await Service.GetAccountingAsync(equipmentId);
+        if (_disposed || version != _accountingVersion || _model.Id != equipmentId)
+            return;
+        _accounting = accounting.ToList();
+        var current = _accounting.LastOrDefault(item => item.DateTo is null) ?? _accounting.LastOrDefault();
+        if (current is not null)
+        {
+            _model.OwnerId = current.OwnerId;
+            _model.TenantId = current.TenantId;
+            _model.DocumentReceiptOuId = current.ReceiptDocumentId;
+            _model.DocumentWriteOffId = current.WriteOffDocumentId;
+            _confirmedOwnerId = current.OwnerId;
+            SetDocumentOwner(current.OwnerId);
+        }
+        _canUseAccounting = await Service.CanUseAccountingAsync(_model.OwnerId);
     }
 
     private async Task RefreshLocationDisplayDatesAsync()

@@ -351,6 +351,27 @@
                     </Actions>
                 </ClayDetailGrid>
             }
+            @if (_canUseAccounting)
+            {
+                <ClayDetailGrid TItem="EquipmentAccounting"
+                                Title="Бухгалтерский учёт"
+                                Items="_accounting"
+                                Columns="_accountingColumns"
+                                Options="_accountingGridOptions"
+                                OnAdd="@(() => OpenAccountingDialogAsync(null))"
+                                AddDisabled="_saving"
+                                ReadOnly="false">
+                    <Actions Context="item">
+                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить запись бухгалтерского учёта"
+                                    Disabled="_saving" OnClick="@(() => OpenAccountingDialogAsync(item))" />
+                        @if (_accounting.LastOrDefault()?.Id == item.Id)
+                        {
+                            <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить последнюю запись бухгалтерского учёта"
+                                        Disabled="_saving" OnClick="@(() => DeleteAccountingAsync(item))" />
+                        }
+                    </Actions>
+                </ClayDetailGrid>
+            }
         }
     </ChildContent>
     <Footer>

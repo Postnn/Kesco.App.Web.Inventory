@@ -49,6 +49,7 @@ builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.MemoryTypeSelectDa
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.MobileContractSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.PersonalDataPersonSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.SoftwareEquipmentSelectDataSource>();
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.AccountingPersonSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Employees.EmployeeSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Locations.LocationSelectDataSource>();
 builder.Services.AddScoped(sp =>
@@ -85,6 +86,20 @@ builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Documents.DocumentSelec
                            ?? throw new InvalidOperationException("Не задана строка подключения DS_doc");
     return new Clayzor.Lib.Web.DBSelect.Documents.DocumentSelectDataSource(
         new DbManager(connectionString, sp.GetRequiredService<ISqlErrorHandler>()));
+});
+builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Equipment.AccountingDocumentSelectDataSource>("accountingReceipt", (sp, _) =>
+{
+    var connectionString = WebConfigExtensions.ReadConnectionStringFromWebConfig("DS_doc")
+                           ?? throw new InvalidOperationException("Не задана строка подключения DS_doc");
+    return new Clayzor.Lib.Web.DBSelect.Equipment.AccountingDocumentSelectDataSource(
+        new DbManager(connectionString, sp.GetRequiredService<ISqlErrorHandler>()), writeOff: false);
+});
+builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Equipment.AccountingDocumentSelectDataSource>("accountingWriteOff", (sp, _) =>
+{
+    var connectionString = WebConfigExtensions.ReadConnectionStringFromWebConfig("DS_doc")
+                           ?? throw new InvalidOperationException("Не задана строка подключения DS_doc");
+    return new Clayzor.Lib.Web.DBSelect.Equipment.AccountingDocumentSelectDataSource(
+        new DbManager(connectionString, sp.GetRequiredService<ISqlErrorHandler>()), writeOff: true);
 });
 builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.ModelEquipmentFormService>();
 builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.EquipmentInsService>();
