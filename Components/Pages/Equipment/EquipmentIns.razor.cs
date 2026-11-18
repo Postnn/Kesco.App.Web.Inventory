@@ -123,6 +123,8 @@ public partial class EquipmentIns : IDisposable
     private bool CanSave => _loaded && _canEdit && !_loading && !_saving && IsModified;
     private bool ShowNetworkName => _selectedType?.HasNetworkName > 0;
     private int MacCount => Math.Min(3, _selectedModel?.NetworkInterfaces ?? 0);
+    private Func<Employee, Task>? EmployeeViewItem =>
+        !string.IsNullOrWhiteSpace(Configuration["URI_user_form"]) ? OpenEmployeeViewAsync : null;
 
     /// <inheritdoc />
     protected override void OnInitialized()
@@ -565,6 +567,9 @@ public partial class EquipmentIns : IDisposable
     });
 
     private bool IsCurrent(int version) => !_disposed && version == _operationVersion;
+
+    private async Task OpenEmployeeViewAsync(Employee employee) =>
+        await JS.InvokeVoidAsync("open", BuildEditUrl(Configuration["URI_user_form"]!, employee.Id), "_blank");
 
     private async Task RefreshAsync()
     {

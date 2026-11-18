@@ -168,6 +168,7 @@
                                     DataSource="EmployeeSource"
                                     ValueSelector="@(item => (int?)item.Id)"
                                     TextSelector="@(item => item.Name)"
+                                    ViewItem="EmployeeViewItem"
                                     @bind-Value="_model.EmployeeId"
                                     Options="_responsibleOptions" />
                         <div class="equipment-ins-row equipment-ins-note-row">
