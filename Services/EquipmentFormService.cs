@@ -150,6 +150,20 @@ public class EquipmentFormService
         return service.SaveAsync(_db);
     }
 
+    /// <summary>Загружает установленное ПО оборудования.</summary>
+    public virtual async Task<IReadOnlyList<EquipmentSoftwareInstallation>> GetSoftwareInstallationsAsync(int equipmentId) =>
+        (await _db.QueryAsync<EquipmentSoftwareInstallation>(
+            SQLQueries.SELECT_ПО_КодОборудования, new { EquipmentId = equipmentId })).ToList();
+
+    /// <summary>Проверяет и сохраняет установку ПО.</summary>
+    public virtual Task SaveSoftwareInstallationAsync(EquipmentSoftwareInstallation installation)
+    {
+        var validation = installation.Validate();
+        if (validation is not null)
+            throw new InvalidOperationException(validation);
+        return installation.SaveAsync(_db);
+    }
+
     /// <summary>Загружает лицензию оборудования.</summary>
     public virtual async Task<IReadOnlyList<EquipmentLicense>> GetLicensesAsync(int equipmentId) =>
         (await _db.QueryAsync<EquipmentLicense>(

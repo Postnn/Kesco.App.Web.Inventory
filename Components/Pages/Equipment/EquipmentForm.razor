@@ -337,6 +337,19 @@
                                     Disabled="@(!_canEditLicense || _saving)" OnClick="OpenLicenseDialogAsync" />
                     </Actions>
                 </ClayDetailGrid>
+                <ClayDetailGrid TItem="EquipmentSoftwareInstallation"
+                                Title="Установленное ПО"
+                                Items="_softwareInstallations"
+                                Columns="_softwareColumns"
+                                Options="_softwareGridOptions"
+                                OnAdd="@(() => OpenSoftwareDialogAsync(null))"
+                                AddDisabled="@(!_canEdit || _saving)"
+                                ReadOnly="@(!_canEdit)">
+                    <Actions Context="item">
+                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить установленное ПО"
+                                    Disabled="@(!_canEdit || _saving)" OnClick="@(() => OpenSoftwareDialogAsync(item))" />
+                    </Actions>
+                </ClayDetailGrid>
             }
         }
     </ChildContent>

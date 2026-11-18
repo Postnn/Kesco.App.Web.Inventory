@@ -1,0 +1,79 @@
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Form
+@using Clayzor.Lib.Web.Controls.Components.Select
+@using Clayzor.Lib.Web.DBSelect.Equipment
+@inject SoftwareEquipmentSelectDataSource SoftwareSource
+
+<MudDialog>
+    <TitleContent>Установленное ПО</TitleContent>
+    <DialogContent>
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Error">@_error</MudAlert>
+        }
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">ПО:</span>
+            <ClaySelect TItem="SoftwareEquipmentLookup" TValue="int?"
+                        DataSource="SoftwareSource"
+                        ValueSelector="@(item => (int?)item.Id)"
+                        TextSelector="@(item => item.Name)"
+                        @bind-Value="Value.SoftwareId"
+                        SelectedItemChanged="OnSoftwareChanged"
+                        Options="_softwareOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Установлено:</span>
+            <ClayTextBox @bind-Value="Value.Installed" Options="_installedOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Дистрибутив:</span>
+            <ClayTextBox @bind-Value="Value.Distribution" Options="_distributionOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Установлено с:</span>
+            <ClayDatePicker @bind-Value="Value.InstalledAt" Options="_installedAtOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Деинсталлировано:</span>
+            <ClayDatePicker @bind-Value="Value.UninstalledAt" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Примечания:</span>
+            <ClayTextBox @bind-Value="Value.Notes" Options="_notesOptions" />
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Отмена</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply">OK</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private readonly ClaySelectOptions _softwareOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите программное обеспечение" };
+    private readonly ClayTextBoxOptions _installedOptions = new() { Required = true, MaxLength = 100 };
+    private readonly ClayTextBoxOptions _distributionOptions = new() { Required = true, MaxLength = 100 };
+    private readonly ClayDatePickerOptions _installedAtOptions = new() { Required = true };
+    private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300 };
+    private string? _error;
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+
+    /// <summary>Редактируемая запись установки.</summary>
+    [Parameter] public EquipmentSoftwareInstallation Value { get; set; } = new();
+
+    private void OnSoftwareChanged(SoftwareEquipmentLookup? software)
+    {
+        if (software is not null)
+            Value.Installed = software.InstalledName;
+    }
+
+    private void Cancel() => Dialog.Cancel();
+
+    private void Apply()
+    {
+        _error = Value.Validate();
+        if (_error is not null)
+            return;
+        Dialog.Close(DialogResult.Ok(Value));
+    }
+}

@@ -97,6 +97,18 @@ public partial class EquipmentForm : IDisposable
     ];
     private List<EquipmentLicense> _licenses = [];
     private IReadOnlyList<LicenseType> _licenseTypes = [];
+    private readonly ClayDetailGridOptions _softwareGridOptions = new() { EmptyText = "Нет установленного ПО", AddTooltip = "Добавить установленное ПО" };
+    private readonly IReadOnlyList<ClayDetailColumn<EquipmentSoftwareInstallation>> _softwareColumns =
+    [
+        new() { Title = "ПО", TextSelector = item => item.SoftwareName },
+        new() { Title = "Установлено", TextSelector = item => item.Installed },
+        new() { Title = "Дистрибутив", TextSelector = item => item.Distribution },
+        new() { Title = "С", TextSelector = item => item.InstalledAt?.ToString("dd.MM.yyyy") ?? string.Empty },
+        new() { Title = "По", TextSelector = item => item.UninstalledAt?.ToString("dd.MM.yyyy") ?? string.Empty },
+        new() { Title = "Примечания", TextSelector = item => item.Notes },
+        new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
+    ];
+    private List<EquipmentSoftwareInstallation> _softwareInstallations = [];
     private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
     private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Введите документ поступления" };
     private readonly ClaySelectOptions _writeOffDocumentOptions = new() { Placeholder = "Введите документ списания" };
@@ -128,6 +140,7 @@ public partial class EquipmentForm : IDisposable
     private int _simVersion;
     private int _simServiceVersion;
     private int _licenseVersion;
+    private int _softwareVersion;
     private string? _warningMessage;
     private DateTime? _writeOffDate;
     private TimeSpan? _writeOffTime;
@@ -224,6 +237,7 @@ public partial class EquipmentForm : IDisposable
         _simVersion++;
         _simServiceVersion++;
         _licenseVersion++;
+        _softwareVersion++;
         _loading = true;
         _loaded = false;
         _notFound = false;
@@ -297,6 +311,9 @@ public partial class EquipmentForm : IDisposable
             var licenseTypes = selectedType?.HasSoftwareCharacteristics > 0
                 ? await Service.GetLicenseTypesAsync()
                 : (IReadOnlyList<LicenseType>)[];
+            var softwareInstallations = selectedType?.HasSoftwareCharacteristics > 0
+                ? await Service.GetSoftwareInstallationsAsync(id)
+                : (IReadOnlyList<EquipmentSoftwareInstallation>)[];
             if (!IsCurrent(version, id))
                 return;
             DateTime? localWriteOff = null;
@@ -324,6 +341,7 @@ public partial class EquipmentForm : IDisposable
             _simServiceTypes = simServiceTypes;
             _licenses = licenses.ToList();
             _licenseTypes = licenseTypes;
+            _softwareInstallations = softwareInstallations.ToList();
             await RefreshLocationDisplayDatesAsync();
             _phoneToAdd = null;
             _phoneVersion++;
@@ -1237,6 +1255,74 @@ public partial class EquipmentForm : IDisposable
         if (_disposed || version != _licenseVersion || _model.Id != equipmentId)
             return;
         _licenses = licenses.ToList();
+    }
+
+    private async Task OpenSoftwareDialogAsync(EquipmentSoftwareInstallation? existing)
+    {
+        if (_model is null || !_canEdit || _saving)
+            return;
+        var value = existing is null
+            ? new EquipmentSoftwareInstallation { EquipmentId = _model.Id }
+            : new EquipmentSoftwareInstallation
+            {
+                Id = existing.Id,
+                EquipmentId = _model.Id,
+                SoftwareId = existing.SoftwareId,
+                SoftwareName = existing.SoftwareName,
+                InstalledAt = existing.InstalledAt,
+                UninstalledAt = existing.UninstalledAt,
+                Installed = existing.Installed,
+                Distribution = existing.Distribution,
+                Notes = existing.Notes,
+            };
+        var parameters = new DialogParameters<EquipmentSoftwareDialog> { { dialog => dialog.Value, value } };
+        var dialog = await DialogService.ShowAsync<EquipmentSoftwareDialog>("Установленное ПО", parameters);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not EquipmentSoftwareInstallation installation)
+            return;
+        var version = ++_softwareVersion;
+        var equipmentId = _model.Id;
+        installation.EquipmentId = equipmentId;
+        _saving = true;
+        _validationMessage = null;
+        StateHasChanged();
+        try
+        {
+            await Service.SaveSoftwareInstallationAsync(installation);
+            if (_disposed || version != _softwareVersion || _model.Id != equipmentId)
+                return;
+            await RefreshSoftwareAsync();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _softwareVersion)
+                _validationMessage = "Установленное ПО не сохранено. Подробности — в сообщении базы данных.";
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (!_disposed && version == _softwareVersion)
+                _validationMessage = ex.Message;
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task RefreshSoftwareAsync()
+    {
+        if (_model is null)
+            return;
+        var version = _softwareVersion;
+        var equipmentId = _model.Id;
+        var installations = await Service.GetSoftwareInstallationsAsync(equipmentId);
+        if (_disposed || version != _softwareVersion || _model.Id != equipmentId)
+            return;
+        _softwareInstallations = installations.ToList();
     }
 
     private async Task RefreshLocationDisplayDatesAsync()
