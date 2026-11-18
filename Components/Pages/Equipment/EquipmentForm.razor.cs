@@ -574,9 +574,6 @@ public partial class EquipmentForm : IDisposable
         _shipperVersion++;
         _confirmedOwnerId = id;
         _model.OwnerId = id;
-        _model.DocumentReceiptOuId = null;
-        _model.DocumentWriteOffId = null;
-        _model.ShipperId = null;
         SetDocumentOwner(id);
         await RefreshAccountingAccessAsync(id);
         await RefreshLicenseAccessAsync();
@@ -609,6 +606,16 @@ public partial class EquipmentForm : IDisposable
     }
 
     private void SetDocumentOwner(int? id) => ReceiptDocumentSource.PersonId = WriteOffDocumentSource.PersonId = id;
+
+    private void UpdatePhoneSourceFilters()
+    {
+        PhoneNumberSource.LocationId = _model?.LocationId;
+        PhoneNumberSource.EmployeeId = _model?.EmployeeId;
+        PhoneNumberSource.EquipmentTypeId = _model?.EquipmentTypeId;
+        PhoneNumberSource.EquipmentId = _model?.Id;
+        PhoneNumberSource.PhoneIdBase = _phones.FirstOrDefault(item => item.IsDefault)?.PhoneId;
+        PhoneNumberSource.ExcludedPhoneIds = _phones.Select(item => item.PhoneId).ToArray();
+    }
 
     private void SetAccountingBaseline()
     {
@@ -689,6 +696,7 @@ public partial class EquipmentForm : IDisposable
             Notes = string.Empty,
         });
         _phoneToAdd = null;
+        UpdatePhoneSourceFilters();
     }
 
     private async Task EditPhoneReturnAsync(EquipmentPhoneLink item)
@@ -714,6 +722,7 @@ public partial class EquipmentForm : IDisposable
         if (!await ConfirmAsync("Удаление связи", $"Удалить связь с номером «{item.Description}»?"))
             return;
         _phones.Remove(item);
+        UpdatePhoneSourceFilters();
     }
 
     private async Task LoadPhonesForCurrentTypeAsync()
@@ -727,6 +736,7 @@ public partial class EquipmentForm : IDisposable
             return;
         _phones = phones.ToList();
         _originalPhones = ClonePhones(phones);
+        UpdatePhoneSourceFilters();
     }
 
     private static List<EquipmentPhoneLink> ClonePhones(IEnumerable<EquipmentPhoneLink> phones) =>
@@ -841,6 +851,7 @@ public partial class EquipmentForm : IDisposable
             return;
         _locations = locations.ToList();
         _model.LocationId = _locations.LastOrDefault()?.LocationId;
+        UpdatePhoneSourceFilters();
         await RefreshLocationDisplayDatesAsync();
     }
 
@@ -853,6 +864,7 @@ public partial class EquipmentForm : IDisposable
             return;
         _responsibles = responsibles.ToList();
         _model.EmployeeId = _responsibles.LastOrDefault(item => item.ToUtc is null)?.EmployeeId;
+        UpdatePhoneSourceFilters();
         await RefreshLocationDisplayDatesAsync();
     }
 
@@ -1944,6 +1956,7 @@ public partial class EquipmentForm : IDisposable
         _tenantOptions.ReadOnly = true;
         foreach (var options in new ClayInputOptions[] { _writeOffDateOptions, _writeOffTimeOptions, _snOptions, _networkNameOptions, _macOptions, _descriptionOptions })
             options.ReadOnly = !_canEdit;
+        UpdatePhoneSourceFilters();
     }
 
     private bool ValidateBusinessRules()

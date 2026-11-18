@@ -78,7 +78,10 @@ builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Documents.DocumentSelec
     var connectionString = WebConfigExtensions.ReadConnectionStringFromWebConfig("DS_doc")
                            ?? throw new InvalidOperationException("Не задана строка подключения DS_doc");
     return new Clayzor.Lib.Web.DBSelect.Documents.DocumentSelectDataSource(
-        new DbManager(connectionString, sp.GetRequiredService<ISqlErrorHandler>()));
+        new DbManager(connectionString, sp.GetRequiredService<ISqlErrorHandler>()))
+    {
+        DocumentTypeId = 2365,
+    };
 });
 builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Documents.DocumentSelectDataSource>("accounting", (sp, _) =>
 {
