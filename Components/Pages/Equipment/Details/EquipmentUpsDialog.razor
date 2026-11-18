@@ -1,5 +1,5 @@
 @using Clayzor.Lib.Entities.Inventory
-@using Clayzor.Lib.Web.Controls.Components.Detail
+@using Clayzor.Lib.Web.Controls.Components.Grid
 @using Clayzor.Lib.Web.Controls.Components.Form
 @using Clayzor.Lib.Web.Controls.Components.Select
 @using Clayzor.Lib.Web.DBSelect.Equipment
@@ -19,26 +19,35 @@
                         Options="_serverOptions" />
             <ClayToolbarButton Options="_addButtonOptions" OnClick="AddServer" />
         </div>
-        <ClayDetailGrid TItem="UpsServerLink"
-                        Title="Серверы"
-                        Items="Servers"
-                        Columns="_serverColumns"
-                        Options="_serverGridOptions">
-            <Actions Context="item">
+        <ClayGrid TEntity="UpsServerLink" Items="Servers" Options="_serverGridOptions">
+            <ColumnDefs>
+                <ClayColumnDef ColumnId="1" SqlName="Server" DisplayName="Сервер" />
+            </ColumnDefs>
+            <Columns>
+                <ClayColumn TEntity="UpsServerLink" ColumnId="1" TextSelector="@(item => item.ServerName)" />
+            </Columns>
+            <RowActions Context="item">
                 <ClayCheckbox State="item.TurnOffConfigured > 0" OnToggle="() => ToggleServer(item)" Label="Выключение" />
                 <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить сервер" OnClick="() => Servers.Remove(item)" />
-            </Actions>
-        </ClayDetailGrid>
-        <ClayDetailGrid TItem="UpsTest"
-                        Title="Тестирование"
-                        Items="Tests"
-                        Columns="_testColumns"
-                        Options="_testGridOptions"
-                        OnAdd="AddTest">
-            <Actions Context="item">
+            </RowActions>
+        </ClayGrid>
+        <ClayGrid TEntity="UpsTest" Items="Tests" Options="_testGridOptions" OnAdd="AddTest">
+            <ColumnDefs>
+                <ClayColumnDef ColumnId="1" SqlName="TestedAt" DisplayName="Дата" />
+                <ClayColumnDef ColumnId="2" SqlName="BatteryTime" DisplayName="Батарея" />
+                <ClayColumnDef ColumnId="3" SqlName="Servers" DisplayName="Серверы" />
+                <ClayColumnDef ColumnId="4" SqlName="Issues" DisplayName="Ошибки" />
+            </ColumnDefs>
+            <Columns>
+                <ClayColumn TEntity="UpsTest" ColumnId="1" TextSelector="@(item => item.TestedAt.ToString("dd.MM.yyyy HH:mm:ss"))" />
+                <ClayColumn TEntity="UpsTest" ColumnId="2" TextSelector="@(item => item.BatteryTime.ToString())" />
+                <ClayColumn TEntity="UpsTest" ColumnId="3" TextSelector="@(item => item.Servers)" />
+                <ClayColumn TEntity="UpsTest" ColumnId="4" TextSelector="@(item => item.Issues)" />
+            </Columns>
+            <RowActions Context="item">
                 <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить тест" OnClick="() => EditTest(item)" />
-            </Actions>
-        </ClayDetailGrid>
+            </RowActions>
+        </ClayGrid>
     </DialogContent>
     <DialogActions>
         <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
@@ -51,19 +60,23 @@
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
     private readonly ClayToolbarButtonOptions _addButtonOptions = new() { Text = "Добавить" };
     private readonly ClaySelectOptions _serverOptions = new() { AutoSelectSingle = true, Placeholder = "Введите сервер" };
-    private readonly ClayDetailGridOptions _serverGridOptions = new() { EmptyText = "Нет серверов" };
-    private readonly ClayDetailGridOptions _testGridOptions = new() { EmptyText = "Нет тестов", AddTooltip = "Добавить тест" };
-    private readonly IReadOnlyList<ClayDetailColumn<UpsServerLink>> _serverColumns =
-    [
-        new() { Title = "Сервер", TextSelector = item => item.ServerName },
-    ];
-    private readonly IReadOnlyList<ClayDetailColumn<UpsTest>> _testColumns =
-    [
-        new() { Title = "Дата", TextSelector = item => item.TestedAt.ToString("dd.MM.yyyy HH:mm:ss") },
-        new() { Title = "Батарея", TextSelector = item => item.BatteryTime.ToString() },
-        new() { Title = "Серверы", TextSelector = item => item.Servers },
-        new() { Title = "Ошибки", TextSelector = item => item.Issues },
-    ];
+    private readonly ClayGridOptions _serverGridOptions = SectionOptions("ups-servers", "Нет серверов", false);
+    private readonly ClayGridOptions _testGridOptions = SectionOptions("ups-tests", "Нет тестов", true);
+
+    private static ClayGridOptions SectionOptions(string id, string emptyText, bool showAdd) => new()
+    {
+        Id = id,
+        Class = "equipment-detail-grid",
+        EmptyText = emptyText,
+        AddTooltip = "Добавить тест",
+        ShowAddButton = showAdd,
+        ShowToolbar = false,
+        ShowPagination = false,
+        AutoHeight = true,
+        AllowColumnReorder = false,
+        AllowSorting = false,
+        ColumnMenuMode = ColumnMenuMode.Hidden,
+    };
     private int? _serverToAdd;
 
     [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;

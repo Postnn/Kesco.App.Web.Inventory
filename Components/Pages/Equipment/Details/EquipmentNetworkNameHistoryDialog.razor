@@ -1,15 +1,22 @@
 @using Clayzor.Lib.Entities.Inventory
-@using Clayzor.Lib.Web.Controls.Components.Detail
+@using Clayzor.Lib.Web.Controls.Components.Grid
 @using Clayzor.Lib.Web.Controls.Components.Form
 
 <MudDialog>
     <TitleContent>История сетевых имён</TitleContent>
     <DialogContent>
-        <ClayDetailGrid TItem="EquipmentNetworkNameHistory"
-                        Title="Сетевые имена"
-                        Items="Items"
-                        Columns="_columns"
-                        Options="_gridOptions" />
+        <ClayGrid TEntity="EquipmentNetworkNameHistory" Items="Items" Options="_gridOptions">
+            <ColumnDefs>
+                <ClayColumnDef ColumnId="1" SqlName="NetworkName" DisplayName="Сетевое имя" />
+                <ClayColumnDef ColumnId="2" SqlName="ChangedAt" DisplayName="Изменено" />
+                <ClayColumnDef ColumnId="3" SqlName="ChangedBy" DisplayName="Изменил" />
+            </ColumnDefs>
+            <Columns>
+                <ClayColumn TEntity="EquipmentNetworkNameHistory" ColumnId="1" TextSelector="item => item.NetworkName" />
+                <ClayColumn TEntity="EquipmentNetworkNameHistory" ColumnId="2" TextSelector="item => FormatDate(item.ChangedAtUtc)" />
+                <ClayColumn TEntity="EquipmentNetworkNameHistory" ColumnId="3" TextSelector="item => item.ChangedByName" />
+            </Columns>
+        </ClayGrid>
     </DialogContent>
     <DialogActions>
         <ClayToolbarButton Options="_closeButtonOptions" OnClick="Close" />
@@ -18,8 +25,19 @@
 
 @code {
     private readonly ClayToolbarButtonOptions _closeButtonOptions = new() { Text = "Закрыть" };
-    private readonly ClayDetailGridOptions _gridOptions = new() { EmptyText = "История сетевых имён отсутствует" };
-    private IReadOnlyList<ClayDetailColumn<EquipmentNetworkNameHistory>> _columns = null!;
+    private readonly ClayGridOptions _gridOptions = new()
+    {
+        Id = "equipment-network-history",
+        Class = "equipment-detail-grid",
+        EmptyText = "История сетевых имён отсутствует",
+        ShowAddButton = false,
+        ShowToolbar = false,
+        ShowPagination = false,
+        AutoHeight = true,
+        AllowColumnReorder = false,
+        AllowSorting = false,
+        ColumnMenuMode = ColumnMenuMode.Hidden,
+    };
 
     [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
 
@@ -28,14 +46,6 @@
 
     /// <summary>Преобразование UTC даты в отображаемое локальное время.</summary>
     [Parameter] public Func<DateTime, string> FormatDate { get; set; } = value => value.ToString("dd.MM.yyyy HH:mm:ss");
-
-    /// <inheritdoc />
-    protected override void OnInitialized() => _columns =
-    [
-        new() { Title = "Сетевое имя", TextSelector = item => item.NetworkName },
-        new() { Title = "Изменено", TextSelector = item => FormatDate(item.ChangedAtUtc) },
-        new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
-    ];
 
     private void Close() => Dialog.Cancel();
 }

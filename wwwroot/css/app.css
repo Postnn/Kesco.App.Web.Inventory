@@ -218,15 +218,24 @@
     font-size: var(--clay-font-size-base);
 }
 
-.equipment-form .clay-detail-grid tr.equipment-overdue > td {
+.equipment-detail-grid {
+    margin-top: 8px;
+    padding: 0;
+}
+
+.equipment-detail-grid .mud-data-grid {
+    max-width: 100%;
+}
+
+.equipment-form .equipment-detail-grid tr.equipment-overdue > td {
     color: var(--mud-palette-error);
 }
 
-.equipment-form .clay-detail-grid tr.equipment-recommended > td {
+.equipment-form .equipment-detail-grid tr.equipment-recommended > td {
     background: var(--mud-palette-success-hover);
 }
 
-.equipment-form .clay-detail-grid tr.equipment-uninstalled > td {
+.equipment-form .equipment-detail-grid tr.equipment-uninstalled > td {
     color: var(--mud-palette-text-secondary);
     background: var(--mud-palette-background-gray);
 }

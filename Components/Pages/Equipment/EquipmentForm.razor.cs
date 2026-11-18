@@ -2,7 +2,7 @@ using System.Text.Json;
 using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Web.Controls.Components;
 using Clayzor.Lib.Web.Controls.Components.Form;
-using Clayzor.Lib.Web.Controls.Components.Detail;
+using Clayzor.Lib.Web.Controls.Components.Grid;
 using Clayzor.Lib.Web.Controls.Components.Select;
 using Clayzor.Lib.Web.DBSelect.Documents;
 using Clayzor.Lib.Web.DBSelect.Equipment;
@@ -32,144 +32,37 @@ public partial class EquipmentForm : IDisposable
     private readonly ClaySelectOptions _modelOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите модель" };
     private readonly ClaySelectOptions _phonePoolOptions = new() { AutoSelectSingle = true, Placeholder = "Введите телефонный пул" };
     private readonly ClaySelectOptions _phoneOptions = new() { AutoSelectSingle = true, Placeholder = "Введите телефонный номер" };
-    private readonly ClayDetailGridOptions _phoneGridOptions = new() { EmptyText = "Нет телефонных номеров", AddTooltip = "Связать выбранный номер" };
-    private IReadOnlyList<ClayDetailColumn<EquipmentPhoneLink>> PhoneColumns =>
-    [
-        new()
-        {
-            Title = "Номер",
-            TextSelector = item => item.Description + (item.IsDefault ? " (основной)" : string.Empty),
-            CellTemplate = item => RenderLink(PhoneUrl(item.PhoneId),
-                item.Description + (item.IsDefault ? " (основной)" : string.Empty), PhoneChangedTooltip(item)),
-        },
-        new()
-        {
-            Title = "Подключение",
-            TextSelector = item => item.ConnectionEquipmentId is > 0 ? $"#{item.ConnectionEquipmentId}" : string.Empty,
-            IsVisible = _phones.Any(item => item.ConnectionEquipmentId is > 0),
-            CellTemplate = item => RenderLink(EquipmentUrl(item.ConnectionEquipmentId), $"#{item.ConnectionEquipmentId}",
-                "Оборудование подключения. Нажмите, чтобы открыть."),
-        },
-        new()
-        {
-            Title = "Срок возврата",
-            TextSelector = item => (item.ReturnDate?.ToString("dd.MM.yyyy") ?? string.Empty) +
-                (string.IsNullOrWhiteSpace(item.Notes) ? string.Empty : $" ({item.Notes})"),
-            IsVisible = _canEdit || _phones.Any(item => item.ReturnDate is not null),
-        },
-    ];
+    private readonly ClayGridOptions _phoneGridOptions = new() { EmptyText = "Нет телефонных номеров", AddTooltip = "Связать выбранный номер" };
     private int _hotelPhoneCount;
-    private readonly ClayDetailGridOptions _locationGridOptions = new() { EmptyText = "Нет расположений", AddTooltip = "Добавить расположение" };
-    private IReadOnlyList<ClayDetailColumn<EquipmentLocationPeriod>> _locationColumns = null!;
+    private readonly ClayGridOptions _locationGridOptions = new() { EmptyText = "Нет расположений", AddTooltip = "Добавить расположение" };
     private List<EquipmentLocationPeriod> _locations = [];
     private readonly Dictionary<DateTime, DateTime> _localDates = new();
-    private readonly ClayDetailGridOptions _responsibleGridOptions = new() { EmptyText = "Нет ответственных", AddTooltip = "Выдать оборудование" };
-    private IReadOnlyList<ClayDetailColumn<EquipmentResponsiblePeriod>> _responsibleColumns = null!;
+    private readonly ClayGridOptions _responsibleGridOptions = new() { EmptyText = "Нет ответственных", AddTooltip = "Выдать оборудование" };
     private List<EquipmentResponsiblePeriod> _responsibles = [];
-    private readonly ClayDetailGridOptions _accountGridOptions = new() { EmptyText = "Нет учётных записей", AddTooltip = "Добавить учётную запись" };
-    private readonly IReadOnlyList<ClayDetailColumn<EquipmentAccount>> _accountColumns =
-    [
-        new() { Title = "Логин", TextSelector = item => item.Login },
-        new() { Title = "Пароль", TextSelector = _ => "*****" },
-        new() { Title = "Ограниченные права", TextSelector = item => item.LimitedRights > 0 ? "Да" : "Нет" },
-        new() { Title = "Примечание", TextSelector = item => item.Notes },
-    ];
+    private readonly ClayGridOptions _accountGridOptions = new() { EmptyText = "Нет учётных записей", AddTooltip = "Добавить учётную запись" };
     private List<EquipmentAccount> _accounts = [];
-    private readonly ClayDetailGridOptions _computerGridOptions = new() { EmptyText = "Нет снимков конфигурации", AddTooltip = "Добавить или обновить текущий снимок" };
-    private IReadOnlyList<ClayDetailColumn<EquipmentComputerSnapshot>> _computerColumns => BuildComputerColumns();
+    private readonly ClayGridOptions _computerGridOptions = new() { EmptyText = "Нет снимков конфигурации", AddTooltip = "Добавить или обновить текущий снимок" };
     private List<EquipmentComputerSnapshot> _computerHistory = [];
     private IReadOnlyList<StandardConfiguration> _standardConfigurations = [];
-    private readonly ClayDetailGridOptions _simGridOptions = new() { EmptyText = "Нет сведений SIM", AddTooltip = "Добавить сведения SIM" };
-    private IReadOnlyList<ClayDetailColumn<EquipmentSimCard>> _simColumns = null!;
+    private readonly ClayGridOptions _simGridOptions = new() { EmptyText = "Нет сведений SIM", AddTooltip = "Добавить сведения SIM" };
     private List<EquipmentSimCard> _simCards = [];
-    private readonly ClayDetailGridOptions _simServiceGridOptions = new() { EmptyText = "Нет дополнительных услуг", AddTooltip = "Добавить дополнительную услугу" };
-    private IReadOnlyList<ClayDetailColumn<EquipmentSimService>> _simServiceColumns =>
-    [
-        new() { Title = "Услуга", TextSelector = item => item.ServiceName },
-        new() { Title = "Код услуги", TextSelector = item => item.ServiceTypeId },
-        new() { Title = "Срок оказания услуги", TextSelector = item => FormatPeriod(item.DateFrom, item.DateTo) },
-        new() { Title = "Включение", TextSelector = item => item.ActivationCost.ToString("0.00") },
-        new() { Title = "В день", TextSelector = item => item.DailyCost.ToString("0.00") },
-        new() { Title = "В месяц", TextSelector = item => item.MonthlyCost.ToString("0.00") },
-        new() { Title = "Обяз.", TextSelector = item => item.IsCompanyRequired ? "Да" : string.Empty, IsVisible = _showCompanyRequiredServices },
-        new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
-        new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAt, true) },
-    ];
+    private readonly ClayGridOptions _simServiceGridOptions = new() { EmptyText = "Нет дополнительных услуг", AddTooltip = "Добавить дополнительную услугу" };
     private List<EquipmentSimService> _simServices = [];
     private IReadOnlyList<SimServiceType> _simServiceTypes = [];
     private bool _showServiceHistory;
     private bool _showCompanyRequiredServices;
-    private readonly ClayDetailGridOptions _licenseGridOptions = new() { EmptyText = "Нет лицензии", AddTooltip = "Добавить лицензию" };
-    private IReadOnlyList<ClayDetailColumn<EquipmentLicense>> _licenseColumns =>
-    [
-        new() { Title = "Тип лицензирования", TextSelector = item => item.LicenseTypeName },
-        new() { Title = "Номер лицензиата", TextSelector = item => item.LicenseeNumber },
-        new()
-        {
-            Title = "URL проверки лицензии",
-            TextSelector = item => item.VerificationUrl,
-            CellTemplate = item => RenderLink(SafeExternalUrl(item.VerificationUrl), item.VerificationUrl),
-        },
-        new() { Title = "Количество серверов", TextSelector = item => item.ServerCount?.ToString() ?? string.Empty },
-        new() { Title = "Количество клиентов", TextSelector = item => item.ClientCount?.ToString() ?? string.Empty },
-        new() { Title = "Период действия", TextSelector = item => FormatPeriod(item.DateFrom, item.DateTo) },
-        new() { Title = "Дистрибутив", TextSelector = item => item.Distribution },
-        new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
-        new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAt, true) },
-    ];
+    private readonly ClayGridOptions _licenseGridOptions = new() { EmptyText = "Нет лицензии", AddTooltip = "Добавить лицензию" };
     private List<EquipmentLicense> _licenses = [];
     private IReadOnlyList<LicenseType> _licenseTypes = [];
-    private readonly ClayDetailGridOptions _softwareGridOptions = new() { EmptyText = "Нет установленного ПО", AddTooltip = "Добавить установленное ПО" };
-    private IReadOnlyList<ClayDetailColumn<EquipmentSoftwareInstallation>> _softwareColumns =>
-    [
-        new()
-        {
-            Title = "Установлено ПО",
-            TextSelector = item => item.Installed,
-            CellTemplate = item => RenderLink(EquipmentUrl(item.SoftwareId), item.Installed,
-                "Открыть форму редактирования информации о ПО"),
-        },
-        new() { Title = "Дистрибутив", TextSelector = item => item.Distribution },
-        new() { Title = "Период", TextSelector = item => FormatPeriod(item.InstalledAt, item.UninstalledAt) },
-        new() { Title = "Примечания", TextSelector = item => item.Notes },
-        new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
-        new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAt, true) },
-    ];
+    private readonly ClayGridOptions _softwareGridOptions = new() { EmptyText = "Нет установленного ПО", AddTooltip = "Добавить установленное ПО" };
     private List<EquipmentSoftwareInstallation> _softwareInstallations = [];
-    private readonly ClayDetailGridOptions _accountingGridOptions = new() { EmptyText = "Нет записей бухгалтерского учёта", AddTooltip = "Добавить запись бухгалтерского учёта" };
-    private IReadOnlyList<ClayDetailColumn<EquipmentAccounting>> _accountingColumns =>
-    [
-        new() { Title = "Владелец", TextSelector = item => item.OwnerName },
-        new() { Title = "Инв. №", TextSelector = item => item.InventoryNumber },
-        new() { Title = "Арендатор", TextSelector = item => item.TenantName },
-        new() { Title = "Дата поступления", TextSelector = item => item.DateFrom?.ToString("dd.MM.yyyy") ?? string.Empty },
-        new() { Title = "Дата списания", TextSelector = item => item.DateTo?.ToString("dd.MM.yyyy") ?? string.Empty },
-        new() { Title = "Примечания", TextSelector = item => item.Notes },
-        new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
-        new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAt, true) },
-    ];
+    private readonly ClayGridOptions _accountingGridOptions = new() { EmptyText = "Нет записей бухгалтерского учёта", AddTooltip = "Добавить запись бухгалтерского учёта" };
     private List<EquipmentAccounting> _accounting = [];
     private bool _canUseAccounting;
     private EquipmentRouterInfo? _routerInfo;
-    private readonly ClayDetailGridOptions _routerGridOptions = new() { EmptyText = "Нет данных маршрутизатора" };
-    private readonly IReadOnlyList<ClayDetailColumn<EquipmentRouterInventoryItem>> _routerColumns =
-    [
-        new() { Title = "Сетевое имя", TextSelector = item => item.NetworkName },
-        new() { Title = "Модуль", TextSelector = item => item.Module },
-        new() { Title = "Характеристика", TextSelector = item => item.Characteristic },
-    ];
+    private readonly ClayGridOptions _routerGridOptions = new() { EmptyText = "Нет данных маршрутизатора", ShowAddButton = false };
     private List<EquipmentRouterInventoryItem> _routerInventory = [];
-    private readonly ClayDetailGridOptions _upsGridOptions = new() { EmptyText = "Нет подключённых UPS" };
-    private IReadOnlyList<ClayDetailColumn<UpsServerLink>> _upsColumns =>
-    [
-        new()
-        {
-            Title = "UPS",
-            TextSelector = item => item.EquipmentName,
-            CellTemplate = item => RenderLink(EquipmentUrl(item.UpsEquipmentId), item.EquipmentName,
-                "Открыть карточку UPS"),
-        },
-    ];
+    private readonly ClayGridOptions _upsGridOptions = new() { EmptyText = "Нет подключённых UPS", ShowAddButton = false };
     private List<UpsServerLink> _upsLinks = [];
     private int? _upsToAdd;
     private readonly ClaySelectOptions _upsSelectOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите UPS" };
@@ -277,77 +170,42 @@ public partial class EquipmentForm : IDisposable
     /// <inheritdoc />
     protected override void OnInitialized()
     {
-        _locationColumns =
-        [
-            new() { Title = "С", TextSelector = item => FormatDisplayDate(item.FromUtc, true) },
-            new() { Title = "Расположение", TextSelector = item => item.LocationName },
-            new() { Title = "Срок возврата", TextSelector = item => item.ReturnDate?.ToString("dd.MM.yyyy") ?? string.Empty },
-            new() { Title = "Примечания", TextSelector = item => item.Notes },
-            new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
-            new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAtUtc, true) },
-        ];
-        _responsibleColumns =
-        [
-            new() { Title = "Период", TextSelector = item => FormatDisplayDate(item.FromUtc, true) + " — " + (item.ToUtc is null ? "сейчас" : FormatDisplayDate(item.ToUtc.Value, true)) },
-            new() { Title = "Ответственный", TextSelector = item => item.EmployeeName },
-            new() { Title = "Срок возврата", TextSelector = item => item.ReturnDate?.ToString("dd.MM.yyyy") ?? string.Empty },
-            new() { Title = "Примечания", TextSelector = item => item.Notes },
-            new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
-            new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAtUtc, true) },
-        ];
-        _simColumns =
-        [
-            new() { Title = "Номер", TextSelector = item => item.PhoneNumber },
-            new() { Title = "Активация", TextSelector = item => FormatDisplayDate(item.ActivatedAtUtc, true) },
-            new() { Title = "Договор", TextSelector = item => item.ContractName },
-            new() { Title = "Лицо ПДн", TextSelector = item => item.PersonalDataPersonName },
-            new() { Title = "Изменил", TextSelector = item => item.ChangedByName },
-            new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAt, true) },
-        ];
+        ConfigureSectionGrid(_phoneGridOptions, "equipment-phones");
+        ConfigureSectionGrid(_locationGridOptions, "equipment-locations");
+        ConfigureSectionGrid(_responsibleGridOptions, "equipment-responsibles");
+        ConfigureSectionGrid(_accountGridOptions, "equipment-accounts");
+        ConfigureSectionGrid(_computerGridOptions, "equipment-computer");
+        ConfigureSectionGrid(_simGridOptions, "equipment-sim");
+        ConfigureSectionGrid(_simServiceGridOptions, "equipment-sim-services");
+        ConfigureSectionGrid(_licenseGridOptions, "equipment-license");
+        ConfigureSectionGrid(_softwareGridOptions, "equipment-software");
+        ConfigureSectionGrid(_accountingGridOptions, "equipment-accounting");
+        ConfigureSectionGrid(_routerGridOptions, "equipment-router");
+        ConfigureSectionGrid(_upsGridOptions, "equipment-ups");
     }
 
-    private IReadOnlyList<ClayDetailColumn<EquipmentComputerSnapshot>> BuildComputerColumns()
+    private static void ConfigureSectionGrid(ClayGridOptions options, string id)
     {
-        var columns = new List<ClayDetailColumn<EquipmentComputerSnapshot>>
-        {
-            new() { Title = "Дата", TextSelector = item => item.Date.ToString("dd.MM.yyyy") },
-        };
-        AddComputerComponentColumns(columns, "RAM", "Мб", item => item.RamMb, item => item.RamComponents);
-        AddComputerComponentColumns(columns, "HD", "Гб", item => (decimal)item.HdGb, item => item.HdComponents);
-        AddComputerComponentColumns(columns, "SSD", "Гб", item => item.SsdGb, item => item.SsdComponents);
-        if (_computerHistory.Any(item => item.Configuration1Id is not null))
-            columns.Add(new() { Title = "Стандартная конфигурация 1", TextSelector = item => FormatConfiguration(item.Configuration1Name, item.Configuration1Date) });
-        if (_computerHistory.Any(item => item.Configuration2Id is not null))
-            columns.Add(new() { Title = "Стандартная конфигурация 2", TextSelector = item => FormatConfiguration(item.Configuration2Name, item.Configuration2Date) });
-        columns.Add(new() { Title = "Лицензия", TextSelector = item => item.License });
-        columns.Add(new() { Title = "Примечания", TextSelector = item => item.Notes });
-        columns.Add(new() { Title = "Изменил", TextSelector = item => item.ChangedByName });
-        columns.Add(new() { Title = "Изменено", TextSelector = item => FormatDisplayDate(item.ChangedAt, true) });
-        return columns;
+        options.Id = id;
+        options.Class = "equipment-detail-grid";
+        options.ShowToolbar = false;
+        options.ShowPagination = false;
+        options.AutoHeight = true;
+        options.AllowColumnReorder = false;
+        options.AllowSorting = false;
+        options.ColumnMenuMode = ColumnMenuMode.Hidden;
     }
 
-    private void AddComputerComponentColumns(
-        List<ClayDetailColumn<EquipmentComputerSnapshot>> columns,
-        string name,
-        string unit,
-        Func<EquipmentComputerSnapshot, decimal> total,
-        Func<EquipmentComputerSnapshot, IReadOnlyList<decimal>> components)
-    {
-        if (_computerHistory.Any(item => total(item) != 0))
-            columns.Add(new() { Title = $"{name}, {unit}", TextSelector = item => total(item).ToString("0.###") });
-        var count = _computerHistory.Count == 0 ? 0 : _computerHistory.Max(item => components(item).Count);
-        for (var index = 0; index < count; index++)
-        {
-            var componentIndex = index;
-            columns.Add(new()
-            {
-                Title = $"{name}{index + 1}",
-                TextSelector = item => componentIndex < components(item).Count
-                    ? components(item)[componentIndex].ToString("0.###")
-                    : "0",
-            });
-        }
-    }
+    private string PhoneGridKey => $"{_canEdit}:{_phones.Any(item => item.ConnectionEquipmentId is > 0)}";
+    private int ComputerRamColumns => ComputerComponentCount(item => item.RamComponents);
+    private int ComputerHdColumns => ComputerComponentCount(item => item.HdComponents);
+    private int ComputerSsdColumns => ComputerComponentCount(item => item.SsdComponents);
+
+    private int ComputerComponentCount(Func<EquipmentComputerSnapshot, IReadOnlyList<decimal>> components) =>
+        _computerHistory.Count == 0 ? 0 : _computerHistory.Max(item => components(item).Count);
+
+    private static string ComputerComponent(IReadOnlyList<decimal> components, int index) =>
+        index < components.Count ? components[index].ToString("0.###") : "0";
 
     private static string FormatConfiguration(string name, DateTime? date) => string.IsNullOrWhiteSpace(name)
         ? string.Empty
@@ -1392,6 +1250,7 @@ public partial class EquipmentForm : IDisposable
         if (_disposed || version != _simVersion || _model.Id != equipmentId)
             return;
         _simCards = simCards.ToList();
+        UpdateOptions();
         await RefreshLocationDisplayDatesAsync();
         await RefreshSimServicesAsync();
     }
@@ -1550,6 +1409,7 @@ public partial class EquipmentForm : IDisposable
         if (_disposed || version != _licenseVersion || _model.Id != equipmentId)
             return;
         _licenses = licenses.ToList();
+        UpdateOptions();
     }
 
     private async Task OpenSoftwareDialogAsync(EquipmentSoftwareInstallation? existing)
@@ -2096,6 +1956,16 @@ public partial class EquipmentForm : IDisposable
         _tenantOptions.ReadOnly = true;
         foreach (var options in new ClayInputOptions[] { _writeOffDateOptions, _writeOffTimeOptions, _snOptions, _networkNameOptions, _macOptions, _descriptionOptions })
             options.ReadOnly = !_canEdit;
+        _phoneGridOptions.ShowAddButton = _canEdit;
+        _locationGridOptions.ShowAddButton = _canEdit;
+        _responsibleGridOptions.ShowAddButton = _canEdit;
+        _accountGridOptions.ShowAddButton = _canEdit;
+        _computerGridOptions.ShowAddButton = _canEdit;
+        _softwareGridOptions.ShowAddButton = _canEdit;
+        _simGridOptions.ShowAddButton = _canEditSim && _simCards.Count == 0;
+        _simServiceGridOptions.ShowAddButton = _canEditSim && _simCards.Count > 0;
+        _licenseGridOptions.ShowAddButton = _canEditLicense && _licenses.Count == 0;
+        _accountingGridOptions.ShowAddButton = _canUseAccounting;
         UpdatePhoneSourceFilters();
     }
 
