@@ -150,6 +150,19 @@ public class EquipmentFormService
         return service.SaveAsync(_db);
     }
 
+    /// <summary>Возвращает конфигурацию IP-телефона после проверки роли 102.</summary>
+    public virtual async Task<string> GetPhoneConfigAsync(string mac)
+    {
+        if (!await HasRoleAsync(102))
+            throw new UnauthorizedAccessException("Недостаточно прав для получения конфигурации телефона.");
+        var parameters = new Dapper.DynamicParameters();
+        parameters.Add("@MACадрес", mac, System.Data.DbType.String, size: 12);
+        parameters.Add("@КонфигурацияIpТелефона", dbType: System.Data.DbType.String,
+            direction: System.Data.ParameterDirection.Output, size: -1);
+        await _db.ExecuteAsync("dbo.sp_КонфигурацияIpТелефона", parameters);
+        return parameters.Get<string>("@КонфигурацияIpТелефона") ?? string.Empty;
+    }
+
     /// <summary>Возвращает счётчик подключений рабочей сети.</summary>
     public virtual async Task<int> GetNetworkAttachmentCountAsync(int equipmentId) =>
         await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_ID_ConnectedWorkNet,

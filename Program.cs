@@ -148,6 +148,22 @@ app.UseAntiforgery();
 app.UseAuthentication();
 app.UseAuthorization();
 
+app.MapGet("/Equipment/PhoneConfigHandler.ashx", async (string? mac, Kesco.App.Web.Inventory.Services.EquipmentFormService service) =>
+{
+    if (string.IsNullOrWhiteSpace(mac) || mac.Length != 12)
+        return Results.BadRequest("Укажите MAC-адрес из 12 символов.");
+    try
+    {
+        var config = await service.GetPhoneConfigAsync(mac);
+        var contentType = config.Contains("<?") && config.Contains("?>") ? "text/xml" : "text/plain";
+        return Results.Text(config, contentType);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Forbid();
+    }
+});
+
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 

@@ -40,6 +40,10 @@
             {
                 <ClayToolbarButton Options="_detachOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SetNetworkAttachmentAsync(false))" />
             }
+            @if (ShowPhoneConfig)
+            {
+                <ClayToolbarButton Options="_phoneConfigOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="OpenPhoneConfigAsync" />
+            }
         </ClayToolbar>
     </Toolbar>
     <ChildContent>

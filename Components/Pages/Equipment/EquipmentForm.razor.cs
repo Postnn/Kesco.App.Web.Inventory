@@ -158,6 +158,7 @@ public partial class EquipmentForm : IDisposable
     private readonly ClayToolbarButtonOptions _copyOptions = new() { Text = "Копировать", Icon = Icons.Material.Filled.ContentCopy, Title = "Создать оборудование копированием" };
     private readonly ClayToolbarButtonOptions _attachOptions = new() { Text = "Подключить сеть", Icon = Icons.Material.Filled.Link, Title = "Подключить оборудование к рабочей сети" };
     private readonly ClayToolbarButtonOptions _detachOptions = new() { Text = "Отключить сеть", Icon = Icons.Material.Filled.LinkOff, Title = "Отключить оборудование от рабочей сети" };
+    private readonly ClayToolbarButtonOptions _phoneConfigOptions = new() { Text = "Конфигурация", Icon = Icons.Material.Filled.SettingsPhone, Title = "Открыть конфигурацию IP-телефона" };
     private int _networkAttachmentCount;
     private int _networkVersion;
 
@@ -212,6 +213,7 @@ public partial class EquipmentForm : IDisposable
     private bool ShowNetworkName => _selectedType?.HasNetworkName > 0;
     private bool ShowPhonePool => _selectedType?.HasPhoneNumber > 0;
     private bool ShowPhones => _selectedType?.HasPhoneNumber > 0;
+    private bool ShowPhoneConfig => _selectedType?.Id == 30;
     private bool ShowComputer => _selectedType?.HasComputerCharacteristics > 0;
     private bool ShowSim => _selectedType?.HasSimCharacteristics > 0;
     private bool ShowLicense => _selectedType?.HasSoftwareCharacteristics > 0;
@@ -1510,6 +1512,30 @@ public partial class EquipmentForm : IDisposable
             SetDocumentOwner(current.OwnerId);
         }
         _canUseAccounting = await Service.CanUseAccountingAsync(_model.OwnerId);
+    }
+
+    private async Task OpenPhoneConfigAsync()
+    {
+        if (!ShowPhoneConfig || _model is null || _saving)
+            return;
+        if (IsModified)
+        {
+            _validationMessage = "Сохраните оборудование перед просмотром конфигурации.";
+            return;
+        }
+        var errors = new List<string>();
+        if (string.IsNullOrWhiteSpace(_model.MacAddress))
+            errors.Add("Укажите MAC-адрес.");
+        if (_model.PhonePoolId is null or <= 0)
+            errors.Add("Выберите телефонный пул.");
+        if (string.IsNullOrWhiteSpace(_selectedModel?.PhoneTemplate))
+            errors.Add("Для модели не задан шаблон конфигурации.");
+        if (errors.Count > 0)
+        {
+            _validationMessage = string.Join(" ", errors);
+            return;
+        }
+        await JS.InvokeVoidAsync("open", $"/Equipment/PhoneConfigHandler.ashx?mac={Uri.EscapeDataString(_model.MacAddress!)}", "_blank");
     }
 
     private async Task SetNetworkAttachmentAsync(bool attach)
