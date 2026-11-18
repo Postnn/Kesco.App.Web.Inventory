@@ -359,6 +359,7 @@ public class EquipmentFormService
         if (equipmentIds.Count == 0)
             equipmentIds.Add(equipmentId);
         var needsCcm = false;
+        var hasXorcom = false;
         foreach (var phone in phones)
         {
             var lookup = (await _db.QueryAsync<PhoneNumberLookup>(
@@ -371,6 +372,7 @@ public class EquipmentFormService
             needsCcm |= lookup.StationId == 0;
             if (string.IsNullOrWhiteSpace(lookup.XorcomName))
                 continue;
+            hasXorcom = true;
             var parameters = new Dapper.DynamicParameters();
             parameters.Add("@КодТелефонногоНомера", phone.PhoneId, DbType.Int32);
             var hasDeletedParameter = await _db.ExecuteScalarAsync<int>(
@@ -385,7 +387,7 @@ public class EquipmentFormService
             if (returnCode != 0)
                 errors.Add($"Xorcom: номер #{phone.PhoneId}, код ошибки {returnCode}.");
         }
-        if (needsCcm)
+        if (needsCcm && !hasXorcom)
         {
             foreach (var id in equipmentIds)
             {

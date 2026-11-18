@@ -31,7 +31,7 @@
                 <ClayTime @bind-Value="FromTime" Options="_fromTimeOptions" />
             </div>
         </div>
-        @if (RequireResponsible)
+        @if (ResponsibleRequired)
         {
             <div class="equipment-ins-row">
                 <span class="equipment-ins-label">Ответственный:</span>
@@ -96,6 +96,8 @@
     /// <summary>Примечания.</summary>
     [Parameter] public string Notes { get; set; } = string.Empty;
 
+    private bool ResponsibleRequired => RequireResponsible && LocationId == 55;
+
     private Func<Employee, Task>? EmployeeViewItem =>
         !string.IsNullOrWhiteSpace(Configuration["URI_user_form"]) ? OpenEmployeeViewAsync : null;
 
@@ -119,7 +121,7 @@
             _error = "Укажите расположение, дату и время начала.";
             return;
         }
-        if (RequireResponsible && EmployeeId is null)
+        if (ResponsibleRequired && EmployeeId is null)
         {
             _error = "Для расположения «На руках» укажите ответственного сотрудника.";
             return;
@@ -136,6 +138,6 @@
             return;
         }
         Dialog.Close(DialogResult.Ok(new EquipmentLocationDialogResult(
-            LocationId!.Value, from, ReturnDate, Notes ?? string.Empty, RequireResponsible ? EmployeeId : null)));
+            LocationId!.Value, from, ReturnDate, Notes ?? string.Empty, ResponsibleRequired ? EmployeeId : null)));
     }
 }

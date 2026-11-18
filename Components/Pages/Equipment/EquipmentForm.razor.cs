@@ -711,6 +711,7 @@ public partial class EquipmentForm : IDisposable
         var parameters = new DialogParameters<EquipmentLocationDialog>
         {
             { dialog => dialog.IsEdit, isEdit },
+            { dialog => dialog.RequireResponsible, !isEdit && !_responsibles.Any(item => item.ToUtc is null) },
             { dialog => dialog.LocationId, existing?.LocationId },
             { dialog => dialog.FromDate, existing?.FromUtc.Date },
             { dialog => dialog.FromTime, existing?.FromUtc.TimeOfDay },
@@ -735,6 +736,11 @@ public partial class EquipmentForm : IDisposable
         {
             var requireResponsible = value.LocationId == OnHandsLocationId &&
                                      !await Service.HasCurrentResponsibleAsync(equipmentId);
+            if (!isEdit && requireResponsible && value.EmployeeId is null)
+            {
+                _validationMessage = "Для расположения «На руках» укажите ответственного сотрудника.";
+                return;
+            }
             var fromUtc = await ConvertLocalToUtcAsync(value.FromLocal);
             if (_disposed || version != _locationVersion || _model.Id != equipmentId)
                 return;
