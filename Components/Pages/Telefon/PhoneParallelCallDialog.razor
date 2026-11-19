@@ -1,5 +1,6 @@
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
+@using Kesco.App.Web.Inventory.Services
 
 <MudDialog>
     <TitleContent>@(IsEdit ? "Параллельный вызов" : "Новый параллельный вызов")</TitleContent>
@@ -19,6 +20,10 @@
             </div>
             <ClayCheckbox State="Value.NotUsed" StateChanged="OnNotUsedChanged" Label="Не использовать" />
         </div>
+        @if (!string.IsNullOrWhiteSpace(_errorMessage))
+        {
+            <MudAlert Severity="Severity.Error" Class="mt-2">@_errorMessage</MudAlert>
+        }
     </DialogContent>
     <DialogActions>
         <ClayToolbarButton Options="_cancelButton" OnClick="Cancel" />
@@ -31,6 +36,7 @@
     private readonly ClayNumberOptions _delayOptions = new() { Min = 0, Max = 255, Precision = 0, HideSpinButtons = true };
     private readonly ClayToolbarButtonOptions _cancelButton = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButton = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
+    private string? _errorMessage;
 
     [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
 
@@ -40,9 +46,22 @@
     /// <summary>Признак редактирования существующей записи.</summary>
     [Parameter] public bool IsEdit { get; set; }
 
+    /// <summary>Номер текущей телефонной записи.</summary>
+    [Parameter] public string CurrentNumber { get; set; } = string.Empty;
+
+    /// <summary>Номера других параллельных вызовов.</summary>
+    [Parameter] public IReadOnlyCollection<string> OtherNumbers { get; set; } = [];
+
     private void Cancel() => Dialog.Cancel();
-    private void Apply() => Dialog.Close(DialogResult.Ok(Value.Clone()));
-    private void OnDelayBeforeChanged(decimal? value) => Value.DelayBeforeCall = (int)(value ?? 0);
-    private void OnDelayQuickChanged(decimal? value) => Value.DelayTooQuickResponse = (int)(value ?? 0);
+
+    private void Apply()
+    {
+        var errors = PhoneFormValidator.ValidateParallelCall(Value, CurrentNumber, OtherNumbers);
+        _errorMessage = string.Join(" ", errors);
+        if (errors.Count == 0) Dialog.Close(DialogResult.Ok(Value.Clone()));
+    }
+
+    private void OnDelayBeforeChanged(decimal? value) => Value.DelayBeforeCall = (int)Math.Round(value ?? 0, 0, MidpointRounding.ToEven);
+    private void OnDelayQuickChanged(decimal? value) => Value.DelayTooQuickResponse = (int)Math.Round(value ?? 0, 0, MidpointRounding.ToEven);
     private void OnNotUsedChanged(bool? value) => Value.NotUsed = value == true;
 }

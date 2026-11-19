@@ -17,7 +17,7 @@ public class PhoneFormService
     /// <summary>Загружает основную запись и связанные наборы одним batch.</summary>
     public virtual async Task<PhoneFormData?> GetAsync(int id, bool copy = false)
     {
-        var canEdit = await HasRoleAsync(43);
+        var canEdit = await HasRoleAsync((int)Роли.Специалист_по_инвентаризации_оборудования);
         var result = await _db.RunAsync(async connection =>
         {
             var sql = string.Join("\n", SQLQueries.SELECT_ТелефонДляФормы,
@@ -117,6 +117,8 @@ public class PhoneFormService
         var phone = request.Phone;
         var issues = new List<PhoneValidationIssue>();
         if (phone.PhoneTypeId is null || phone.StationId is null || string.IsNullOrEmpty(phone.Number)) return issues;
+        phone.FullNumber = await _db.ExecuteScalarAsync<string>(SQLQueries.SELECT_ТелефонАвторитетныйПолныйНомер,
+            new { phone.Number, phone.StationId, phone.DrivenById, phone.DisplayedFromId }, commandType: CommandType.Text) ?? phone.Number;
         var statements = new List<string>
         {
             SQLQueries.SELECT_ТелефонТипДоступенНаСтанции,
@@ -125,15 +127,13 @@ public class PhoneFormService
             SQLQueries.SELECT_ТелефонПортДоступен,
         };
         if (phone.DrivenById is null && phone.DisplayedFromId is null)
-        {
             statements.Add(SQLQueries.SELECT_ТелефонДубликатПолногоНомера);
-            statements.Add(SQLQueries.SELECT_ТелефонПересеченияПолногоНомера);
-        }
+        statements.Add(SQLQueries.SELECT_ТелефонПересеченияПолногоНомера);
         if (phone.DrivenById is not null || phone.DisplayedFromId is not null)
             statements.Add(SQLQueries.SELECT_ТелефонНедопустимыеЗависимости);
-        if (phone.PhoneTypeId == 0 && phone.EmployeeId is not null)
+        if (phone.PhoneTypeId == (int)ТипыТелефонныхНомеров.ГруппаИлиФиктивный && phone.EmployeeId is not null)
             statements.Add(SQLQueries.SELECT_ТелефонСотрудникГрупповойРаботы);
-        if (phone.PhoneTypeId == 101 && phone.CustomerId is not null && !string.IsNullOrEmpty(phone.QuickCall))
+        if (phone.PhoneTypeId == (int)ТипыТелефонныхНомеров.Короткий_номер_мобильного && phone.CustomerId is not null && !string.IsNullOrEmpty(phone.QuickCall))
             statements.Add(SQLQueries.SELECT_ТелефонЗаказчикиКороткогоМобильного);
         if (phone.CustomerId is not null)
             statements.Add(SQLQueries.SELECT_ТелефонЗаказчикиНаРасположенииСтанции);
@@ -156,6 +156,62 @@ public class PhoneFormService
         parameters.Add("@CustomerId", phone.CustomerId);
         parameters.Add("@QuickCall", phone.QuickCall);
         parameters.Add("@CallNumber", phone.Number);
+        parameters.Add("@SocketId", phone.SocketId);
+        var relationChecks = new List<Action<int>>();
+        var relationIndex = 0;
+        foreach (var member in request.Relations.GroupMembers)
+        {
+            var parameter = $"@MemberPhoneId{relationIndex++}";
+            parameters.Add(parameter, member.PhoneId);
+            statements.Add(SQLQueries.SELECT_ТелефонЧленГруппыНедопустим.Replace("@MemberPhoneId", parameter));
+            relationChecks.Add(result =>
+            {
+                if (result > 0) issues.Add(new PhoneValidationIssue("GroupMembers",
+                    $"Номер #{member.PhoneId} отсутствует или принадлежит другой станции."));
+            });
+        }
+        relationIndex = 0;
+        foreach (var link in request.Relations.Equipment)
+        {
+            var equipmentParameter = $"@EquipmentId{relationIndex}";
+            var connectionParameter = $"@ConnectionEquipmentId{relationIndex++}";
+            parameters.Add(equipmentParameter, link.Key.EquipmentId);
+            parameters.Add(connectionParameter, link.Key.ConnectionEquipmentId);
+            statements.Add(SQLQueries.SELECT_ТелефонОборудованиеДопустимо
+                .Replace("@EquipmentId", equipmentParameter).Replace("@ConnectionEquipmentId", connectionParameter));
+            relationChecks.Add(result =>
+            {
+                if (result == 0) issues.Add(new PhoneValidationIssue("Equipment",
+                    $"Связь оборудования #{link.EquipmentId} недопустима для текущих типа, станции, сотрудника или розетки."));
+            });
+        }
+        if (phone.SocketId is not null)
+        {
+            var locationIds = request.Relations.Equipment.Select(item => item.LocationId).Where(id => id > 0).Distinct().ToList();
+            if (request.Relations.Equipment.Count > 0 && locationIds.Count == 0)
+                issues.Add(new PhoneValidationIssue("SocketId", "Нельзя проверить розетку: у выбранного оборудования не указано расположение."));
+            else
+            {
+                var socketSql = SQLQueries.SELECT_ТелефонРозеткаДопустимаВОфисе;
+                if (locationIds.Count > 0)
+                {
+                    var names = locationIds.Select((id, index) =>
+                    {
+                        var name = $"@LocationId{index}";
+                        parameters.Add(name, id);
+                        return name;
+                    });
+                    socketSql = SQLQueries.SELECT_ТелефонРозеткаДопустимаОборудования
+                        .Replace("@LocationIds", string.Join(",", names));
+                }
+                statements.Add(socketSql);
+                relationChecks.Add(result =>
+                {
+                    if (result == 0) issues.Add(new PhoneValidationIssue("SocketId",
+                        "Розетка занята, не работает или недоступна для текущего расположения."));
+                });
+            }
+        }
         await _db.RunAsync<bool>(async connection =>
         {
             using var reader = await connection.QueryMultipleAsync(string.Join("\n", statements), parameters);
@@ -170,21 +226,19 @@ public class PhoneFormService
                 issues.Add(new PhoneValidationIssue("AtsPort", "Выберите порт АТС."));
             if (hasPorts && !string.IsNullOrEmpty(phone.AtsPort) && !portAvailable)
                 issues.Add(new PhoneValidationIssue("AtsPort", "Выбранный порт занят или недоступен для текущих типа и станции."));
-            if (phone.DrivenById is null && phone.DisplayedFromId is null)
-            {
-                if (await reader.ReadFirstOrDefaultAsync<int>() > 0)
-                    issues.Add(new PhoneValidationIssue("Number", "Полный номер уже используется."));
-                if (await reader.ReadFirstOrDefaultAsync<int>() > 0)
-                    issues.Add(new PhoneValidationIssue("Number", "Полный номер пересекается по префиксу с другим номером."));
-            }
+            if (phone.DrivenById is null && phone.DisplayedFromId is null &&
+                await reader.ReadFirstOrDefaultAsync<int>() > 0)
+                issues.Add(new PhoneValidationIssue("Number", "Полный номер уже используется."));
+            if (await reader.ReadFirstOrDefaultAsync<int>() > 0)
+                issues.Add(new PhoneValidationIssue("Number", "Полный номер пересекается по префиксу с другим номером."));
             if (phone.DrivenById is not null || phone.DisplayedFromId is not null)
             {
                 if (await reader.ReadFirstOrDefaultAsync<int>() > 0)
                     issues.Add(new PhoneValidationIssue("DrivenById", "Зависимые номера содержат ссылку на себя, цикл или другую станцию."));
             }
-            if (phone.PhoneTypeId == 0 && phone.EmployeeId is not null && await reader.ReadFirstOrDefaultAsync<int>() == 0)
+            if (phone.PhoneTypeId == (int)ТипыТелефонныхНомеров.ГруппаИлиФиктивный && phone.EmployeeId is not null && await reader.ReadFirstOrDefaultAsync<int>() == 0)
                 issues.Add(new PhoneValidationIssue("EmployeeId", "Для PBX-группы выберите сотрудника, являющегося группой посменной работы.", PhoneValidationSeverity.WarningAllowed));
-            if (phone.PhoneTypeId == 101 && phone.CustomerId is not null && !string.IsNullOrEmpty(phone.QuickCall))
+            if (phone.PhoneTypeId == (int)ТипыТелефонныхНомеров.Короткий_номер_мобильного && phone.CustomerId is not null && !string.IsNullOrEmpty(phone.QuickCall))
             {
                 var customers = (await reader.ReadAsync<string>()).ToList();
                 if (customers.Count > 0)
@@ -215,6 +269,8 @@ public class PhoneFormService
             if (phone.Id > 0 && request.Relations.ParallelCalls.Count == 0 && phone.ViewInDirectory != 0 &&
                 await reader.ReadFirstOrDefaultAsync<int>() > 0)
                 issues.Add(new PhoneValidationIssue("ViewInDirectory", "Номер участвует в чужом параллельном вызове; отображение в справочнике допустимо, но не обязательно.", PhoneValidationSeverity.Info));
+            foreach (var check in relationChecks)
+                check(await reader.ReadFirstOrDefaultAsync<int>());
             return true;
         });
         return issues;
@@ -234,12 +290,13 @@ public class PhoneFormService
         await _db.ExecuteAsync(sql, new { Id = id }, commandType: CommandType.Text);
     }
 
-    /// <summary>Выполняет запланированные процедуры АТС и возвращает только фактические ошибки.</summary>
-    public virtual async Task<IReadOnlyList<string>> SynchronizeAsync(int phoneId, IEnumerable<PhoneSyncOperation> operations)
+    /// <summary>Выполняет процедуры АТС и возвращает независимый результат каждой операции.</summary>
+    public virtual async Task<IReadOnlyList<PhoneSyncResult>> SynchronizeAsync(int phoneId, IEnumerable<PhoneSyncOperation> operations)
     {
-        var errors = new List<string>();
+        var results = new List<PhoneSyncResult>();
         foreach (var operation in operations.Distinct())
         {
+            string? error = null;
             try
             {
                 switch (operation.Kind)
@@ -272,10 +329,11 @@ public class PhoneFormService
             }
             catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
             {
-                errors.Add($"{operation.Kind} ({operation.Key}): {ex.Message}");
+                error = ex.Message;
             }
+            results.Add(new PhoneSyncResult(operation, error));
         }
-        return errors;
+        return results;
     }
 
     private async Task ExecuteReturnCodeAsync(string procedure, DynamicParameters parameters, Action<DynamicParameters> fill)
@@ -289,7 +347,7 @@ public class PhoneFormService
 
     private async Task EnsureWriteAccessAsync()
     {
-        if (!await HasRoleAsync(43))
+        if (!await HasRoleAsync((int)Роли.Специалист_по_инвентаризации_оборудования))
             throw new UnauthorizedAccessException("Недостаточно прав для изменения телефонного номера (роль 43).");
     }
 }

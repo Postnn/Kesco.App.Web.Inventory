@@ -10,6 +10,7 @@
 @using Kesco.App.Web.Inventory.Services
 @implements IDisposable
 @inject PhoneFormService Service
+@inject Clayzor.Lib.Web.Controls.ClayErrorService ErrorService
 @inject PhoneTypeSelectDataSource TypeSource
 @inject PhoneStationSelectDataSource StationSource
 @inject PhoneEquipmentSelectDataSource EquipmentSource
@@ -28,19 +29,24 @@
 <ClayEntityForm Options="_entityFormOptions">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit || _deleted)" OnClick="@(() => SaveAsync(true))" />
-            <ClayToolbarButton Options="_applyOptions" Disabled="@((!CanSave && _pendingSync is null) || _deleted && _pendingSync is null)" OnClick="@(() => SaveAsync(false))" />
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit || _deleted && _pendingOperations.Count == 0)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_applyOptions" Disabled="@((!CanSave && _pendingOperations.Count == 0) || _deleted && _pendingOperations.Count == 0)" OnClick="@(() => SaveAsync(false))" />
             @if (_model?.Id > 0 && !_deleted)
             {
                 <ClayToolbarButton Options="_copyOptions" Disabled="@(_loading || _saving)" OnClick="CopyAsync" />
-                <ClayToolbarButton Options="_deleteOptions" Disabled="@(_loading || _saving || !_canEdit)" OnClick="DeleteAsync" />
+                <ClayToolbarButton Options="_deleteOptions" Disabled="@(_loading || _saving || !_canEdit || _pendingOperations.Count > 0)" OnClick="DeleteAsync" />
             }
             <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || _deleted)" OnClick="RefreshAsync" />
             <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
-        @if (_notFound)
+        @if (_loadError is not null)
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-2">@_loadError</MudAlert>
+            <ClayToolbarButton Options="_retryOptions" Disabled="@_loading" OnClick="RetryLoadAsync" />
+        }
+        else if (_notFound)
         {
             <MudAlert Severity="Severity.Warning">Телефонный номер с указанным идентификатором не найден или недоступен.</MudAlert>
         }
@@ -48,7 +54,7 @@
         {
             if (!_canEdit)
             {
-                <MudAlert Severity="Severity.Warning" Class="mb-2">Для изменения телефонного номера требуется роль 43 и доступ к компании заказчика.</MudAlert>
+                <MudAlert Severity="Severity.Warning" Class="mb-2">Для изменения телефонного номера требуется роль 43.</MudAlert>
             }
             @if (!string.IsNullOrWhiteSpace(_validationMessage))
             {
@@ -130,6 +136,42 @@
                         }
                         <span></span><span></span>
                     </div>
+                    @if (_availability.ParallelCalls.IsVisible)
+                    {
+                        <section class="phone-form-section">
+                            <span class="phone-form-label">Параллельные вызовы:</span>
+                            <div>
+                                <ClayGrid TEntity="PhoneParallelCall" Items="_relations.ParallelCalls" Options="_parallelGridOptions"
+                                          OnAdd="@(() => OpenParallelDialogAsync(null))" AddDisabled="@(!_availability.ParallelCalls.IsEditable || !_canEdit)">
+                                    <ColumnDefs>
+                                        <ClayColumnDef ColumnId="1" SqlName="CallNumber" DisplayName="Номер" />
+                                        <ClayColumnDef ColumnId="2" SqlName="DelayBeforeCall" DisplayName="Задержка" />
+                                        <ClayColumnDef ColumnId="3" SqlName="DelayTooQuickResponse" DisplayName="Быстрый ответ" />
+                                        <ClayColumnDef ColumnId="4" SqlName="NotUsed" DisplayName="Не используется" />
+                                        <ClayColumnDef ColumnId="5" SqlName="ChangedByName" DisplayName="Изменил" />
+                                        <ClayColumnDef ColumnId="6" SqlName="ChangedAtUtc" DisplayName="Изменено" />
+                                    </ColumnDefs>
+                                    <Columns>
+                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="1" TextSelector="@(item => item.CallNumber)" />
+                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="2" TextSelector="@(item => item.DelayBeforeCall.ToString())" />
+                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="3" TextSelector="@(item => item.DelayTooQuickResponse.ToString())" />
+                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="4" TextSelector="@(item => item.NotUsed ? "Да" : "Нет")" />
+                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="5" TextSelector="@(item => item.ChangedByName)" />
+                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="6"><CellTemplate><ClayLocalTime Value="context.Item.ChangedAtUtc" /></CellTemplate></ClayColumn>
+                                    </Columns>
+                                    <RowActions Context="item">
+                                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить" Disabled="@(!_availability.ParallelCalls.IsEditable || !_canEdit)" OnClick="@(() => OpenParallelDialogAsync(item))" />
+                                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить" Disabled="@(!_availability.ParallelCalls.IsEditable || !_canEdit)" OnClick="@(() => RemoveParallelAsync(item))" />
+                                    </RowActions>
+                                </ClayGrid>
+                                <div class="phone-form-with-action" @onkeydown="OnParallelQuickKeyDown">
+                                    <ClayTextBox @bind-Value="_parallelQuickNumber" Options="_parallelQuickOptions" />
+                                    <ClayButton Icon="@Icons.Material.Filled.Add" Text="Добавить" Disabled="@(!_availability.ParallelCalls.IsEditable || !_canEdit)" OnClick="AddParallelQuick" />
+                                </div>
+                                @FieldWarning(_availability.ParallelCalls)
+                            </div>
+                        </section>
+                    }
                     <div class="phone-form-pair">
                         <span class="phone-form-label">Сотрудник:</span>
                         <ClaySelect TItem="Employee" TValue="int?" DataSource="EmployeeSource"
@@ -177,14 +219,14 @@
                         <span class="phone-form-label">Компания заказчик:</span>
                         <ClaySelect TItem="PersonLookup" TValue="int?" DataSource="CustomerSource"
                                     ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
-                                    @bind-Value="_model.CustomerId" Options="_customerOptions" />
+                                    Value="_model.CustomerId" ValueChanged="OnCustomerChanged" Options="_customerOptions" />
                         @if (_availability.Socket.IsVisible)
                         {
                             <span class="phone-form-label">Розетка:</span>
                             <div>
-                                <ClaySelect TItem="PhoneSocketLookup" TValue="int?" DataSource="SocketSource"
+                                <ClaySelect @key="_socketSelectVersion" TItem="PhoneSocketLookup" TValue="int?" DataSource="SocketSource"
                                             ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
-                                            @bind-Value="_model.SocketId" Options="_socketOptions" />
+                                            Value="_model.SocketId" ValueChanged="OnSocketChanged" Options="_socketOptions" />
                                 @FieldWarning(_availability.Socket)
                             </div>
                         }
@@ -196,49 +238,16 @@
 
                     <div class="phone-form-single">
                         <span class="phone-form-label">Подключено:</span>
-                        <ClayTextBox @bind-Value="_model.Connected" Options="_connectedOptions" />
+                        <ClayTextBox Value="@_model.Connected" ValueChanged="OnConnectedChanged" Options="_connectedOptions" />
                     </div>
                     <div class="phone-form-single">
                         <span class="phone-form-label">Описание АТС:</span>
                         <div class="phone-form-with-action">
-                            <ClayTextBox @bind-Value="_model.AtsDescription" Options="_atsDescriptionOptions" />
+                            <ClayTextBox Value="@_model.AtsDescription" ValueChanged="OnAtsDescriptionChanged" Options="_atsDescriptionOptions" />
                             <ClayButton Icon="@Icons.Material.Filled.AutoFixHigh" Text="Заполнить по сотруднику"
                                         Disabled="@(!_canEdit || _model.EmployeeId is null)" OnClick="FillAtsDescriptionAsync" />
                         </div>
                     </div>
-
-                    @if (_availability.ParallelCalls.IsVisible)
-                    {
-                        <section class="phone-form-section">
-                            <span class="phone-form-label">Параллельные вызовы:</span>
-                            <div>
-                                <ClayGrid TEntity="PhoneParallelCall" Items="_relations.ParallelCalls" Options="_parallelGridOptions"
-                                          OnAdd="@(() => OpenParallelDialogAsync(null))" AddDisabled="@(!_availability.ParallelCalls.IsEditable || !_canEdit)">
-                                    <ColumnDefs>
-                                        <ClayColumnDef ColumnId="1" SqlName="CallNumber" DisplayName="Номер" />
-                                        <ClayColumnDef ColumnId="2" SqlName="DelayBeforeCall" DisplayName="Задержка" />
-                                        <ClayColumnDef ColumnId="3" SqlName="DelayTooQuickResponse" DisplayName="Быстрый ответ" />
-                                        <ClayColumnDef ColumnId="4" SqlName="NotUsed" DisplayName="Не используется" />
-                                        <ClayColumnDef ColumnId="5" SqlName="ChangedByName" DisplayName="Изменил" />
-                                        <ClayColumnDef ColumnId="6" SqlName="ChangedAtUtc" DisplayName="Изменено" />
-                                    </ColumnDefs>
-                                    <Columns>
-                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="1" TextSelector="@(item => item.CallNumber)" />
-                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="2" TextSelector="@(item => item.DelayBeforeCall.ToString())" />
-                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="3" TextSelector="@(item => item.DelayTooQuickResponse.ToString())" />
-                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="4" TextSelector="@(item => item.NotUsed ? "Да" : "Нет")" />
-                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="5" TextSelector="@(item => item.ChangedByName)" />
-                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="6" TextSelector="@(item => FormatUtc(item.ChangedAtUtc))" />
-                                    </Columns>
-                                    <RowActions Context="item">
-                                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить" Disabled="@(!_availability.ParallelCalls.IsEditable || !_canEdit)" OnClick="@(() => OpenParallelDialogAsync(item))" />
-                                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить" Disabled="@(!_availability.ParallelCalls.IsEditable || !_canEdit)" OnClick="@(() => RemoveParallelAsync(item))" />
-                                    </RowActions>
-                                </ClayGrid>
-                                @FieldWarning(_availability.ParallelCalls)
-                            </div>
-                        </section>
-                    }
 
                     <div class="phone-form-single">
                         <span class="phone-form-label">Основной номер сотрудника:</span>
@@ -281,7 +290,7 @@
                                             <CellTemplate><a href="@PhoneUrl(context.Item.PhoneId)" target="_blank" rel="noopener">@context.Item.Name</a></CellTemplate>
                                         </ClayColumn>
                                         <ClayColumn TEntity="PhoneGroupMember" ColumnId="2" TextSelector="@(item => item.ChangedByName)" />
-                                        <ClayColumn TEntity="PhoneGroupMember" ColumnId="3" TextSelector="@(item => FormatUtc(item.ChangedAtUtc))" />
+                                        <ClayColumn TEntity="PhoneGroupMember" ColumnId="3"><CellTemplate><ClayLocalTime Value="context.Item.ChangedAtUtc" /></CellTemplate></ClayColumn>
                                     </Columns>
                                     <RowActions Context="item">
                                         <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить из группы" Disabled="@(!_availability.GroupMembers.IsEditable || !_canEdit)" OnClick="@(() => RemoveGroupMemberAsync(item))" />
@@ -342,7 +351,7 @@
                                             <ClayColumn TEntity="PhoneEquipmentLink" ColumnId="6" TextSelector="@(item => item.ReturnDate?.ToString("dd.MM.yyyy") ?? string.Empty)" />
                                         }
                                         <ClayColumn TEntity="PhoneEquipmentLink" ColumnId="7" TextSelector="@(item => item.ChangedByName)" />
-                                        <ClayColumn TEntity="PhoneEquipmentLink" ColumnId="8" TextSelector="@(item => FormatUtc(item.ChangedAtUtc))" />
+                                        <ClayColumn TEntity="PhoneEquipmentLink" ColumnId="8"><CellTemplate><ClayLocalTime Value="context.Item.ChangedAtUtc" /></CellTemplate></ClayColumn>
                                     </Columns>
                                     <RowActions Context="item">
                                         <ClayButton Icon="@Icons.Material.Filled.Schedule" Text="Срок возврата" Disabled="@(!_availability.Equipment.IsEditable || !_canEdit)" OnClick="@(() => EditEquipmentReturnAsync(item))" />
@@ -370,11 +379,11 @@
                     <div class="phone-form-radios">
                         <fieldset>
                             <legend>Услуги связи</legend>
-                            <ClayRadioGroup TValue="int" Items="_serviceChoices" Value="_model.ServicesKind" ValueChanged="OnServicesChanged" Options="_servicesRadioOptions" />
+                            <ClayRadioGroup TValue="int?" Items="_serviceChoices" Value="_model.ServicesKind" ValueChanged="OnServicesChanged" Options="_servicesRadioOptions" />
                         </fieldset>
                         <fieldset>
                             <legend>Отображение полного номера в корпоративном справочнике</legend>
-                            <ClayRadioGroup TValue="int" Items="_directoryChoices" Value="_model.ViewInDirectory" ValueChanged="OnDirectoryChanged" Options="_directoryRadioOptions" />
+                            <ClayRadioGroup TValue="int?" Items="_directoryChoices" Value="_model.ViewInDirectory" ValueChanged="OnDirectoryChanged" Options="_directoryRadioOptions" />
                         </fieldset>
                     </div>
                     <div class="phone-form-single phone-form-top">

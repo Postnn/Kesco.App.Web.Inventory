@@ -19,13 +19,19 @@ public static class PhoneSaveBuilder
         sql.AppendLine("    BEGIN TRANSACTION;");
         sql.AppendLine("    DECLARE @PhoneId int = @Id;");
         if (phone.Id <= 0)
+        {
             sql.AppendLine(SQLQueries.INSERT_ТелефонДляФормы);
-        else if (!MainEquals(request.OriginalPhone, phone))
-            sql.AppendLine(SQLQueries.UPDATE_ТелефонДляФормы).AppendLine(";");
+            AppendGroupDiff(sql, parameters, request.OriginalRelations.GroupMembers, request.Relations.GroupMembers);
+        }
+        else
+        {
+            AppendGroupDiff(sql, parameters, request.OriginalRelations.GroupMembers, request.Relations.GroupMembers);
+            if (!MainEquals(request.OriginalPhone, phone))
+                sql.AppendLine(SQLQueries.UPDATE_ТелефонДляФормы).AppendLine(";");
+        }
 
-        AppendGroupDiff(sql, parameters, request.OriginalRelations.GroupMembers, request.Relations.GroupMembers);
-        AppendEquipmentDiff(sql, parameters, request.OriginalRelations.Equipment, request.Relations.Equipment);
         AppendParallelDiff(sql, parameters, request.OriginalRelations.ParallelCalls, request.Relations.ParallelCalls);
+        AppendEquipmentDiff(sql, parameters, request.OriginalRelations.Equipment, request.Relations.Equipment);
         sql.AppendLine("    COMMIT TRANSACTION;");
         sql.AppendLine("    SELECT @PhoneId;");
         sql.AppendLine("END TRY");
@@ -96,19 +102,26 @@ public static class PhoneSaveBuilder
         IReadOnlyCollection<PhoneEquipmentLink> original, IReadOnlyCollection<PhoneEquipmentLink> current)
     {
         if (current.GroupBy(item => item.EquipmentId).Any(group => group.Count() > 1))
-            throw new InvalidOperationException("Оборудование добавлено в список повторно.");
+            throw new InvalidOperationException("Оборудование добавлено в список повторно: это запрещено первичным ключом таблицы.");
         var before = original.ToDictionary(item => item.EquipmentId);
         var after = current.ToDictionary(item => item.EquipmentId);
         var index = 0;
-        foreach (var item in before.Values.Where(item => !after.ContainsKey(item.EquipmentId) ||
-                     after[item.EquipmentId].ConnectionEquipmentId != item.ConnectionEquipmentId))
-            Add(sql, parameters, SQLQueries.DELETE_ТелефонОборудование, "delEquipment", index++, "@EquipmentId", item.EquipmentId);
-        foreach (var item in after.Values.Where(item => !before.ContainsKey(item.EquipmentId) ||
-                     before[item.EquipmentId].ConnectionEquipmentId != item.ConnectionEquipmentId))
+        foreach (var item in before.Values.Where(item => !after.TryGetValue(item.EquipmentId, out var currentItem) ||
+                     currentItem.Key != item.Key))
+        {
+            var prefix = $"delEquipment{index++}";
+            parameters.Add($"@{prefix}EquipmentId", item.Key.EquipmentId);
+            parameters.Add($"@{prefix}ConnectionEquipmentId", item.Key.ConnectionEquipmentId);
+            sql.AppendLine(SQLQueries.DELETE_ТелефонОборудование
+                .Replace("@EquipmentId", $"@{prefix}EquipmentId")
+                .Replace("@ConnectionEquipmentId", $"@{prefix}ConnectionEquipmentId"));
+        }
+        foreach (var item in after.Values.Where(item => !before.TryGetValue(item.EquipmentId, out var originalItem) ||
+                     originalItem.Key != item.Key))
         {
             var prefix = $"newEquipment{index++}";
-            parameters.Add($"@{prefix}EquipmentId", item.EquipmentId);
-            parameters.Add($"@{prefix}ConnectionEquipmentId", item.ConnectionEquipmentId);
+            parameters.Add($"@{prefix}EquipmentId", item.Key.EquipmentId);
+            parameters.Add($"@{prefix}ConnectionEquipmentId", item.Key.ConnectionEquipmentId);
             parameters.Add($"@{prefix}ReturnDate", item.ReturnDate);
             parameters.Add($"@{prefix}Notes", item.Notes ?? string.Empty);
             sql.AppendLine(SQLQueries.INSERT_ТелефонОборудование
@@ -118,15 +131,16 @@ public static class PhoneSaveBuilder
                 .Replace("@Notes", $"@{prefix}Notes"));
         }
         foreach (var item in after.Values.Where(item => before.TryGetValue(item.EquipmentId, out var old) &&
-                     old.ConnectionEquipmentId == item.ConnectionEquipmentId &&
-                     (old.ReturnDate != item.ReturnDate || old.Notes != item.Notes)))
+                     old.Key == item.Key && (old.ReturnDate != item.ReturnDate || old.Notes != item.Notes)))
         {
             var prefix = $"updEquipment{index++}";
-            parameters.Add($"@{prefix}EquipmentId", item.EquipmentId);
+            parameters.Add($"@{prefix}EquipmentId", item.Key.EquipmentId);
+            parameters.Add($"@{prefix}ConnectionEquipmentId", item.Key.ConnectionEquipmentId);
             parameters.Add($"@{prefix}ReturnDate", item.ReturnDate);
             parameters.Add($"@{prefix}Notes", item.Notes ?? string.Empty);
             sql.AppendLine(SQLQueries.UPDATE_ТелефонОборудование
                 .Replace("@EquipmentId", $"@{prefix}EquipmentId")
+                .Replace("@ConnectionEquipmentId", $"@{prefix}ConnectionEquipmentId")
                 .Replace("@ReturnDate", $"@{prefix}ReturnDate")
                 .Replace("@Notes", $"@{prefix}Notes"));
         }

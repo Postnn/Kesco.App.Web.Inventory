@@ -23,6 +23,7 @@ public partial class Tel : IDisposable
     private readonly ClayTextBoxOptions _numberOptions = new() { Required = true, RequiredError = "Укажите номер", MaxLength = 4, Immediate = false };
     private readonly ClayTextBoxOptions _quickCallOptions = new() { MaxLength = 50 };
     private readonly ClayTextBoxOptions _autoDialOptions = new() { MaxLength = 50 };
+    private readonly ClayTextBoxOptions _parallelQuickOptions = new() { MaxLength = 50, Placeholder = "Номер параллельного вызова" };
     private readonly ClayTextBoxOptions _connectedOptions = new() { MaxLength = 100 };
     private readonly ClayTextBoxOptions _atsDescriptionOptions = new() { MaxLength = 100 };
     private readonly ClayTextAreaOptions _notesOptions = new() { MaxLength = 300, Lines = 3 };
@@ -48,13 +49,14 @@ public partial class Tel : IDisposable
     private readonly ClayToolbarButtonOptions _copyOptions = new() { Text = "Копировать", Icon = Icons.Material.Filled.ContentCopy, Title = "Создать номер копированием" };
     private readonly ClayToolbarButtonOptions _deleteOptions = new() { Text = "Удалить", Icon = Icons.Material.Filled.Delete, Title = "Удалить номер и его связи" };
     private readonly ClayToolbarButtonOptions _refreshOptions = new() { Text = "Обновить", Icon = Icons.Material.Filled.Refresh, Title = "Загрузить запись повторно" };
+    private readonly ClayToolbarButtonOptions _retryOptions = new() { Text = "Повторить", Icon = Icons.Material.Filled.Refresh, Title = "Повторить загрузку" };
     private readonly ClayToolbarButtonOptions _cancelOptions = new() { Text = "Отмена", Icon = Icons.Material.Filled.Close, Title = "Закрыть форму" };
-    private readonly IReadOnlyList<ClayRadioOption<int>> _serviceChoices =
+    private readonly IReadOnlyList<ClayRadioOption<int?>> _serviceChoices =
     [
         new(0, "внутри холдинга"), new(1, "местная городская"), new(3, "внутри страны"),
         new(4, "международная"), new(5, "из номера гостиницы"),
     ];
-    private readonly IReadOnlyList<ClayRadioOption<int>> _directoryChoices =
+    private readonly IReadOnlyList<ClayRadioOption<int?>> _directoryChoices =
     [
         new(0, "не отображать"), new(1, "отображать"), new(2, "отображать, выделить жирным"),
         new(4, "отображать в начале группы"), new(6, "отображать в начале группы, выделить жирным"), new(8, "отображать как общий"),
@@ -81,15 +83,18 @@ public partial class Tel : IDisposable
     private IReadOnlyList<PhoneStringOption> _portOptions = [];
     private IReadOnlyList<PhoneStringOption> _pickupOptions = [];
     private (int Id, string Number)? _defaultEmployeePhone;
-    private PhoneSaveRequest? _pendingSync;
-    private PhoneSyncStation _pendingOriginalStation = new(0, string.Empty);
-    private PhoneSyncStation _pendingCurrentStation = new(0, string.Empty);
+    private IReadOnlyList<PhoneSyncOperation> _pendingOperations = [];
+    private int _pendingPhoneId;
     private bool _pendingDelete;
     private string _originalRelationsSnapshot = string.Empty;
     private string _lastAutoAtsDescription = string.Empty;
     private string _lastNumber = string.Empty;
-    private int _servicesUserChoice;
-    private int _directoryUserChoice;
+    private int? _servicesUserChoice;
+    private int? _directoryUserChoice;
+    private int _employeeVersion;
+    private int _customerVersion;
+    private int _atsVersion;
+    private int _atsEditVersion;
     private bool _hasReturnDate;
     private bool _canEdit;
     private bool _loading = true;
@@ -102,9 +107,12 @@ public partial class Tel : IDisposable
     private int _operationVersion;
     private int _groupSelectVersion;
     private int _equipmentSelectVersion;
+    private int _socketSelectVersion;
     private (int Id, int CopyId) _loadedKey = (-1, -1);
     private string? _validationMessage;
     private string? _warningMessage;
+    private string? _loadError;
+    private string _parallelQuickNumber = string.Empty;
 
     /// <summary>Идентификатор редактируемого номера.</summary>
     [SupplyParameterFromQuery(Name = "id")] public int Id { get; set; }
@@ -114,7 +122,7 @@ public partial class Tel : IDisposable
 
     private string Title => _model?.Id > 0 ? $"Телефонный номер {_model.Number}" : CopyId > 0 ? "Копия телефонного номера" : "Новый телефонный номер";
     private bool IsModified => _loaded && _model is not null &&
-        (!PhoneSaveBuilder.MainEquals(_originalPhone, _model) || _originalRelationsSnapshot != SnapshotRelations(_relations));
+        (_pendingOperations.Count > 0 || !PhoneSaveBuilder.MainEquals(_originalPhone, _model) || _originalRelationsSnapshot != SnapshotRelations(_relations));
     private bool CanSave => IsModified && _canEdit && !_loading && !_saving && !_deleted;
     private PhoneDirectorySelectDataSource GroupSource => Services.GetRequiredKeyedService<PhoneDirectorySelectDataSource>("phoneGroup");
     private PhoneDirectorySelectDataSource DrivenSource => Services.GetRequiredKeyedService<PhoneDirectorySelectDataSource>("drivenBy");
@@ -143,26 +151,31 @@ public partial class Tel : IDisposable
         _loading = true;
         _loaded = false;
         _notFound = false;
+        _loadError = null;
         _deleted = false;
+        ErrorService.Clear();
         if (!preservePending)
         {
             _validationMessage = null;
             _warningMessage = null;
-            _pendingSync = null;
+            _pendingOperations = [];
+            _pendingDelete = false;
         }
         StateHasChanged();
         await Task.Delay(100);
         try
         {
             var data = id > 0 ? await Service.GetAsync(id) : copyId > 0 ? await Service.GetAsync(copyId, copy: true) : null;
-            var canEdit = data?.CanEdit ?? await Service.HasRoleAsync(43);
             if (!IsCurrent(version)) return;
             if (id > 0 && data is null || copyId > 0 && data is null)
             {
                 _model = null;
-                _notFound = true;
+                if (ErrorService.HasError) _loadError = "Не удалось загрузить телефонный номер. Проверьте соединение и повторите попытку.";
+                else _notFound = true;
                 return;
             }
+            var canEdit = data?.CanEdit ?? await Service.HasRoleAsync((int)Clayzor.Lib.Entities.Роли.Специалист_по_инвентаризации_оборудования);
+            if (!IsCurrent(version)) return;
             _model = data?.Phone ?? new Phone();
             _relations = data?.Relations ?? new PhoneRelationsSnapshot();
             _memberships = data?.Memberships ?? [];
@@ -190,6 +203,12 @@ public partial class Tel : IDisposable
             _originalRelationsSnapshot = SnapshotRelations(_originalRelations);
             _loaded = true;
         }
+        catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
+        {
+            if (!IsCurrent(version)) return;
+            _model = null;
+            _loadError = "Не удалось загрузить телефонный номер. Проверьте соединение и повторите попытку.";
+        }
         finally
         {
             if (IsCurrent(version))
@@ -198,6 +217,11 @@ public partial class Tel : IDisposable
                 StateHasChanged();
             }
         }
+    }
+
+    private async Task RetryLoadAsync()
+    {
+        if (!_loading) await LoadCurrentAsync(Id, CopyId, preservePending: true);
     }
 
     private bool IsCurrent(int version) => !_disposed && version == _operationVersion;
@@ -251,6 +275,9 @@ public partial class Tel : IDisposable
         _model.PhoneTypeId = type?.Id;
         _relations.Equipment.RemoveAll(item => item.PhoneTypeId != type?.Id);
         _model.ServicesKind = PhoneTypeChoiceRules.ResolveServices(type?.Id, _servicesUserChoice);
+        _model.ViewInDirectory = PhoneTypeChoiceRules.ResolveDirectory(type?.Id, _directoryUserChoice, Id <= 0 && CopyId <= 0);
+        _equipmentSelectVersion++;
+        _socketSelectVersion++;
         await RefreshCapabilitiesAsync();
     }
 
@@ -274,6 +301,8 @@ public partial class Tel : IDisposable
         _selectedStation = station;
         _model.StationId = station?.Id;
         _relations.GroupMembers.Clear();
+        _equipmentSelectVersion++;
+        _socketSelectVersion++;
         RecalculateFullNumber();
         await RefreshCapabilitiesAsync();
         await RefreshAutomaticAtsDescriptionAsync();
@@ -299,31 +328,77 @@ public partial class Tel : IDisposable
     private async Task OnEmployeeChangedAsync(Employee? employee)
     {
         if (_model is null) return;
+        var version = ++_employeeVersion;
+        var customerVersion = _customerVersion;
         _selectedEmployee = employee;
         _model.EmployeeId = employee?.Id;
-        if (employee is not null)
+        _equipmentSelectVersion++;
+        _socketSelectVersion++;
+        UpdateDependentState();
+        if (employee is null)
         {
-            var organizationId = await Service.GetEmployeeOrganizationAsync(employee.Id);
-            if (organizationId is not null) _model.CustomerId = organizationId;
+            ++_atsVersion;
+            _defaultEmployeePhone = null;
+            return;
         }
+        var organizationId = await Service.GetEmployeeOrganizationAsync(employee.Id);
+        if (!IsEmployeeCurrent(version, employee.Id)) return;
+        if (organizationId is not null && customerVersion == _customerVersion) _model.CustomerId = organizationId;
         await RefreshAutomaticAtsDescriptionAsync(force: true);
-        _defaultEmployeePhone = employee is null ? null : await Service.GetDefaultEmployeePhoneAsync(employee.Id);
+        if (!IsEmployeeCurrent(version, employee.Id)) return;
+        var defaultPhone = await Service.GetDefaultEmployeePhoneAsync(employee.Id);
+        if (!IsEmployeeCurrent(version, employee.Id)) return;
+        _defaultEmployeePhone = defaultPhone;
         UpdateDependentState();
     }
+
+    private bool IsEmployeeCurrent(int version, int employeeId) =>
+        !_disposed && version == _employeeVersion && _model?.EmployeeId == employeeId;
 
     private async Task RefreshAutomaticAtsDescriptionAsync(bool force = false)
     {
         if (_model?.EmployeeId is null) return;
+        var version = ++_atsVersion;
+        var editVersion = _atsEditVersion;
+        var employeeId = _model.EmployeeId.Value;
+        var stationId = _model.StationId;
         if (!force && !string.IsNullOrEmpty(_model.AtsDescription) && _model.AtsDescription != _lastAutoAtsDescription) return;
-        _model.AtsDescription = await Service.GetAtsDescriptionAsync(_model.EmployeeId.Value, _selectedStation?.AtsDescriptionCapital == true);
-        _lastAutoAtsDescription = _model.AtsDescription;
+        var description = await Service.GetAtsDescriptionAsync(employeeId, _selectedStation?.AtsDescriptionCapital == true);
+        if (_disposed || version != _atsVersion || editVersion != _atsEditVersion ||
+            _model?.EmployeeId != employeeId || _model.StationId != stationId) return;
+        _model.AtsDescription = description;
+        _lastAutoAtsDescription = description;
     }
 
-    private async Task FillAtsDescriptionAsync()
+    private async Task FillAtsDescriptionAsync() => await RefreshAutomaticAtsDescriptionAsync(force: true);
+
+    private void OnCustomerChanged(int? value)
     {
-        if (_model?.EmployeeId is null) return;
-        _model.AtsDescription = await Service.GetAtsDescriptionAsync(_model.EmployeeId.Value, _selectedStation?.AtsDescriptionCapital == true);
-        _lastAutoAtsDescription = _model.AtsDescription;
+        if (_model is null) return;
+        ++_customerVersion;
+        _model.CustomerId = value;
+        UpdateDependentState();
+    }
+
+    private void OnSocketChanged(int? value)
+    {
+        if (_model is null) return;
+        _model.SocketId = value;
+        _equipmentSelectVersion++;
+        UpdateDependentState();
+    }
+
+    private void OnConnectedChanged(string? value)
+    {
+        if (_model is not null) _model.Connected = value ?? string.Empty;
+    }
+
+    private void OnAtsDescriptionChanged(string? value)
+    {
+        if (_model is null) return;
+        ++_atsEditVersion;
+        ++_atsVersion;
+        _model.AtsDescription = value ?? string.Empty;
     }
 
     private void OnDrivenByIdChanged(int? id)
@@ -394,9 +469,10 @@ public partial class Tel : IDisposable
         EquipmentSource.SocketId = _model.SocketId;
         EquipmentSource.EmployeeId = _model.EmployeeId;
         EquipmentSource.PhoneId = 0;
-        EquipmentSource.ExcludedEquipmentIds = _relations.Equipment.Select(item => item.EquipmentId).ToList();
+        EquipmentSource.ExcludedKeys = _relations.Equipment.Select(item => item.Key).ToList();
         SocketSource.StationId = _model.StationId;
         SocketSource.SocketId = _model.SocketId;
+        SocketSource.HasDraftEquipment = _relations.Equipment.Count > 0;
         SocketSource.EquipmentLocationIds = _relations.Equipment.Select(item => item.LocationId).Where(id => id > 0).ToList();
         UpdateOptions();
     }
@@ -418,18 +494,19 @@ public partial class Tel : IDisposable
         _groupChoiceOptions.ReadOnly = !_canEdit || !_availability.GroupMembers.IsEditable;
         _equipmentChoiceOptions.ReadOnly = !_canEdit || !_availability.Equipment.IsEditable;
         _parallelGridOptions.ShowAddButton = _canEdit && _availability.ParallelCalls.IsEditable;
+        _parallelQuickOptions.ReadOnly = !_canEdit || !_availability.ParallelCalls.IsEditable;
         _servicesRadioOptions.Disabled = !_canEdit || PhoneTypeChoiceRules.ServicesDisabled(_model.PhoneTypeId);
         _directoryRadioOptions.Disabled = !_canEdit;
     }
 
-    private void OnServicesChanged(int value)
+    private void OnServicesChanged(int? value)
     {
         if (_model is null || PhoneTypeChoiceRules.ServicesDisabled(_model.PhoneTypeId)) return;
         _servicesUserChoice = value;
         _model.ServicesKind = value;
     }
 
-    private void OnDirectoryChanged(int value)
+    private void OnDirectoryChanged(int? value)
     {
         if (_model is null) return;
         _directoryUserChoice = value;
@@ -438,7 +515,14 @@ public partial class Tel : IDisposable
 
     private void OnDefaultChanged(bool? value)
     {
-        if (_model is not null) _model.IsDefault = value == true;
+        if (_model is null) return;
+        _model.IsDefault = value == true;
+        var directory = PhoneTypeChoiceRules.ResolveDirectoryAfterDefault(_model.IsDefault, _model.ViewInDirectory);
+        if (directory != _model.ViewInDirectory)
+        {
+            _model.ViewInDirectory = directory;
+            _directoryUserChoice = directory;
+        }
     }
 
     private void OnHasReturnDateChanged(bool? value)
@@ -518,12 +602,36 @@ public partial class Tel : IDisposable
         item.Notes = value.Notes;
     }
 
+    private void OnParallelQuickKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter") AddParallelQuick();
+    }
+
+    private void AddParallelQuick()
+    {
+        if (_model is null || !_availability.ParallelCalls.IsEditable || !_canEdit) return;
+        var call = new PhoneParallelCall { CallNumber = _parallelQuickNumber.Trim() };
+        var errors = PhoneFormValidator.ValidateParallelCall(call, _model.Number,
+            _relations.ParallelCalls.Select(item => item.CallNumber));
+        if (errors.Count > 0)
+        {
+            _validationMessage = string.Join(" ", errors);
+            return;
+        }
+        _relations.ParallelCalls.Add(call);
+        _parallelQuickNumber = string.Empty;
+        _validationMessage = null;
+        UpdateDependentState();
+    }
+
     private async Task OpenParallelDialogAsync(PhoneParallelCall? existing)
     {
         var value = existing?.Clone() ?? new PhoneParallelCall();
         var parameters = new DialogParameters<PhoneParallelCallDialog>
         {
             { dialog => dialog.Value, value }, { dialog => dialog.IsEdit, existing is not null },
+            { dialog => dialog.CurrentNumber, _model?.Number ?? string.Empty },
+            { dialog => dialog.OtherNumbers, _relations.ParallelCalls.Where(item => item != existing).Select(item => item.CallNumber).ToList() },
         };
         var result = await ShowDialogAsync<PhoneParallelCallDialog>("Параллельный вызов", parameters);
         if (result is null || result.Canceled || result.Data is not PhoneParallelCall call) return;
@@ -551,15 +659,6 @@ public partial class Tel : IDisposable
     private async Task SaveAsync(bool closeAfterSave)
     {
         if (_model is null || !_loaded || !_canEdit || _loading || _saving) return;
-        if (_pendingSync is not null && !await RetryPendingSyncAsync()) return;
-        if (!IsModified || _deleted)
-        {
-            if (closeAfterSave) await CloseAsync();
-            return;
-        }
-        var incompatible = IncompatibleFields();
-        if (incompatible.Count > 0 && !await ConfirmAsync("Очистка несовместимых значений",
-                $"При сохранении будут очищены: {string.Join(", ", incompatible)}. Продолжить?")) return;
         var version = ++_operationVersion;
         var model = _model;
         _saving = true;
@@ -569,6 +668,21 @@ public partial class Tel : IDisposable
         await Task.Delay(100);
         try
         {
+            if (_pendingOperations.Count > 0 && !await RetryPendingSyncAsync()) return;
+            if (_pendingDelete)
+            {
+                _pendingDelete = false;
+                await CloseAsync();
+                return;
+            }
+            if (!IsModified || _deleted)
+            {
+                if (closeAfterSave) await CloseAsync();
+                return;
+            }
+            var incompatible = IncompatibleFields();
+            if (incompatible.Count > 0 && !await ConfirmAsync("Очистка несовместимых значений",
+                    $"При сохранении будут очищены: {string.Join(", ", incompatible)}. Продолжить?")) return;
             if (_form is not null)
             {
                 await _form.ValidateAsync();
@@ -582,18 +696,17 @@ public partial class Tel : IDisposable
                 ShowIssues(result.Issues);
                 return;
             }
+            ShowIssues(result.Issues);
             var originalStation = ToSyncStation(_originalStation, _originalPhone.StationId);
             var currentStation = ToSyncStation(_selectedStation, model.StationId);
             var operations = PhoneSyncPlanner.Build(request, originalStation, currentStation);
-            var syncErrors = await Service.SynchronizeAsync(result.PhoneId, operations);
+            var syncResults = await Service.SynchronizeAsync(result.PhoneId, operations);
             if (!IsCurrent(version)) return;
+            var syncErrors = syncResults.Where(item => !item.Success).ToList();
+            _pendingOperations = syncErrors.Select(item => item.Operation).ToList();
+            _pendingPhoneId = result.PhoneId;
             if (syncErrors.Count > 0)
-            {
-                _pendingSync = request;
-                _pendingOriginalStation = originalStation;
-                _pendingCurrentStation = currentStation;
-                _validationMessage = "Данные сохранены, но синхронизация АТС не завершена: " + string.Join(" ", syncErrors);
-            }
+                _validationMessage = "Данные сохранены, но синхронизация АТС не завершена: " + FormatSyncErrors(syncErrors);
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _pageCts.Token);
             if (closeAfterSave && syncErrors.Count == 0)
             {
@@ -627,18 +740,17 @@ public partial class Tel : IDisposable
 
     private async Task<bool> RetryPendingSyncAsync()
     {
-        if (_pendingSync is null) return true;
-        var operations = PhoneSyncPlanner.Build(_pendingSync, _pendingOriginalStation, _pendingCurrentStation, _pendingDelete);
-        var errors = await Service.SynchronizeAsync(_pendingSync.Phone.Id > 0 ? _pendingSync.Phone.Id : Id, operations);
-        if (errors.Count == 0)
-        {
-            _pendingSync = null;
-            _pendingDelete = false;
-            return true;
-        }
-        _validationMessage = "Синхронизация АТС повторно не завершена: " + string.Join(" ", errors);
+        if (_pendingOperations.Count == 0) return true;
+        var results = await Service.SynchronizeAsync(_pendingPhoneId, _pendingOperations);
+        var errors = results.Where(item => !item.Success).ToList();
+        _pendingOperations = errors.Select(item => item.Operation).ToList();
+        if (errors.Count == 0) return true;
+        _validationMessage = "Синхронизация АТС повторно не завершена: " + FormatSyncErrors(errors);
         return false;
     }
+
+    private static string FormatSyncErrors(IEnumerable<PhoneSyncResult> errors) => string.Join(" ",
+        errors.Select(item => $"{item.Operation.Kind} ({item.Operation.Key}): {item.Error}"));
 
     private PhoneSaveRequest BuildSaveRequest(bool normalizeIncompatible)
     {
@@ -703,15 +815,15 @@ public partial class Tel : IDisposable
             await Service.DeleteAsync(_model.Id);
             _deleted = true;
             var operations = PhoneSyncPlanner.Build(request, originalStation, currentStation, deleting: true);
-            var errors = await Service.SynchronizeAsync(_model.Id, operations);
+            var results = await Service.SynchronizeAsync(_model.Id, operations);
+            var errors = results.Where(item => !item.Success).ToList();
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _pageCts.Token);
             if (errors.Count > 0)
             {
-                _pendingSync = request;
-                _pendingOriginalStation = originalStation;
-                _pendingCurrentStation = currentStation;
+                _pendingOperations = errors.Select(item => item.Operation).ToList();
+                _pendingPhoneId = _model.Id;
                 _pendingDelete = true;
-                _validationMessage = "Номер удалён, но синхронизация АТС не завершена: " + string.Join(" ", errors);
+                _validationMessage = "Номер удалён, но синхронизация АТС не завершена: " + FormatSyncErrors(errors);
             }
             else await CloseAsync();
         }
@@ -729,7 +841,7 @@ public partial class Tel : IDisposable
     {
         if (_model is null || _loading || _saving) return;
         if (IsModified && !await ConfirmAsync("Обновление", "Отменить несохранённые изменения и загрузить запись повторно?")) return;
-        await LoadCurrentAsync(Id, CopyId);
+        await LoadCurrentAsync(Id, CopyId, preservePending: true);
     }
 
     private async Task CopyAsync()
@@ -789,7 +901,6 @@ public partial class Tel : IDisposable
     private Func<PhoneStationLookup, Task>? StationViewItem => string.IsNullOrWhiteSpace(Configuration["URI_equipment_form"]) ? null : OpenStationViewAsync;
     private string PhoneUrl(int id) => EquipmentIns.BuildEditUrl(Configuration["URI_tel_form"] ?? "/Telefon/Tel", id);
     private string EquipmentUrl(int id) => EquipmentIns.BuildEditUrl(Configuration["URI_equipment_form"] ?? "/Equipment/EquipmentForm", id);
-    private static string FormatUtc(DateTime value) => value == default ? string.Empty : DateTime.SpecifyKind(value, DateTimeKind.Utc).ToString("dd.MM.yyyy HH:mm:ss 'UTC'");
     private static PhoneSyncStation ToSyncStation(PhoneStationLookup? station, int? id) => new(id ?? 0, station?.XorcomName ?? string.Empty);
 
     private static Phone ClonePhone(Phone source)

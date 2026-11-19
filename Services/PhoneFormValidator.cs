@@ -27,8 +27,8 @@ public static partial class PhoneFormValidator
         if (phone.EmployeeId is null && string.IsNullOrWhiteSpace(phone.Connected))
             Add(issues, "EmployeeId", "Заполните сотрудника или поле «Подключено».");
         if (phone.PickupGroup.Length > 20) Add(issues, "PickupGroup", "Группа перехвата не может превышать 20 символов.");
-        if (phone.StationId is not null && request.AvailablePickupGroups.Count > 0 &&
-            !string.IsNullOrEmpty(phone.PickupGroup) && !request.AvailablePickupGroups.Contains(phone.PickupGroup, StringComparer.Ordinal))
+        if (phone.StationId is not null && !string.IsNullOrEmpty(phone.PickupGroup) &&
+            !request.AvailablePickupGroups.Contains(phone.PickupGroup, StringComparer.Ordinal))
             Add(issues, "PickupGroup", "Выбранная группа перехвата недоступна на этой станции.");
         if (phone.Notes.Length > 300) Add(issues, "Notes", "Примечания не могут превышать 300 символов.");
         if (phone.ReturnDate?.Date < request.Today.Date) Add(issues, "ReturnDate", "Срок возврата не может быть в прошлом.");
@@ -51,7 +51,7 @@ public static partial class PhoneFormValidator
         var equipment = new HashSet<int>();
         foreach (var link in request.Relations.Equipment)
         {
-            if (!equipment.Add(link.EquipmentId)) Add(issues, "Equipment", $"Оборудование #{link.EquipmentId} добавлено повторно.");
+            if (!equipment.Add(link.EquipmentId)) Add(issues, "Equipment", $"Оборудование #{link.EquipmentId} добавлено повторно: это запрещено первичным ключом таблицы.");
             if (link.ReturnDate?.Date < request.Today.Date) Add(issues, "Equipment", "Срок возврата оборудования не может быть в прошлом.");
             if (link.Notes.Length > 300) Add(issues, "Equipment", "Примечание связи оборудования не может превышать 300 символов.");
         }
@@ -62,6 +62,21 @@ public static partial class PhoneFormValidator
             if (!members.Add(member.PhoneId)) Add(issues, "GroupMembers", $"Номер #{member.PhoneId} уже добавлен в группу.");
         }
         return issues;
+    }
+
+    /// <summary>Проверяет черновик параллельного вызова до закрытия диалога.</summary>
+    public static IReadOnlyList<string> ValidateParallelCall(PhoneParallelCall call, string currentNumber,
+        IEnumerable<string> otherNumbers)
+    {
+        var issues = new List<PhoneValidationIssue>();
+        ValidateOptionalNumber(issues, "ParallelCalls", "Номер параллельного вызова", call.CallNumber, required: true);
+        if (call.DelayBeforeCall is < 0 or > 255 || call.DelayTooQuickResponse is < 0 or > 255)
+            Add(issues, "ParallelCalls", "Задержки должны быть целыми числами от 0 до 255.");
+        if (string.Equals(call.CallNumber, currentNumber, StringComparison.Ordinal))
+            Add(issues, "ParallelCalls", "Номер параллельного вызова не должен совпадать с текущим номером.");
+        if (otherNumbers.Contains(call.CallNumber, StringComparer.Ordinal))
+            Add(issues, "ParallelCalls", $"Номер «{call.CallNumber}» добавлен повторно.");
+        return issues.Select(item => item.Message).ToList();
     }
 
     /// <summary>Вычисляет предварительный полный номер по контракту Phone.CalculateFullNumber.</summary>

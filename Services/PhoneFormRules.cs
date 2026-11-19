@@ -94,9 +94,14 @@ public sealed class PhoneFormAvailability
 {
     internal PhoneFormAvailability(PhoneFormRuleInput input)
     {
-        var dependentType = input.PhoneTypeId is 1 or 2 or 3 or 10 or 200;
+        var dependentType = input.PhoneTypeId is (int)Clayzor.Lib.Entities.ТипыТелефонныхНомеров.Цифровой
+            or (int)Clayzor.Lib.Entities.ТипыТелефонныхНомеров.Аналоговый
+            or (int)Clayzor.Lib.Entities.ТипыТелефонныхНомеров.ISDN
+            or (int)Clayzor.Lib.Entities.ТипыТелефонныхНомеров.DECT
+            or (int)Clayzor.Lib.Entities.ТипыТелефонныхНомеров.IP;
         var dependenciesSelected = dependentType && input.PhoneStationId is not null;
-        Socket = PhoneFieldAvailability.Resolve(input.PhoneTypeId is 1 or 2, input.HasSocket);
+        Socket = PhoneFieldAvailability.Resolve(input.PhoneTypeId is (int)Clayzor.Lib.Entities.ТипыТелефонныхНомеров.Цифровой
+            or (int)Clayzor.Lib.Entities.ТипыТелефонныхНомеров.Аналоговый, input.HasSocket);
         Port = PhoneFieldAvailability.Resolve(
             input.PhoneTypeId is not null && input.PhoneStationId is not null && input.StationHasPorts,
             input.HasPort);
@@ -110,9 +115,13 @@ public sealed class PhoneFormAvailability
         ParallelCalls = PhoneFieldAvailability.Resolve(
             input.PhoneStationId is not null && input.StationSupportsParallelCalls, input.HasParallelCalls);
         GroupMembers = PhoneFieldAvailability.Resolve(
-            input.PhoneTypeId == 0 && input.PhoneStationId is not null, input.HasGroupMembers);
+            input.PhoneTypeId == (int)Clayzor.Lib.Entities.ТипыТелефонныхНомеров.ГруппаИлиФиктивный && input.PhoneStationId is not null,
+            input.HasGroupMembers);
         Equipment = PhoneFieldAvailability.Resolve(
-            input.PhoneTypeId is 1 or 2 or 10 || input.PhoneTypeId >= 200, input.HasEquipment);
+            input.PhoneTypeId is (int)Clayzor.Lib.Entities.ТипыТелефонныхНомеров.Цифровой
+                or (int)Clayzor.Lib.Entities.ТипыТелефонныхНомеров.Аналоговый
+                or (int)Clayzor.Lib.Entities.ТипыТелефонныхНомеров.DECT
+            || input.PhoneTypeId >= (int)Clayzor.Lib.Entities.ТипыТелефонныхНомеров.IP, input.HasEquipment);
         DefaultPhone = PhoneFieldAvailability.Resolve(input.HasEmployee, input.HasDefaultPhone);
     }
 

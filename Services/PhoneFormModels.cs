@@ -107,7 +107,7 @@ public sealed class PhoneSaveRequest
     public IReadOnlyCollection<string> AvailablePorts { get; init; } = [];
 
     /// <summary>Доступные группы перехвата.</summary>
-    public IReadOnlyCollection<string> AvailablePickupGroups { get; init; } = [];
+    public IReadOnlyCollection<string> AvailablePickupGroups { get; set; } = [];
 
     /// <summary>Текущая дата для детерминированной проверки срока.</summary>
     public DateTime Today { get; set; } = DateTime.UtcNow.Date;
@@ -115,6 +115,15 @@ public sealed class PhoneSaveRequest
 
 /// <summary>Запланированная операция синхронизации АТС после commit.</summary>
 public sealed record PhoneSyncOperation(PhoneSyncKind Kind, string Key, bool Deleting = false);
+
+/// <summary>Результат отдельной операции синхронизации АТС.</summary>
+/// <param name="Operation">Выполненная операция.</param>
+/// <param name="Error">Текст ошибки либо NULL при успехе.</param>
+public sealed record PhoneSyncResult(PhoneSyncOperation Operation, string? Error)
+{
+    /// <summary>Операция завершилась успешно.</summary>
+    public bool Success => Error is null;
+}
 
 /// <summary>Тип синхронизации АТС.</summary>
 public enum PhoneSyncKind
