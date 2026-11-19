@@ -117,8 +117,9 @@ public class PhoneFormService
         var phone = request.Phone;
         var issues = new List<PhoneValidationIssue>();
         if (phone.PhoneTypeId is null || phone.StationId is null || string.IsNullOrEmpty(phone.Number)) return issues;
-        phone.FullNumber = await _db.ExecuteScalarAsync<string>(SQLQueries.SELECT_ТелефонАвторитетныйПолныйНомер,
-            new { phone.Number, phone.StationId, phone.DrivenById, phone.DisplayedFromId }, commandType: CommandType.Text) ?? phone.Number;
+        phone.FullNumber = await _db.ExecuteWriteScalarAsync<string>(SQLQueries.SELECT_ТелефонАвторитетныйПолныйНомер,
+            new { phone.Number, phone.StationId, phone.DrivenById, phone.DisplayedFromId })
+            ?? throw new InvalidOperationException("База данных не вернула полный номер. Сохранение отменено.");
         var statements = new List<string>
         {
             SQLQueries.SELECT_ТелефонТипДоступенНаСтанции,

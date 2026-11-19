@@ -90,3 +90,16 @@
 Проверка Tel-related набора после исправлений: **112/112** (`Phone*` + `TelAsyncStateTests`). Объединённый профильный прогон: **305/305**. `dotnet build Clayzor.sln --no-restore` — 0 ошибок. Сюда входят SQL-структура, select fail-closed, planner и mock ATS. Это не заменяет реальные SQL-фикстуры и внешние АТС.
 
 В браузере запись 1002 сохранена с примечанием `CLAY_TEST_TEL3`, результат прочитан непосредственно из SQL; затем выполнен второй Save и восстановлено `CLAY_TEST`. Ошибок формы нет, empty-строка 32 px, горизонтального переполнения нет. Внешние АТС у этой записи не вызывались. `DisabledTriggers = 0`.
+
+
+## Исправления Tel_4
+
+| ID | Статус | Что изменено и чем подтверждено |
+|---|---|---|
+| R1 | Исправлено | `PhoneSyncPlanner.BuildDelete` использует только `OriginalPhone`, `OriginalRelations` и сохранённую станцию. Черновые StationId, порт и EquipmentId не попадают в план Delete. `Sync_DeleteUsesPersistedStationAndEquipmentOnly` проверяет отсутствие draft-CCM/порта; bUnit `Xorcom_DeleteRunsBeforeSqlDelete` покрывает сценарий open A → draft B → Delete без Apply. |
+| R2 | Исправлено | Перед Xorcom pre-sync выполняются локальная и read-only серверная бизнес-валидация. Финальная проверка в `PhoneFormService.SaveAsync` сохранена; дополнительная C#-проверка ролей не добавлялась. `Xorcom_BusinessValidationBlocksPreSync` подтверждает отсутствие внешнего вызова и SQL Save при занятом порте. |
+| R3 | Исправлено | Авторитетный полный номер читается через fail-closed scalar API: connectivity SQL error выбрасывается, `null` также блокирует Save. Fallback к короткому номеру удалён. `Save_FullNumberConnectivityErrorFailsClosed` подтверждает исключение и отсутствие INSERT/UPDATE. |
+| R4 | Проверено в браузере | Tel 1002, EquipmentForm 7, EquipmentIns, ModelEquipmentForm 2270 проверены на 600/900/1155 px: 12/12 smoke. Toolbar совпадает с границами формы, золотая линия 2 px, footer виден, прокрутка работает и восстанавливается, кнопки доступны через `elementFromPoint`, горизонтального переполнения нет. |
+| R5 | Приёмочный риск сохраняется | Реальных фикстур розеток и расположений в тестовой БД по-прежнему нет; корректность выборки по соседним кабинетам на реальных записях не подтверждена. Не утверждается внешний эффект Xorcom, восстановление circuit или durable outbox. Реальные АТС не запускались. |
+
+Объединённый профильный прогон: **308/308**, `dotnet build Clayzor.sln --no-restore` — 0 ошибок. Реальный Save записи 1002 с `CLAY_TEST_TEL4` прочитан из SQL, затем вторым Save восстановлено `CLAY_TEST`; ошибок формы нет, `DisabledTriggers = 0`.

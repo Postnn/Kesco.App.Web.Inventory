@@ -32,6 +32,18 @@ public static class PhoneSyncPlanner
         return operations.Distinct().ToList();
     }
 
+    /// <summary>Создаёт план удаления только по сохранённому состоянию записи, исключая черновые значения формы.</summary>
+    public static IReadOnlyList<PhoneSyncOperation> BuildDelete(PhoneSaveRequest request, PhoneSyncStation savedStation)
+    {
+        var savedRequest = new PhoneSaveRequest
+        {
+            OriginalPhone = request.OriginalPhone, Phone = request.OriginalPhone,
+            OriginalRelations = request.OriginalRelations, Relations = request.OriginalRelations,
+            AvailablePorts = request.AvailablePorts, AvailablePickupGroups = request.AvailablePickupGroups, Today = request.Today,
+        };
+        return Build(savedRequest, savedStation, savedStation, deleting: true);
+    }
+
     private static void AddStationOperations(List<PhoneSyncOperation> operations, PhoneSyncStation station,
         string port, bool deleting, PhoneSyncStation currentStation)
     {

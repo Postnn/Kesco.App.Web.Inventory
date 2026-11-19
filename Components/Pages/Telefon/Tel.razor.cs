@@ -699,6 +699,14 @@ public partial class Tel : IDisposable
                 ? operations.Where(item => item.Kind == PhoneSyncKind.Xorcom && item.Deleting).ToArray() : [];
             if (preSaveOperations.Length > 0)
             {
+                var preValidationIssues = PhoneFormValidator.Validate(request).ToList();
+                preValidationIssues.AddRange(await Service.ValidateServerAsync(request));
+                if (!IsCurrent(version)) return;
+                if (preValidationIssues.Any(item => item.Severity == PhoneValidationSeverity.Blocking))
+                {
+                    ShowIssues(preValidationIssues);
+                    return;
+                }
                 var preResults = await Service.SynchronizeAsync(model.Id, preSaveOperations);
                 if (!IsCurrent(version))
                 {
@@ -861,8 +869,7 @@ public partial class Tel : IDisposable
             var phoneId = _model.Id;
             var request = BuildSaveRequest(normalizeIncompatible: false);
             var originalStation = ToSyncStation(_originalStation, _originalPhone.StationId);
-            var currentStation = ToSyncStation(_selectedStation, _model.StationId);
-            var operations = PhoneSyncPlanner.Build(request, originalStation, currentStation, deleting: true);
+            var operations = PhoneSyncPlanner.BuildDelete(request, originalStation);
             var preDeleteOperations = operations.Where(item => item.Kind == PhoneSyncKind.Xorcom).ToArray();
             if (preDeleteOperations.Length > 0)
             {
