@@ -120,13 +120,24 @@ public partial class Tel : IDisposable
     /// <summary>Идентификатор исходного номера для явного копирования простых полей.</summary>
     [SupplyParameterFromQuery(Name = "copyId")] public int CopyId { get; set; }
 
+    private const string PendingSyncWarning = "Данные уже сохранены в БД, но синхронизация АТС не завершена. При закрытии повтор из этой формы будет недоступен; потребуется ручная синхронизация.";
     private string Title => _model?.Id > 0 ? $"Телефонный номер {_model.Number}" : CopyId > 0 ? "Копия телефонного номера" : "Новый телефонный номер";
-    private bool IsModified => _loaded && _model is not null &&
-        (_pendingOperations.Count > 0 || !PhoneSaveBuilder.MainEquals(_originalPhone, _model) || _originalRelationsSnapshot != SnapshotRelations(_relations));
+    private bool HasPendingSync => _pendingOperations.Count > 0;
+    private bool HasUnsavedDraft => _loaded && _model is not null &&
+        (!PhoneSaveBuilder.MainEquals(_originalPhone, _model) || _originalRelationsSnapshot != SnapshotRelations(_relations));
+    private bool IsModified => _loaded && _model is not null && (HasPendingSync || HasUnsavedDraft);
     private bool CanSave => IsModified && _canEdit && !_loading && !_saving && !_deleted;
-    private string CloseConfirmation(string draftMessage) => _pendingOperations.Count > 0
-        ? "Данные уже сохранены в БД, но синхронизация АТС не завершена. При закрытии повтор из этой формы будет недоступен; потребуется ручная синхронизация."
-        : draftMessage;
+    private string CloseConfirmation(string draftMessage)
+    {
+        if (!HasPendingSync) return draftMessage;
+        return HasUnsavedDraft ? $"{draftMessage} {PendingSyncWarning}" : PendingSyncWarning;
+    }
+
+    private static string DeleteConfirmation(bool hasPendingSync)
+    {
+        const string question = "Удалить номер, состав его PBX-группы, связи с оборудованием и параллельные вызовы?";
+        return hasPendingSync ? $"{question} {PendingSyncWarning}" : question;
+    }
     private PhoneDirectorySelectDataSource GroupSource => Services.GetRequiredKeyedService<PhoneDirectorySelectDataSource>("phoneGroup");
     private PhoneDirectorySelectDataSource DrivenSource => Services.GetRequiredKeyedService<PhoneDirectorySelectDataSource>("drivenBy");
     private PhoneDirectorySelectDataSource DisplayedSource => Services.GetRequiredKeyedService<PhoneDirectorySelectDataSource>("displayedFrom");
@@ -857,7 +868,7 @@ public partial class Tel : IDisposable
     private async Task DeleteAsync()
     {
         if (_model?.Id is not > 0 || !_canEdit || _saving ||
-            !await ConfirmAsync("Удаление номера", CloseConfirmation("Удалить номер, состав его PBX-группы, связи с оборудованием и параллельные вызовы?"))) return;
+            !await ConfirmAsync("Удаление номера", DeleteConfirmation(HasPendingSync))) return;
         await DeleteConfirmedAsync();
     }
 
@@ -931,7 +942,7 @@ public partial class Tel : IDisposable
     private async Task RefreshAsync()
     {
         if (_model is null || _loading || _saving) return;
-        if (IsModified && !await ConfirmAsync("Обновление", CloseConfirmation("Отменить несохранённые изменения и загрузить запись повторно?"))) return;
+        if (HasUnsavedDraft && !await ConfirmAsync("Обновление", "Отменить несохранённые изменения и загрузить запись повторно?")) return;
         await LoadCurrentAsync(Id, CopyId, preservePending: true);
     }
 
