@@ -53,6 +53,20 @@ public class PhoneFormService
         return result;
     }
 
+    /// <summary>Перечитывает сохранённые телефон, станцию и связи непосредственно перед удалением.</summary>
+    public virtual async Task<PhoneDeleteSnapshot?> GetDeleteSnapshotAsync(int id)
+    {
+        var data = await GetAsync(id);
+        if (data is null) return null;
+        if (data.Phone.StationId is null)
+            throw new InvalidOperationException("Удаление невозможно: у телефонного номера не указана станция.");
+        var stations = await _db.QueryAsync<PhoneStationLookup>(SQLQueries.SELECT_ТелефонСтанцияПоИдентификатору,
+            new { Id = data.Phone.StationId.Value });
+        var station = stations.FirstOrDefault()
+            ?? throw new InvalidOperationException("Сохранённая телефонная станция не найдена. Удаление отменено.");
+        return new PhoneDeleteSnapshot { Phone = data.Phone, Station = station, Relations = data.Relations };
+    }
+
     /// <summary>Проверяет роль текущего пользователя с учётом замещений.</summary>
     public virtual async Task<bool> HasRoleAsync(int roleId) =>
         await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_ТекущийПользовательИмеетРоль,

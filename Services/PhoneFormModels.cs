@@ -40,6 +40,19 @@ public sealed class PhoneFormData
     public bool CanEdit { get; init; }
 }
 
+/// <summary>Актуальное сохранённое состояние для планирования удаления и его синхронизации.</summary>
+public sealed class PhoneDeleteSnapshot
+{
+    /// <summary>Сохранённая основная запись.</summary>
+    public Phone Phone { get; init; } = new();
+
+    /// <summary>Сохранённая станция записи.</summary>
+    public PhoneStationLookup Station { get; init; } = new();
+
+    /// <summary>Сохранённые связи.</summary>
+    public PhoneRelationsSnapshot Relations { get; init; } = new();
+}
+
 /// <summary>Вычисленные возможности выбранных типа и станции.</summary>
 public sealed class PhoneCapabilities
 {

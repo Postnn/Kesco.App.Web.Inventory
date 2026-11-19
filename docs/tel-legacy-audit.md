@@ -103,3 +103,17 @@
 | R5 | Приёмочный риск сохраняется | Реальных фикстур розеток и расположений в тестовой БД по-прежнему нет; корректность выборки по соседним кабинетам на реальных записях не подтверждена. Не утверждается внешний эффект Xorcom, восстановление circuit или durable outbox. Реальные АТС не запускались. |
 
 Объединённый профильный прогон: **308/308**, `dotnet build Clayzor.sln --no-restore` — 0 ошибок. Реальный Save записи 1002 с `CLAY_TEST_TEL4` прочитан из SQL, затем вторым Save восстановлено `CLAY_TEST`; ошибок формы нет, `DisabledTriggers = 0`.
+
+
+## Исправления Tel_5
+
+| ID | Статус | Что изменено и чем подтверждено |
+|---|---|---|
+| TEL4-F01 | Исправлено | Предварительный план используется только для одноразового Xorcom pre-cleanup. После `Service.SaveAsync` итоговый план пересобирается с мутированным сервером `request.Phone.FullNumber` и исключает уже выполненные pre-операции. `Save_ServerFullNumberChangeTriggersPostSync` покрывает Xorcom и Meridian; `Save_UnchangedServerFullNumberDoesNotSync` запрещает лишний вызов. A→B проверяет ровно одну очистку старой станции. Повторный SQL Save не выполняется. |
+| TEL4-F02 | Исправлено с остаточной гонкой | `GetDeleteSnapshotAsync` непосредственно перед Delete перечитывает телефон, станцию и связи через read-only SQL. `BuildDelete` получает только этот persisted snapshot. `Delete_UsesFreshPersistedEquipment` проверяет новые EquipmentId и игнорирование черновика; `Delete_MissingPersistedPhoneDoesNotSync` запрещает АТС и повторный Delete при уже удалённой записи. Гонка между snapshot и физическим DELETE не устранена и не выдаётся за распределённую транзакцию. |
+| TEL4-F03 | Исправлено | Cancel, Refresh, внутренняя навигация и Delete используют общее `CloseConfirmation`: при pending явно сказано, что SQL данные сохранены, повтор из формы будет потерян и потребуется ручная синхронизация. `PendingSync_CloseConfirmationExplainsSavedDataAndManualSync` и `Draft_CloseConfirmationKeepsOriginalMessage` разделяют оба состояния. |
+| TEL4-F04 | Ограничение сохраняется | Реальные CRUD связей, конкурентное занятие портов/розеток, внешний эффект Xorcom/Meridian/CCM и durable outbox не подтверждены. Внешние АТС не запускались. |
+
+Tel-related проверка: **122/122**. Объединённый профильный прогон: **315/315**. `dotnet build Clayzor.sln --no-restore` — 0 ошибок. Полный `dotnet test` без фильтра повторно завис сразу после инициализации testhost, за 180 секунд тесты не запустились; процесс остановлен и полный набор не считается пройденным.
+
+В браузере запись 1002 сохранена с `CLAY_TEST_TEL5`, значение прочитано из SQL; вторым Save восстановлено `CLAY_TEST`. Ошибок формы и горизонтального переполнения нет, `DisabledTriggers = 0`. Реальные сценарии отделены от mock; внешние АТС не вызывались.

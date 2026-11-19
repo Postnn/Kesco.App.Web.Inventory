@@ -124,6 +124,9 @@ public partial class Tel : IDisposable
     private bool IsModified => _loaded && _model is not null &&
         (_pendingOperations.Count > 0 || !PhoneSaveBuilder.MainEquals(_originalPhone, _model) || _originalRelationsSnapshot != SnapshotRelations(_relations));
     private bool CanSave => IsModified && _canEdit && !_loading && !_saving && !_deleted;
+    private string CloseConfirmation(string draftMessage) => _pendingOperations.Count > 0
+        ? "Данные уже сохранены в БД, но синхронизация АТС не завершена. При закрытии повтор из этой формы будет недоступен; потребуется ручная синхронизация."
+        : draftMessage;
     private PhoneDirectorySelectDataSource GroupSource => Services.GetRequiredKeyedService<PhoneDirectorySelectDataSource>("phoneGroup");
     private PhoneDirectorySelectDataSource DrivenSource => Services.GetRequiredKeyedService<PhoneDirectorySelectDataSource>("drivenBy");
     private PhoneDirectorySelectDataSource DisplayedSource => Services.GetRequiredKeyedService<PhoneDirectorySelectDataSource>("displayedFrom");
@@ -694,9 +697,9 @@ public partial class Tel : IDisposable
             var request = BuildSaveRequest(normalizeIncompatible: true);
             var originalStation = ToSyncStation(_originalStation, _originalPhone.StationId);
             var currentStation = ToSyncStation(_selectedStation, model.StationId);
-            var operations = PhoneSyncPlanner.Build(request, originalStation, currentStation);
+            var previewOperations = PhoneSyncPlanner.Build(request, originalStation, currentStation);
             var preSaveOperations = originalStation.Id != currentStation.Id
-                ? operations.Where(item => item.Kind == PhoneSyncKind.Xorcom && item.Deleting).ToArray() : [];
+                ? previewOperations.Where(item => item.Kind == PhoneSyncKind.Xorcom && item.Deleting).ToArray() : [];
             if (preSaveOperations.Length > 0)
             {
                 var preValidationIssues = PhoneFormValidator.Validate(request).ToList();
@@ -739,7 +742,7 @@ public partial class Tel : IDisposable
                 return;
             }
             ShowIssues(result.Issues);
-            operations = operations.Except(preSaveOperations).ToArray();
+            var operations = PhoneSyncPlanner.Build(request, originalStation, currentStation).Except(preSaveOperations).ToArray();
             var syncResults = await Service.SynchronizeAsync(result.PhoneId, operations);
             if (!IsCurrent(version)) return;
             var syncErrors = syncResults.Where(item => !item.Success).ToList();
@@ -854,7 +857,7 @@ public partial class Tel : IDisposable
     private async Task DeleteAsync()
     {
         if (_model?.Id is not > 0 || !_canEdit || _saving ||
-            !await ConfirmAsync("Удаление номера", "Удалить номер, состав его PBX-группы, связи с оборудованием и параллельные вызовы?")) return;
+            !await ConfirmAsync("Удаление номера", CloseConfirmation("Удалить номер, состав его PBX-группы, связи с оборудованием и параллельные вызовы?"))) return;
         await DeleteConfirmedAsync();
     }
 
@@ -867,8 +870,18 @@ public partial class Tel : IDisposable
         try
         {
             var phoneId = _model.Id;
-            var request = BuildSaveRequest(normalizeIncompatible: false);
-            var originalStation = ToSyncStation(_originalStation, _originalPhone.StationId);
+            var persisted = await Service.GetDeleteSnapshotAsync(phoneId);
+            if (persisted is null)
+            {
+                _validationMessage = "Телефонный номер уже удалён другим пользователем. Синхронизация АТС не выполнялась.";
+                return;
+            }
+            var request = new PhoneSaveRequest
+            {
+                OriginalPhone = persisted.Phone, Phone = persisted.Phone,
+                OriginalRelations = persisted.Relations, Relations = persisted.Relations,
+            };
+            var originalStation = ToSyncStation(persisted.Station, persisted.Phone.StationId);
             var operations = PhoneSyncPlanner.BuildDelete(request, originalStation);
             var preDeleteOperations = operations.Where(item => item.Kind == PhoneSyncKind.Xorcom).ToArray();
             if (preDeleteOperations.Length > 0)
@@ -918,7 +931,7 @@ public partial class Tel : IDisposable
     private async Task RefreshAsync()
     {
         if (_model is null || _loading || _saving) return;
-        if (IsModified && !await ConfirmAsync("Обновление", "Отменить несохранённые изменения и загрузить запись повторно?")) return;
+        if (IsModified && !await ConfirmAsync("Обновление", CloseConfirmation("Отменить несохранённые изменения и загрузить запись повторно?"))) return;
         await LoadCurrentAsync(Id, CopyId, preservePending: true);
     }
 
@@ -929,7 +942,7 @@ public partial class Tel : IDisposable
 
     private async Task CancelAsync()
     {
-        if (IsModified && !await ConfirmAsync("Закрытие формы", "Закрыть форму без сохранения изменений?")) return;
+        if (IsModified && !await ConfirmAsync("Закрытие формы", CloseConfirmation("Закрыть форму без сохранения изменений?"))) return;
         await CloseAsync();
     }
 
@@ -945,7 +958,7 @@ public partial class Tel : IDisposable
         if (_saving) { context.PreventNavigation(); return; }
         if (!IsModified) return;
         context.PreventNavigation();
-        if (!await ConfirmAsync("Переход на другую страницу", "Покинуть форму без сохранения изменений?")) return;
+        if (!await ConfirmAsync("Переход на другую страницу", CloseConfirmation("Покинуть форму без сохранения изменений?"))) return;
         _allowNavigation = true;
         Navigation.NavigateTo(context.TargetLocation);
     }
