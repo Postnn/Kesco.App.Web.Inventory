@@ -1,0 +1,48 @@
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Form
+
+<MudDialog>
+    <TitleContent>@(IsEdit ? "Параллельный вызов" : "Новый параллельный вызов")</TitleContent>
+    <DialogContent>
+        <div class="equipment-ins-fields">
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Номер:</span>
+                <ClayTextBox @bind-Value="Value.CallNumber" Options="_numberOptions" />
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Задержка перед вызовом:</span>
+                <ClayNumber Value="@((decimal?)Value.DelayBeforeCall)" ValueChanged="OnDelayBeforeChanged" Options="_delayOptions" />
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Задержка быстрого ответа:</span>
+                <ClayNumber Value="@((decimal?)Value.DelayTooQuickResponse)" ValueChanged="OnDelayQuickChanged" Options="_delayOptions" />
+            </div>
+            <ClayCheckbox State="Value.NotUsed" StateChanged="OnNotUsedChanged" Label="Не использовать" />
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <ClayToolbarButton Options="_cancelButton" OnClick="Cancel" />
+        <ClayToolbarButton Options="_okButton" OnClick="Apply" />
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private readonly ClayTextBoxOptions _numberOptions = new() { Required = true, RequiredError = "Укажите номер", MaxLength = 50 };
+    private readonly ClayNumberOptions _delayOptions = new() { Min = 0, Max = 255, Precision = 0, HideSpinButtons = true };
+    private readonly ClayToolbarButtonOptions _cancelButton = new() { Text = "Отмена" };
+    private readonly ClayToolbarButtonOptions _okButton = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+
+    /// <summary>Независимый черновик записи.</summary>
+    [Parameter] public PhoneParallelCall Value { get; set; } = new();
+
+    /// <summary>Признак редактирования существующей записи.</summary>
+    [Parameter] public bool IsEdit { get; set; }
+
+    private void Cancel() => Dialog.Cancel();
+    private void Apply() => Dialog.Close(DialogResult.Ok(Value.Clone()));
+    private void OnDelayBeforeChanged(decimal? value) => Value.DelayBeforeCall = (int)(value ?? 0);
+    private void OnDelayQuickChanged(decimal? value) => Value.DelayTooQuickResponse = (int)(value ?? 0);
+    private void OnNotUsedChanged(bool? value) => Value.NotUsed = value == true;
+}

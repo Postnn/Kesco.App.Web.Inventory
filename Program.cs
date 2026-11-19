@@ -16,6 +16,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddWebConfig();
 builder.Configuration["URI_user_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_user_form");
 builder.Configuration["URI_model_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_model_form");
+builder.Configuration["URI_tel_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_tel_form");
+builder.Configuration["pickupGroups"] = WebConfigExtensions.ReadAppSettingFromWebConfig("pickupGroups");
 builder.Configuration["URI_equipment_form_ins"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_equipment_form_ins");
 builder.Configuration["URI_equipment_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_equipment_form");
 builder.Configuration["URI_user_search"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_user_search");
@@ -52,6 +54,21 @@ builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.SoftwareEquipmentS
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.AccountingPersonSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Employees.EmployeeSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Locations.LocationSelectDataSource>();
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Phones.PhoneTypeSelectDataSource>();
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Phones.PhoneStationSelectDataSource>();
+builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Phones.PhoneDirectorySelectDataSource>("phoneGroup", (sp, _) =>
+    new Clayzor.Lib.Web.DBSelect.Phones.PhoneDirectorySelectDataSource(sp.GetRequiredService<DbManager>())
+    { Mode = Clayzor.Lib.Web.DBSelect.Phones.PhoneDirectoryMode.Group });
+builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Phones.PhoneDirectorySelectDataSource>("drivenBy", (sp, _) =>
+    new Clayzor.Lib.Web.DBSelect.Phones.PhoneDirectorySelectDataSource(sp.GetRequiredService<DbManager>())
+    { Mode = Clayzor.Lib.Web.DBSelect.Phones.PhoneDirectoryMode.DrivenBy });
+builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Phones.PhoneDirectorySelectDataSource>("displayedFrom", (sp, _) =>
+    new Clayzor.Lib.Web.DBSelect.Phones.PhoneDirectorySelectDataSource(sp.GetRequiredService<DbManager>())
+    { Mode = Clayzor.Lib.Web.DBSelect.Phones.PhoneDirectoryMode.DisplayedFrom });
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Phones.PhoneEquipmentSelectDataSource>();
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Phones.PhoneSocketSelectDataSource>();
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Phones.PhoneCustomerSelectDataSource>();
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Phones.PhoneEmployeeSelectDataSource>();
 builder.Services.AddScoped(sp =>
 {
     var connectionString = WebConfigExtensions.ReadConnectionStringFromWebConfig("DS_resource")
@@ -113,6 +130,7 @@ builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Equipment.UpsEquipmentS
 builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.ModelEquipmentFormService>();
 builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.EquipmentInsService>();
 builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.EquipmentFormService>();
+builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.PhoneFormService>();
 
 // Сервис авто-переподключения к БД (оверлей при потере соединения)
 builder.Services.AddScoped<ClayDbReconnectService>();

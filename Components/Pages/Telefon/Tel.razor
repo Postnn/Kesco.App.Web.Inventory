@@ -1,0 +1,380 @@
+@page "/Telefon/Tel"
+@page "/Telefon/Tel.aspx"
+@layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Form
+@using Clayzor.Lib.Web.Controls.Components.Grid
+@using Clayzor.Lib.Web.Controls.Components.Select
+@using Clayzor.Lib.Web.DBSelect.Phones
+@using Kesco.App.Web.Inventory.Components.Pages.Equipment.Details
+@using Kesco.App.Web.Inventory.Services
+@implements IDisposable
+@inject PhoneFormService Service
+@inject PhoneTypeSelectDataSource TypeSource
+@inject PhoneStationSelectDataSource StationSource
+@inject PhoneEquipmentSelectDataSource EquipmentSource
+@inject PhoneSocketSelectDataSource SocketSource
+@inject PhoneCustomerSelectDataSource CustomerSource
+@inject PhoneEmployeeSelectDataSource EmployeeSource
+@inject IServiceProvider Services
+@inject IDialogService DialogService
+@inject NavigationManager Navigation
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+
+<PageTitle>@Title</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
+
+<ClayEntityForm Options="_entityFormOptions">
+    <Toolbar>
+        <ClayToolbar>
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit || _deleted)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_applyOptions" Disabled="@((!CanSave && _pendingSync is null) || _deleted && _pendingSync is null)" OnClick="@(() => SaveAsync(false))" />
+            @if (_model?.Id > 0 && !_deleted)
+            {
+                <ClayToolbarButton Options="_copyOptions" Disabled="@(_loading || _saving)" OnClick="CopyAsync" />
+                <ClayToolbarButton Options="_deleteOptions" Disabled="@(_loading || _saving || !_canEdit)" OnClick="DeleteAsync" />
+            }
+            <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || _deleted)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
+        </ClayToolbar>
+    </Toolbar>
+    <ChildContent>
+        @if (_notFound)
+        {
+            <MudAlert Severity="Severity.Warning">Телефонный номер с указанным идентификатором не найден или недоступен.</MudAlert>
+        }
+        else if (_model is not null)
+        {
+            if (!_canEdit)
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-2">Для изменения телефонного номера требуется роль 43 и доступ к компании заказчика.</MudAlert>
+            }
+            @if (!string.IsNullOrWhiteSpace(_validationMessage))
+            {
+                <MudAlert Severity="Severity.Error" Class="mb-2">@_validationMessage</MudAlert>
+            }
+            @if (!string.IsNullOrWhiteSpace(_warningMessage))
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-2">@_warningMessage</MudAlert>
+            }
+            <MudForm @ref="_form">
+                <div class="phone-form-fields">
+                    <div class="phone-form-pair">
+                        <label class="phone-form-label" for="phone-number">Номер телефона:</label>
+                        <div>
+                            <ClayTextBox Value="@_model.Number" ValueChanged="OnNumberChanged" Options="_numberOptions" />
+                            @if (!string.IsNullOrWhiteSpace(_model.FullNumber))
+                            {
+                                <div class="phone-form-meta">Полный номер: @_model.FullNumber</div>
+                            }
+                        </div>
+                        <span class="phone-form-label">Станция:</span>
+                        <ClaySelect TItem="PhoneStationLookup" TValue="int?" DataSource="StationSource"
+                                    ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                    Value="_model.StationId" ValueChanged="OnStationIdChanged"
+                                    SelectedItem="_selectedStation" SelectedItemChanged="OnStationChangedAsync"
+                                    ViewItem="StationViewItem" Options="_stationOptions" />
+
+                        <span class="phone-form-label">Тип номера:</span>
+                        <ClaySelect TItem="PhoneTypeLookup" TValue="int?" DataSource="TypeSource"
+                                    ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                    Value="_model.PhoneTypeId" ValueChanged="OnTypeIdChanged"
+                                    SelectedItem="_selectedType" SelectedItemChanged="OnTypeChangedAsync" Options="_typeOptions" />
+                        @if (_availability.Port.IsVisible)
+                        {
+                            <span class="phone-form-label">Порт АТС:</span>
+                            <div>
+                                <ClayDropDownList TItem="PhoneStringOption" TValue="string" Items="_portOptions"
+                                                  ValueSelector="@(item => item.Value)" TextSelector="@(item => item.Value)"
+                                                  @bind-Value="_model.AtsPort" Options="_portSelectOptions" />
+                                @FieldWarning(_availability.Port)
+                            </div>
+                        }
+
+                        <span class="phone-form-label">Переадресация:</span>
+                        <ClayTextBox @bind-Value="_model.QuickCall" Options="_quickCallOptions" />
+                        @if (_availability.PickupGroup.IsVisible)
+                        {
+                            <span class="phone-form-label">Группа перехвата:</span>
+                            <div>
+                                <ClayDropDownList TItem="PhoneStringOption" TValue="string" Items="_pickupOptions"
+                                                  ValueSelector="@(item => item.Value)" TextSelector="@(item => item.Value)"
+                                                  @bind-Value="_model.PickupGroup" Options="_pickupSelectOptions" />
+                                @FieldWarning(_availability.PickupGroup)
+                            </div>
+                        }
+
+                        @if (_availability.AutoDial.IsVisible)
+                        {
+                            <span class="phone-form-label">Номер автонабора:</span>
+                            <div>
+                                <ClayTextBox @bind-Value="_model.AutoDialNumber" Options="_autoDialOptions" />
+                                @FieldWarning(_availability.AutoDial)
+                            </div>
+                        }
+                        <span class="phone-form-label">Сотрудник:</span>
+                        <ClaySelect TItem="Employee" TValue="int?" DataSource="EmployeeSource"
+                                    ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                    Value="_model.EmployeeId" ValueChanged="OnEmployeeIdChanged"
+                                    SelectedItem="_selectedEmployee" SelectedItemChanged="OnEmployeeChangedAsync"
+                                    ViewItem="EmployeeViewItem" Options="_employeeOptions" />
+                        @if (_availability.DrivenBy.IsVisible)
+                        {
+                            <span class="phone-form-label">Ведомый от:</span>
+                            <div>
+                                <ClaySelect TItem="PhoneDirectoryItem" TValue="int?" DataSource="DrivenSource"
+                                            ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                            Value="_model.DrivenById" ValueChanged="OnDrivenByIdChanged"
+                                            SelectedItem="_selectedDrivenBy" SelectedItemChanged="OnDrivenByChanged"
+                                            ViewItem="PhoneViewItem" Options="_drivenOptions" />
+                                @FieldWarning(_availability.DrivenBy)
+                            </div>
+                        }
+
+                        <span class="phone-form-label">Компания заказчик:</span>
+                        <ClaySelect TItem="PersonLookup" TValue="int?" DataSource="CustomerSource"
+                                    ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                    @bind-Value="_model.CustomerId" Options="_customerOptions" />
+                        @if (_availability.DisplayedFrom.IsVisible)
+                        {
+                            <span class="phone-form-label">Отображаемый от:</span>
+                            <div>
+                                <ClaySelect TItem="PhoneDirectoryItem" TValue="int?" DataSource="DisplayedSource"
+                                            ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                            Value="_model.DisplayedFromId" ValueChanged="OnDisplayedFromIdChanged"
+                                            SelectedItem="_selectedDisplayedFrom" SelectedItemChanged="OnDisplayedFromChanged"
+                                            ViewItem="PhoneViewItem" Options="_displayedOptions" />
+                                @FieldWarning(_availability.DisplayedFrom)
+                            </div>
+                        }
+
+                        <span class="phone-form-label"></span><span></span>
+                        @if (_availability.Socket.IsVisible)
+                        {
+                            <span class="phone-form-label">Розетка:</span>
+                            <div>
+                                <ClaySelect TItem="PhoneSocketLookup" TValue="int?" DataSource="SocketSource"
+                                            ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                            @bind-Value="_model.SocketId" Options="_socketOptions" />
+                                @FieldWarning(_availability.Socket)
+                            </div>
+                        }
+                    </div>
+
+                    <div class="phone-form-single">
+                        <span class="phone-form-label">Подключено:</span>
+                        <ClayTextBox @bind-Value="_model.Connected" Options="_connectedOptions" />
+                    </div>
+                    <div class="phone-form-single">
+                        <span class="phone-form-label">Описание АТС:</span>
+                        <div class="phone-form-with-action">
+                            <ClayTextBox @bind-Value="_model.AtsDescription" Options="_atsDescriptionOptions" />
+                            <ClayButton Icon="@Icons.Material.Filled.AutoFixHigh" Text="Заполнить по сотруднику"
+                                        Disabled="@(!_canEdit || _model.EmployeeId is null)" OnClick="FillAtsDescriptionAsync" />
+                        </div>
+                    </div>
+
+                    @if (_availability.ParallelCalls.IsVisible)
+                    {
+                        <section class="phone-form-section">
+                            <span class="phone-form-label">Параллельные вызовы:</span>
+                            <div>
+                                <ClayGrid TEntity="PhoneParallelCall" Items="_relations.ParallelCalls" Options="_parallelGridOptions"
+                                          OnAdd="@(() => OpenParallelDialogAsync(null))" AddDisabled="@(!_availability.ParallelCalls.IsEditable || !_canEdit)">
+                                    <ColumnDefs>
+                                        <ClayColumnDef ColumnId="1" SqlName="CallNumber" DisplayName="Номер" />
+                                        <ClayColumnDef ColumnId="2" SqlName="DelayBeforeCall" DisplayName="Задержка" />
+                                        <ClayColumnDef ColumnId="3" SqlName="DelayTooQuickResponse" DisplayName="Быстрый ответ" />
+                                        <ClayColumnDef ColumnId="4" SqlName="NotUsed" DisplayName="Не используется" />
+                                        <ClayColumnDef ColumnId="5" SqlName="ChangedByName" DisplayName="Изменил" />
+                                        <ClayColumnDef ColumnId="6" SqlName="ChangedAtUtc" DisplayName="Изменено" />
+                                    </ColumnDefs>
+                                    <Columns>
+                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="1" TextSelector="@(item => item.CallNumber)" />
+                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="2" TextSelector="@(item => item.DelayBeforeCall.ToString())" />
+                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="3" TextSelector="@(item => item.DelayTooQuickResponse.ToString())" />
+                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="4" TextSelector="@(item => item.NotUsed ? "Да" : "Нет")" />
+                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="5" TextSelector="@(item => item.ChangedByName)" />
+                                        <ClayColumn TEntity="PhoneParallelCall" ColumnId="6" TextSelector="@(item => FormatUtc(item.ChangedAtUtc))" />
+                                    </Columns>
+                                    <RowActions Context="item">
+                                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить" Disabled="@(!_availability.ParallelCalls.IsEditable || !_canEdit)" OnClick="@(() => OpenParallelDialogAsync(item))" />
+                                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить" Disabled="@(!_availability.ParallelCalls.IsEditable || !_canEdit)" OnClick="@(() => RemoveParallelAsync(item))" />
+                                    </RowActions>
+                                </ClayGrid>
+                                @FieldWarning(_availability.ParallelCalls)
+                            </div>
+                        </section>
+                    }
+
+                    <div class="phone-form-single">
+                        <span class="phone-form-label">Основной номер:</span>
+                        <div>
+                            <ClayCheckbox State="_model.IsDefault" StateChanged="OnDefaultChanged" ReadOnly="@(!_availability.DefaultPhone.IsEditable || !_canEdit)" />
+                            @if (_defaultEmployeePhone is not null && _defaultEmployeePhone.Value.Id != _model.Id)
+                            {
+                                <a href="@PhoneUrl(_defaultEmployeePhone.Value.Id)" target="_blank" rel="noopener">Текущий основной номер: @_defaultEmployeePhone.Value.Number</a>
+                            }
+                            @FieldWarning(_availability.DefaultPhone)
+                        </div>
+                    </div>
+
+                    @if (_memberships.Count > 0)
+                    {
+                        <div class="phone-form-single">
+                            <span class="phone-form-label">Входит в группы номеров:</span>
+                            <div class="phone-form-links">
+                                @foreach (var group in _memberships)
+                                {
+                                    <a href="@PhoneUrl(group.PhoneId)" target="_blank" rel="noopener">@group.Name</a>
+                                }
+                            </div>
+                        </div>
+                    }
+
+                    @if (_availability.GroupMembers.IsVisible)
+                    {
+                        <section class="phone-form-section">
+                            <span class="phone-form-label">Члены группы:</span>
+                            <div>
+                                <ClayGrid TEntity="PhoneGroupMember" Items="_relations.GroupMembers" Options="_groupGridOptions">
+                                    <ColumnDefs>
+                                        <ClayColumnDef ColumnId="1" SqlName="Name" DisplayName="Номер" />
+                                        <ClayColumnDef ColumnId="2" SqlName="ChangedByName" DisplayName="Изменил" />
+                                        <ClayColumnDef ColumnId="3" SqlName="ChangedAtUtc" DisplayName="Изменено" />
+                                    </ColumnDefs>
+                                    <Columns>
+                                        <ClayColumn TEntity="PhoneGroupMember" ColumnId="1">
+                                            <CellTemplate><a href="@PhoneUrl(context.Item.PhoneId)" target="_blank" rel="noopener">@context.Item.Name</a></CellTemplate>
+                                        </ClayColumn>
+                                        <ClayColumn TEntity="PhoneGroupMember" ColumnId="2" TextSelector="@(item => item.ChangedByName)" />
+                                        <ClayColumn TEntity="PhoneGroupMember" ColumnId="3" TextSelector="@(item => FormatUtc(item.ChangedAtUtc))" />
+                                    </Columns>
+                                    <RowActions Context="item">
+                                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить из группы" Disabled="@(!_availability.GroupMembers.IsEditable || !_canEdit)" OnClick="@(() => RemoveGroupMemberAsync(item))" />
+                                    </RowActions>
+                                </ClayGrid>
+                                <ClaySelect @key="_groupSelectVersion" TItem="PhoneDirectoryItem" TValue="int?" DataSource="GroupSource"
+                                            ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                            Value="_groupChoice" ValueChanged="OnGroupChoiceChanged"
+                                            SelectedItem="_selectedGroupChoice" SelectedItemChanged="OnGroupMemberSelected"
+                                            Options="_groupChoiceOptions" />
+                                @FieldWarning(_availability.GroupMembers)
+                            </div>
+                        </section>
+                    }
+
+                    @if (_availability.Equipment.IsVisible)
+                    {
+                        <section class="phone-form-section">
+                            <span class="phone-form-label">Оборудование:</span>
+                            <div>
+                                <ClayGrid TEntity="PhoneEquipmentLink" Items="_relations.Equipment" Options="_equipmentGridOptions"
+                                          RowClass="@(item => item.ReturnDate?.Date < DateTime.UtcNow.Date ? "equipment-overdue" : null)">
+                                    <ColumnDefs>
+                                        <ClayColumnDef ColumnId="1" SqlName="Model" DisplayName="Оборудование" />
+                                        @if (_relations.Equipment.Any(item => item.ConnectionEquipmentId is > 0))
+                                        {
+                                            <ClayColumnDef ColumnId="2" SqlName="Connection" DisplayName="Оборудование подключения" />
+                                        }
+                                        <ClayColumnDef ColumnId="3" SqlName="LocationPath" DisplayName="Расположение" />
+                                        <ClayColumnDef ColumnId="4" SqlName="SerialNumber" DisplayName="SN" />
+                                        @if (_relations.Equipment.Any(item => !string.IsNullOrWhiteSpace(item.OtherPhones)))
+                                        {
+                                            <ClayColumnDef ColumnId="5" SqlName="OtherPhones" DisplayName="Другие номера" />
+                                        }
+                                        @if (_relations.Equipment.Any(item => item.ReturnDate is not null))
+                                        {
+                                            <ClayColumnDef ColumnId="6" SqlName="ReturnDate" DisplayName="Срок возврата" />
+                                        }
+                                        <ClayColumnDef ColumnId="7" SqlName="ChangedByName" DisplayName="Изменил" />
+                                        <ClayColumnDef ColumnId="8" SqlName="ChangedAtUtc" DisplayName="Изменено" />
+                                    </ColumnDefs>
+                                    <Columns>
+                                        <ClayColumn TEntity="PhoneEquipmentLink" ColumnId="1">
+                                            <CellTemplate><a href="@EquipmentUrl(context.Item.EquipmentId)" target="_blank" rel="noopener">@context.Item.Model</a></CellTemplate>
+                                        </ClayColumn>
+                                        @if (_relations.Equipment.Any(item => item.ConnectionEquipmentId is > 0))
+                                        {
+                                            <ClayColumn TEntity="PhoneEquipmentLink" ColumnId="2" TextSelector="@(item => item.ConnectionEquipmentId?.ToString() ?? string.Empty)" />
+                                        }
+                                        <ClayColumn TEntity="PhoneEquipmentLink" ColumnId="3" TextSelector="@(item => item.LocationPath)" />
+                                        <ClayColumn TEntity="PhoneEquipmentLink" ColumnId="4" TextSelector="@(item => item.SerialNumber)" />
+                                        @if (_relations.Equipment.Any(item => !string.IsNullOrWhiteSpace(item.OtherPhones)))
+                                        {
+                                            <ClayColumn TEntity="PhoneEquipmentLink" ColumnId="5" TextSelector="@(item => item.OtherPhones)" />
+                                        }
+                                        @if (_relations.Equipment.Any(item => item.ReturnDate is not null))
+                                        {
+                                            <ClayColumn TEntity="PhoneEquipmentLink" ColumnId="6" TextSelector="@(item => item.ReturnDate?.ToString("dd.MM.yyyy") ?? string.Empty)" />
+                                        }
+                                        <ClayColumn TEntity="PhoneEquipmentLink" ColumnId="7" TextSelector="@(item => item.ChangedByName)" />
+                                        <ClayColumn TEntity="PhoneEquipmentLink" ColumnId="8" TextSelector="@(item => FormatUtc(item.ChangedAtUtc))" />
+                                    </Columns>
+                                    <RowActions Context="item">
+                                        <ClayButton Icon="@Icons.Material.Filled.Schedule" Text="Срок возврата" Disabled="@(!_availability.Equipment.IsEditable || !_canEdit)" OnClick="@(() => EditEquipmentReturnAsync(item))" />
+                                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить связь" Disabled="@(!_availability.Equipment.IsEditable || !_canEdit)" OnClick="@(() => RemoveEquipmentAsync(item))" />
+                                    </RowActions>
+                                </ClayGrid>
+                                <ClaySelect @key="_equipmentSelectVersion" TItem="PhoneEquipmentLookup" TValue="PhoneEquipmentKey" DataSource="EquipmentSource"
+                                            ValueSelector="@(item => item.Key)" TextSelector="@(item => item.Name)"
+                                            Value="_equipmentChoice" ValueChanged="OnEquipmentChoiceChanged"
+                                            SelectedItem="_selectedEquipmentChoice" SelectedItemChanged="OnEquipmentSelected"
+                                            Options="_equipmentChoiceOptions" />
+                                @FieldWarning(_availability.Equipment)
+                            </div>
+                        </section>
+                    }
+
+                    <div class="phone-form-single">
+                        <span class="phone-form-label">Срок возврата:</span>
+                        <div class="phone-form-return-date">
+                            <ClayCheckbox State="_hasReturnDate" StateChanged="OnHasReturnDateChanged" ReadOnly="@(!_canEdit)" />
+                            <ClayDatePicker @bind-Value="_model.ReturnDate" Options="_returnDateOptions" />
+                        </div>
+                    </div>
+
+                    <div class="phone-form-radios">
+                        <fieldset>
+                            <legend>Услуги связи</legend>
+                            <ClayRadioGroup TValue="int" Items="_serviceChoices" Value="_model.ServicesKind" ValueChanged="OnServicesChanged" Options="_servicesRadioOptions" />
+                        </fieldset>
+                        <fieldset>
+                            <legend>Отображение в справочнике</legend>
+                            <ClayRadioGroup TValue="int" Items="_directoryChoices" Value="_model.ViewInDirectory" ValueChanged="OnDirectoryChanged" Options="_directoryRadioOptions" />
+                        </fieldset>
+                    </div>
+                    <div class="phone-form-single phone-form-top">
+                        <span class="phone-form-label">Примечания:</span>
+                        <ClayTextArea @bind-Value="_model.Notes" Options="_notesOptions" />
+                    </div>
+                </div>
+            </MudForm>
+        }
+    </ChildContent>
+    <Footer>
+        @if (_model?.Id > 0 && !_deleted)
+        {
+            <ClayChanged ChangedById="_model.ChangedById" ChangedByName="@_model.ChangedByName" ChangedAt="_model.ChangedAtUtc" ChangedByUrl="@ChangedByUrl" />
+        }
+    </Footer>
+</ClayEntityForm>
+
+<MudOverlay Visible="@(_loading || _saving)" DarkBackground="true">
+    <div class="clay-busy">
+        <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" />
+        <span>@(_saving ? "Сохранение телефонного номера…" : "Загрузка формы…")</span>
+    </div>
+</MudOverlay>
+
+@code {
+    private RenderFragment FieldWarning(PhoneFieldAvailability availability) => builder =>
+    {
+        if (!availability.HasIncompatibleValue) return;
+        builder.OpenElement(0, "div");
+        builder.AddAttribute(1, "class", "phone-form-incompatible");
+        builder.AddContent(2, "Значение несовместимо с текущей конфигурацией и будет очищено только после подтверждения при сохранении.");
+        builder.CloseElement();
+    };
+}

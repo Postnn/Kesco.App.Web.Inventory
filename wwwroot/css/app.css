@@ -392,3 +392,132 @@
         grid-template-columns: minmax(0, 1fr);
     }
 }
+
+
+.phone-form-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.phone-form-pair {
+    display: grid;
+    grid-template-columns: 150px minmax(0, 1fr) 150px minmax(0, 1fr);
+    gap: 5px 8px;
+    align-items: center;
+}
+
+.phone-form-single,
+.phone-form-section {
+    display: grid;
+    grid-template-columns: 150px minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+}
+
+.phone-form-pair > *,
+.phone-form-single > *,
+.phone-form-section > * {
+    min-width: 0;
+}
+
+.phone-form-label {
+    white-space: nowrap;
+}
+
+.phone-form-meta,
+.phone-form-incompatible {
+    color: var(--mud-palette-text-secondary);
+    font-size: var(--clay-font-size-small);
+}
+
+.phone-form-incompatible {
+    color: var(--mud-palette-warning);
+}
+
+.phone-form-with-action {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.phone-form-with-action > :first-child {
+    flex: 1 1 auto;
+}
+
+.phone-form-return-date {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 300px;
+}
+
+.phone-form-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+}
+
+.phone-form-radios {
+    display: grid;
+    grid-template-columns: minmax(240px, 0.7fr) minmax(300px, 1fr);
+    gap: 8px;
+}
+
+.phone-form-radios fieldset {
+    min-width: 0;
+    margin: 0;
+    padding: 4px 8px;
+    border: 1px solid var(--mud-palette-lines-default);
+}
+
+.phone-form-radios .mud-radio-group {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 8px;
+}
+
+.phone-form-top {
+    align-items: start;
+}
+
+.phone-form-top > .phone-form-label {
+    padding-top: 8px;
+}
+
+@media (max-width: 1100px) {
+    .phone-form-pair {
+        grid-template-columns: 150px minmax(0, 1fr);
+    }
+}
+
+@media (max-width: 700px) {
+    .phone-form-pair,
+    .phone-form-single,
+    .phone-form-section,
+    .phone-form-radios {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 2px;
+    }
+
+    .phone-form-label {
+        white-space: normal;
+    }
+
+    .phone-form-radios .mud-radio-group {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .phone-form-top > .phone-form-label {
+        padding-top: 0;
+    }
+}
+
+
+.phone-form-section {
+    align-items: start;
+}
+
+.phone-form-section > .phone-form-label {
+    padding-top: 8px;
+}
