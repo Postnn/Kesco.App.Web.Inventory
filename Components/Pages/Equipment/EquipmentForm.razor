@@ -30,6 +30,7 @@
             @if (ShowOperations)
             {
                 <ClayMenu Icon="@Icons.Material.Filled.ArrowDropDown" ButtonOptions="_operationsOptions"
+                          AnchorOrigin="Origin.BottomLeft" TransformOrigin="Origin.TopLeft"
                           Disabled="@(_loading || _saving || !_loaded)">
                     @if (_canManageUps)
                     {

@@ -113,7 +113,7 @@ public sealed class PhoneSaveRequest
     public DateTime Today { get; set; } = DateTime.UtcNow.Date;
 }
 
-/// <summary>Запланированная операция синхронизации АТС после commit.</summary>
+/// <summary>Запланированная операция синхронизации АТС до либо после SQL-изменения.</summary>
 public sealed record PhoneSyncOperation(PhoneSyncKind Kind, string Key, bool Deleting = false);
 
 /// <summary>Результат отдельной операции синхронизации АТС.</summary>

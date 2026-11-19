@@ -19,7 +19,7 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Telefon;
 public partial class Tel : IDisposable
 {
     private readonly CancellationTokenSource _pageCts = new();
-    private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "phone-form equipment-form", MaxWidth = "900px" };
+    private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "phone-form equipment-form", MaxWidth = "100%" };
     private readonly ClayTextBoxOptions _numberOptions = new() { Required = true, RequiredError = "Укажите номер", MaxLength = 4, Immediate = false };
     private readonly ClayTextBoxOptions _quickCallOptions = new() { MaxLength = 50 };
     private readonly ClayTextBoxOptions _autoDialOptions = new() { MaxLength = 50 };
@@ -680,6 +680,9 @@ public partial class Tel : IDisposable
                 if (closeAfterSave) await CloseAsync();
                 return;
             }
+            _capabilities = await Service.GetCapabilitiesAsync(model.StationId, model.PhoneTypeId, model.Id);
+            if (!IsCurrent(version) || model.StationId != _model.StationId || model.PhoneTypeId != _model.PhoneTypeId) return;
+            UpdateDependentState();
             var incompatible = IncompatibleFields();
             if (incompatible.Count > 0 && !await ConfirmAsync("Очистка несовместимых значений",
                     $"При сохранении будут очищены: {string.Join(", ", incompatible)}. Продолжить?")) return;
@@ -689,17 +692,46 @@ public partial class Tel : IDisposable
                 if (!IsCurrent(version) || !_form.IsValid) return;
             }
             var request = BuildSaveRequest(normalizeIncompatible: true);
-            var result = await Service.SaveAsync(request);
+            var originalStation = ToSyncStation(_originalStation, _originalPhone.StationId);
+            var currentStation = ToSyncStation(_selectedStation, model.StationId);
+            var operations = PhoneSyncPlanner.Build(request, originalStation, currentStation);
+            var preSaveOperations = originalStation.Id != currentStation.Id
+                ? operations.Where(item => item.Kind == PhoneSyncKind.Xorcom && item.Deleting).ToArray() : [];
+            if (preSaveOperations.Length > 0)
+            {
+                var preResults = await Service.SynchronizeAsync(model.Id, preSaveOperations);
+                if (!IsCurrent(version))
+                {
+                    await RestoreXorcomAfterWriteFailureAsync(model.Id, preSaveOperations);
+                    return;
+                }
+                var preErrors = preResults.Where(item => !item.Success).ToList();
+                if (preErrors.Count > 0)
+                {
+                    _validationMessage = "Данные не сохранены. Не удалось очистить предыдущую Xorcom-станцию: " + FormatSyncErrors(preErrors);
+                    return;
+                }
+            }
+            PhoneSaveResult result;
+            try
+            {
+                result = await Service.SaveAsync(request);
+            }
+            catch (Exception ex) when (preSaveOperations.Length > 0 &&
+                ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or UnauthorizedAccessException)
+            {
+                await RestoreXorcomAfterWriteFailureAsync(model.Id, preSaveOperations);
+                throw;
+            }
             if (!IsCurrent(version)) return;
             if (!result.Saved)
             {
                 ShowIssues(result.Issues);
+                await RestoreXorcomAfterWriteFailureAsync(model.Id, preSaveOperations);
                 return;
             }
             ShowIssues(result.Issues);
-            var originalStation = ToSyncStation(_originalStation, _originalPhone.StationId);
-            var currentStation = ToSyncStation(_selectedStation, model.StationId);
-            var operations = PhoneSyncPlanner.Build(request, originalStation, currentStation);
+            operations = operations.Except(preSaveOperations).ToArray();
             var syncResults = await Service.SynchronizeAsync(result.PhoneId, operations);
             if (!IsCurrent(version)) return;
             var syncErrors = syncResults.Where(item => !item.Success).ToList();
@@ -751,6 +783,16 @@ public partial class Tel : IDisposable
 
     private static string FormatSyncErrors(IEnumerable<PhoneSyncResult> errors) => string.Join(" ",
         errors.Select(item => $"{item.Operation.Kind} ({item.Operation.Key}): {item.Error}"));
+
+    private async Task RestoreXorcomAfterWriteFailureAsync(int phoneId, IReadOnlyCollection<PhoneSyncOperation> operations)
+    {
+        if (operations.Count == 0) return;
+        var restoreOperations = operations.Select(item => item with { Deleting = false }).ToArray();
+        var results = await Service.SynchronizeAsync(phoneId, restoreOperations);
+        var errors = results.Where(item => !item.Success).ToList();
+        if (errors.Count > 0)
+            _warningMessage = "После ошибки SQL не удалось восстановить прежний номер на Xorcom: " + FormatSyncErrors(errors);
+    }
 
     private PhoneSaveRequest BuildSaveRequest(bool normalizeIncompatible)
     {
@@ -805,23 +847,52 @@ public partial class Tel : IDisposable
     {
         if (_model?.Id is not > 0 || !_canEdit || _saving ||
             !await ConfirmAsync("Удаление номера", "Удалить номер, состав его PBX-группы, связи с оборудованием и параллельные вызовы?")) return;
+        await DeleteConfirmedAsync();
+    }
+
+    private async Task DeleteConfirmedAsync()
+    {
+        if (_model?.Id is not > 0 || _saving) return;
         _saving = true;
         _validationMessage = null;
+        _warningMessage = null;
         try
         {
+            var phoneId = _model.Id;
             var request = BuildSaveRequest(normalizeIncompatible: false);
             var originalStation = ToSyncStation(_originalStation, _originalPhone.StationId);
             var currentStation = ToSyncStation(_selectedStation, _model.StationId);
-            await Service.DeleteAsync(_model.Id);
-            _deleted = true;
             var operations = PhoneSyncPlanner.Build(request, originalStation, currentStation, deleting: true);
-            var results = await Service.SynchronizeAsync(_model.Id, operations);
+            var preDeleteOperations = operations.Where(item => item.Kind == PhoneSyncKind.Xorcom).ToArray();
+            if (preDeleteOperations.Length > 0)
+            {
+                var preResults = await Service.SynchronizeAsync(phoneId, preDeleteOperations);
+                var preErrors = preResults.Where(item => !item.Success).ToList();
+                if (preErrors.Count > 0)
+                {
+                    _validationMessage = "Номер не удалён. Не удалось очистить Xorcom: " + FormatSyncErrors(preErrors);
+                    return;
+                }
+            }
+            try
+            {
+                await Service.DeleteAsync(phoneId);
+            }
+            catch (Exception ex) when (preDeleteOperations.Length > 0 &&
+                ex is InvalidOperationException or UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException)
+            {
+                await RestoreXorcomAfterWriteFailureAsync(phoneId, preDeleteOperations);
+                throw;
+            }
+            _deleted = true;
+            operations = operations.Except(preDeleteOperations).ToArray();
+            var results = await Service.SynchronizeAsync(phoneId, operations);
             var errors = results.Where(item => !item.Success).ToList();
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _pageCts.Token);
             if (errors.Count > 0)
             {
                 _pendingOperations = errors.Select(item => item.Operation).ToList();
-                _pendingPhoneId = _model.Id;
+                _pendingPhoneId = phoneId;
                 _pendingDelete = true;
                 _validationMessage = "Номер удалён, но синхронизация АТС не завершена: " + FormatSyncErrors(errors);
             }

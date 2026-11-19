@@ -2,7 +2,7 @@ using Clayzor.Lib.Entities.Inventory;
 
 namespace Kesco.App.Web.Inventory.Services;
 
-/// <summary>Планирует только необходимые операции синхронизации после SQL commit.</summary>
+/// <summary>Планирует только необходимые операции синхронизации АТС.</summary>
 public static class PhoneSyncPlanner
 {
     /// <summary>Создаёт план по исходной и новой станции и фактическому diff оборудования.</summary>
@@ -14,7 +14,7 @@ public static class PhoneSyncPlanner
             GroupChanged(request.OriginalRelations.GroupMembers, request.Relations.GroupMembers) ||
             ParallelCallsChanged(request.OriginalRelations.ParallelCalls, request.Relations.ParallelCalls);
         var equipmentChanged = deleting || EquipmentChanged(request.OriginalRelations.Equipment, request.Relations.Equipment);
-        if (mainChanged)
+        if (mainChanged || equipmentChanged)
         {
             AddStationOperations(operations, originalStation, request.OriginalPhone.AtsPort,
                 deleting || originalStation.Id != currentStation.Id, currentStation);
