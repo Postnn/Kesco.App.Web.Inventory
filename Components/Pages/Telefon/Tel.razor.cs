@@ -19,7 +19,7 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Telefon;
 public partial class Tel : IDisposable
 {
     private readonly CancellationTokenSource _pageCts = new();
-    private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "phone-form equipment-form" };
+    private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "phone-form equipment-form", MaxWidth = "900px" };
     private readonly ClayTextBoxOptions _numberOptions = new() { Required = true, RequiredError = "Укажите номер", MaxLength = 4, Immediate = false };
     private readonly ClayTextBoxOptions _quickCallOptions = new() { MaxLength = 50 };
     private readonly ClayTextBoxOptions _autoDialOptions = new() { MaxLength = 50 };

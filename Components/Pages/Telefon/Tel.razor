@@ -75,7 +75,8 @@
                                     Value="_model.StationId" ValueChanged="OnStationIdChanged"
                                     SelectedItem="_selectedStation" SelectedItemChanged="OnStationChangedAsync"
                                     ViewItem="StationViewItem" Options="_stationOptions" />
-
+                    </div>
+                    <div class="phone-form-pair">
                         <span class="phone-form-label">Тип номера:</span>
                         <ClaySelect TItem="PhoneTypeLookup" TValue="int?" DataSource="TypeSource"
                                     ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
@@ -91,7 +92,12 @@
                                 @FieldWarning(_availability.Port)
                             </div>
                         }
-
+                        else
+                        {
+                            <span></span><span></span>
+                        }
+                    </div>
+                    <div class="phone-form-pair">
                         <span class="phone-form-label">Переадресация:</span>
                         <ClayTextBox @bind-Value="_model.QuickCall" Options="_quickCallOptions" />
                         @if (_availability.PickupGroup.IsVisible)
@@ -104,7 +110,12 @@
                                 @FieldWarning(_availability.PickupGroup)
                             </div>
                         }
-
+                        else
+                        {
+                            <span></span><span></span>
+                        }
+                    </div>
+                    <div class="phone-form-pair">
                         @if (_availability.AutoDial.IsVisible)
                         {
                             <span class="phone-form-label">Номер автонабора:</span>
@@ -113,6 +124,13 @@
                                 @FieldWarning(_availability.AutoDial)
                             </div>
                         }
+                        else
+                        {
+                            <span></span><span></span>
+                        }
+                        <span></span><span></span>
+                    </div>
+                    <div class="phone-form-pair">
                         <span class="phone-form-label">Сотрудник:</span>
                         <ClaySelect TItem="Employee" TValue="int?" DataSource="EmployeeSource"
                                     ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
@@ -131,11 +149,13 @@
                                 @FieldWarning(_availability.DrivenBy)
                             </div>
                         }
-
-                        <span class="phone-form-label">Компания заказчик:</span>
-                        <ClaySelect TItem="PersonLookup" TValue="int?" DataSource="CustomerSource"
-                                    ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
-                                    @bind-Value="_model.CustomerId" Options="_customerOptions" />
+                        else
+                        {
+                            <span></span><span></span>
+                        }
+                    </div>
+                    <div class="phone-form-pair">
+                        <span></span><span></span>
                         @if (_availability.DisplayedFrom.IsVisible)
                         {
                             <span class="phone-form-label">Отображаемый от:</span>
@@ -148,8 +168,16 @@
                                 @FieldWarning(_availability.DisplayedFrom)
                             </div>
                         }
-
-                        <span class="phone-form-label"></span><span></span>
+                        else
+                        {
+                            <span></span><span></span>
+                        }
+                    </div>
+                    <div class="phone-form-pair">
+                        <span class="phone-form-label">Компания заказчик:</span>
+                        <ClaySelect TItem="PersonLookup" TValue="int?" DataSource="CustomerSource"
+                                    ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                    @bind-Value="_model.CustomerId" Options="_customerOptions" />
                         @if (_availability.Socket.IsVisible)
                         {
                             <span class="phone-form-label">Розетка:</span>
@@ -159,6 +187,10 @@
                                             @bind-Value="_model.SocketId" Options="_socketOptions" />
                                 @FieldWarning(_availability.Socket)
                             </div>
+                        }
+                        else
+                        {
+                            <span></span><span></span>
                         }
                     </div>
 
