@@ -34,7 +34,7 @@
             @if (_model?.Id > 0 && !_deleted)
             {
                 <ClayToolbarButton Options="_copyOptions" Disabled="@(_loading || _saving)" OnClick="CopyAsync" />
-                <ClayToolbarButton Options="_deleteOptions" Disabled="@(_loading || _saving || !_canEdit || _pendingOperations.Count > 0)" OnClick="DeleteAsync" />
+                <ClayToolbarButton Options="_deleteOptions" Disabled="@(_loading || _saving || !_canEdit)" OnClick="DeleteAsync" />
             }
             <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || _deleted)" OnClick="RefreshAsync" />
             <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
