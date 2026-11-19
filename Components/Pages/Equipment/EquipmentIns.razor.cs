@@ -569,7 +569,7 @@ public partial class EquipmentIns : IDisposable
     private bool IsCurrent(int version) => !_disposed && version == _operationVersion;
 
     private async Task OpenEmployeeViewAsync(Employee employee) =>
-        await JS.InvokeVoidAsync("open", BuildEditUrl(Configuration["URI_user_form"]!, employee.Id), "_blank");
+        await JS.InvokeVoidAsync("clayOpen", BuildEditUrl(Configuration["URI_user_form"]!, employee.Id), "_blank");
 
     private async Task RefreshAsync()
     {

@@ -471,10 +471,9 @@
     border: 1px solid var(--mud-palette-lines-default);
 }
 
-.phone-form-radios .mud-radio-group {
+.phone-form-radios .mud-input-control-input-container > .mud-radio-group {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0 8px;
+    grid-template-columns: minmax(0, 1fr);
 }
 
 .phone-form-top {

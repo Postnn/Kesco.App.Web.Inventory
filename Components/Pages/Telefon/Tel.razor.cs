@@ -56,8 +56,8 @@ public partial class Tel : IDisposable
     ];
     private readonly IReadOnlyList<ClayRadioOption<int>> _directoryChoices =
     [
-        new(0, "Не отображать"), new(1, "Отображать"), new(2, "Жирным"),
-        new(4, "В начале группы"), new(6, "В начале группы жирным"), new(8, "Всегда"),
+        new(0, "Не отображать"), new(1, "Отображать"), new(2, "Отображать, выделить жирным"),
+        new(4, "Отображать в начале группы"), new(6, "Отображать в начале группы, выделить жирным"), new(8, "Отображать как общий"),
     ];
 
     private MudForm? _form;
@@ -124,7 +124,7 @@ public partial class Tel : IDisposable
 
     private static ClayGridOptions DetailGrid(string id, string emptyText) => new()
     {
-        Id = id, Title = string.Empty, ShowToolbar = false, ShowPagination = false, AutoHeight = true,
+        Id = id, Title = string.Empty, ShowToolbar = false, ShowPagination = false, AutoHeight = true, ShowHeader = false,
         AllowColumnReorder = false, AllowSorting = false, EmptyText = emptyText, Class = "equipment-detail-grid",
     };
 
@@ -734,7 +734,7 @@ public partial class Tel : IDisposable
 
     private async Task CopyAsync()
     {
-        if (Id > 0) await JS.InvokeVoidAsync("open", $"/Telefon/Tel?copyId={Id}", "_blank");
+        if (Id > 0) await JS.InvokeVoidAsync("clayOpen", $"/Telefon/Tel?copyId={Id}", "_blank");
     }
 
     private async Task CancelAsync()
@@ -781,9 +781,9 @@ public partial class Tel : IDisposable
         return result is not null && !result.Canceled && IsCurrent(version);
     }
 
-    private async Task OpenPhoneViewAsync(PhoneDirectoryItem item) => await JS.InvokeVoidAsync("open", PhoneUrl(item.Id), "_blank");
-    private async Task OpenEmployeeViewAsync(Employee item) => await JS.InvokeVoidAsync("open", EquipmentIns.BuildEditUrl(Configuration["URI_user_form"]!, item.Id), "_blank");
-    private async Task OpenStationViewAsync(PhoneStationLookup item) => await JS.InvokeVoidAsync("open", EquipmentUrl(item.EquipmentId), "_blank");
+    private async Task OpenPhoneViewAsync(PhoneDirectoryItem item) => await JS.InvokeVoidAsync("clayOpen", PhoneUrl(item.Id), "_blank");
+    private async Task OpenEmployeeViewAsync(Employee item) => await JS.InvokeVoidAsync("clayOpen", EquipmentIns.BuildEditUrl(Configuration["URI_user_form"]!, item.Id), "_blank");
+    private async Task OpenStationViewAsync(PhoneStationLookup item) => await JS.InvokeVoidAsync("clayOpen", EquipmentUrl(item.EquipmentId), "_blank");
     private Func<PhoneDirectoryItem, Task>? PhoneViewItem => string.IsNullOrWhiteSpace(Configuration["URI_tel_form"]) ? null : OpenPhoneViewAsync;
     private Func<Employee, Task>? EmployeeViewItem => string.IsNullOrWhiteSpace(Configuration["URI_user_form"]) ? null : OpenEmployeeViewAsync;
     private Func<PhoneStationLookup, Task>? StationViewItem => string.IsNullOrWhiteSpace(Configuration["URI_equipment_form"]) ? null : OpenStationViewAsync;

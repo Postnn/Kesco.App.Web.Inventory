@@ -102,7 +102,7 @@
         !string.IsNullOrWhiteSpace(Configuration["URI_user_form"]) ? OpenEmployeeViewAsync : null;
 
     private async Task OpenEmployeeViewAsync(Employee employee) =>
-        await JS.InvokeVoidAsync("open", EquipmentIns.BuildEditUrl(Configuration["URI_user_form"]!, employee.Id), "_blank");
+        await JS.InvokeVoidAsync("clayOpen", EquipmentIns.BuildEditUrl(Configuration["URI_user_form"]!, employee.Id), "_blank");
 
     /// <inheritdoc />
     protected override void OnParametersSet()

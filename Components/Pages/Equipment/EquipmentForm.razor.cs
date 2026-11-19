@@ -1703,7 +1703,7 @@ public partial class EquipmentForm : IDisposable
             _validationMessage = string.Join(" ", errors);
             return;
         }
-        await JS.InvokeVoidAsync("open", $"/Equipment/PhoneConfigHandler.ashx?mac={Uri.EscapeDataString(_model.MacAddress!)}", "_blank");
+        await JS.InvokeVoidAsync("clayOpen", $"/Equipment/PhoneConfigHandler.ashx?mac={Uri.EscapeDataString(_model.MacAddress!)}", "_blank");
     }
 
     private async Task OpenNetworkNameHistoryAsync()
@@ -2229,11 +2229,11 @@ public partial class EquipmentForm : IDisposable
     private async Task CopyAsync()
     {
         if (Id > 0)
-            await JS.InvokeVoidAsync("open", $"/Equipment/EquipmentIns?copyId={Id}", "_blank");
+            await JS.InvokeVoidAsync("clayOpen", $"/Equipment/EquipmentIns?copyId={Id}", "_blank");
     }
 
     private async Task OpenModelViewAsync(EquipmentModel model) =>
-        await JS.InvokeVoidAsync("open", EquipmentIns.BuildEditUrl(Configuration["URI_model_form"]!, model.Id), "_blank");
+        await JS.InvokeVoidAsync("clayOpen", EquipmentIns.BuildEditUrl(Configuration["URI_model_form"]!, model.Id), "_blank");
 
     private async Task CloseAsync()
     {

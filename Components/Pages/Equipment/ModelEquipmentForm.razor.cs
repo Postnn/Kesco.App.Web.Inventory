@@ -495,12 +495,12 @@ public partial class ModelEquipmentForm : IDisposable
     }
 
     private async Task OpenResourceViewAsync(ResourceLookup resource) =>
-        await JS.InvokeVoidAsync("open", AppendQuery(GetConfiguredUrl("URI_resource_form"), $"id={resource.Id}"), "_blank");
+        await JS.InvokeVoidAsync("clayOpen", AppendQuery(GetConfiguredUrl("URI_resource_form"), $"id={resource.Id}"), "_blank");
 
     private async Task OpenPhoneTemplateAsync()
     {
         if (_model is not null)
-            await JS.InvokeVoidAsync("open", $"/Equipment/PhoneTemplateForm?id={_model.Id}", "_blank");
+            await JS.InvokeVoidAsync("clayOpen", $"/Equipment/PhoneTemplateForm?id={_model.Id}", "_blank");
     }
 
     private string GetConfiguredUrl(string key) => Configuration[key] is { Length: > 0 } url
