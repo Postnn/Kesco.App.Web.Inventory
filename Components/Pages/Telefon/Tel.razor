@@ -241,7 +241,7 @@
                     }
 
                     <div class="phone-form-single">
-                        <span class="phone-form-label">Основной номер:</span>
+                        <span class="phone-form-label">Основной номер сотрудника:</span>
                         <div>
                             <ClayCheckbox State="_model.IsDefault" StateChanged="OnDefaultChanged" ReadOnly="@(!_availability.DefaultPhone.IsEditable || !_canEdit)" />
                             @if (_defaultEmployeePhone is not null && _defaultEmployeePhone.Value.Id != _model.Id)

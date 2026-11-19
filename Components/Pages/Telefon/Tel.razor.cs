@@ -51,13 +51,13 @@ public partial class Tel : IDisposable
     private readonly ClayToolbarButtonOptions _cancelOptions = new() { Text = "Отмена", Icon = Icons.Material.Filled.Close, Title = "Закрыть форму" };
     private readonly IReadOnlyList<ClayRadioOption<int>> _serviceChoices =
     [
-        new(0, "Внутри холдинга"), new(1, "Местная городская"), new(3, "Внутри страны"),
-        new(4, "Международная"), new(5, "Гостиница"),
+        new(0, "внутри холдинга"), new(1, "местная городская"), new(3, "внутри страны"),
+        new(4, "международная"), new(5, "из номера гостиницы"),
     ];
     private readonly IReadOnlyList<ClayRadioOption<int>> _directoryChoices =
     [
-        new(0, "Не отображать"), new(1, "Отображать"), new(2, "Отображать, выделить жирным"),
-        new(4, "Отображать в начале группы"), new(6, "Отображать в начале группы, выделить жирным"), new(8, "Отображать как общий"),
+        new(0, "не отображать"), new(1, "отображать"), new(2, "отображать, выделить жирным"),
+        new(4, "отображать в начале группы"), new(6, "отображать в начале группы, выделить жирным"), new(8, "отображать как общий"),
     ];
 
     private MudForm? _form;
