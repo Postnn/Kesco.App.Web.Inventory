@@ -1,0 +1,25 @@
+@namespace Kesco.App.Web.Inventory.Components
+@using Clayzor.Lib.Web.Controls.Components.Navigation
+
+<div class="inventory-main-menu">
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <MudAlert Severity="Severity.Warning" Class="mb-2">
+            <div class="d-flex flex-wrap align-center gap-3">
+                <span>@_error</span>
+                <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="RetryAsync">Повторить</MudButton>
+            </div>
+        </MudAlert>
+    }
+    @if (_loading && _items.Count == 0)
+    {
+        <div class="inventory-main-menu__loading" role="status">
+            <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+            <span>Загрузка меню…</span>
+        </div>
+    }
+    else if (_items.Count > 0)
+    {
+        <ClayNavigationMenu Items="_items" Options="_options" />
+    }
+</div>

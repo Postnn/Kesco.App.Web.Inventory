@@ -4,17 +4,33 @@
 
 <PageTitle>@AppSettings.ApplicationName</PageTitle>
 
-<ClayGrid TEntity="IClayGridRow" Options="_gridOptions" />
-
-@code {
-    private readonly ClayGridOptions _gridOptions = new()
+<div class="inventory-home">
+    @if (!HideNavigationMenu)
     {
-        Dynamic        = true,
-        Id             = "clay-grid-root",
-        ShowPagination = true,
-        ColumnMenuMode = ColumnMenuMode.Always,
-        SelectVisible  = true,
-        ShowPrint      = true,
-        ShowExcel      = true,
-    };
-}
+        <header class="inventory-home__navigation">
+            <InventoryMainMenu CurrentQueryId="CurrentQueryId" />
+            <MudIconButton Class="inventory-theme-toggle"
+                           Icon="@(ParentLayout?.IsDarkMode == true ? Icons.Material.Filled.LightMode : Icons.Material.Filled.DarkMode)"
+                           Title="@(ParentLayout?.IsDarkMode == true ? "Светлая тема" : "Тёмная тема")"
+                           OnClick="@(() => ParentLayout?.ToggleDarkMode())" />
+        </header>
+    }
+
+    @if (CurrentQueryId is not null)
+    {
+        <section class="inventory-home__grid" aria-label="Рабочая область грида">
+            <ClayGrid TEntity="IClayGridRow" Options="_gridOptions" />
+        </section>
+    }
+    else if (HasInvalidQueryId)
+    {
+        <MudAlert Severity="Severity.Warning">Некорректный код запроса. Выберите пункт меню.</MudAlert>
+    }
+    else
+    {
+        <MudPaper Elevation="1" Class="pa-6 inventory-home__empty">
+            <MudText Typo="Typo.h5" Class="mb-2">Инвентаризация</MudText>
+            <MudText Typo="Typo.body1">Выберите запрос в меню, чтобы открыть список.</MudText>
+        </MudPaper>
+    }
+</div>

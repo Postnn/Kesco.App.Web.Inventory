@@ -520,3 +520,78 @@
 .phone-form-section > .phone-form-label {
     padding-top: 8px;
 }
+
+/* Главная Inventory: высота определяется контейнерами, а не фиксированным calc грида. */
+.mud-layout:has(.inventory-home) {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    overflow: hidden;
+}
+
+.mud-main-content:has(.inventory-home) {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.inventory-home {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+    min-height: 0;
+}
+
+.inventory-home__navigation {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: flex-start;
+    gap: 4px;
+    min-width: 0;
+}
+
+.inventory-main-menu {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.inventory-theme-toggle {
+    flex: 0 0 auto;
+    min-height: 34px;
+    border-bottom: 2px solid var(--clay-gold);
+}
+
+.inventory-home__grid {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+}
+
+.inventory-home__empty {
+    flex: 0 0 auto;
+}
+
+.inventory-main-menu__loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+    color: var(--mud-palette-text-secondary);
+}
+
+@media (max-width: 600px) {
+    .inventory-home {
+        gap: 8px;
+    }
+}
+
+.inventory-layout-content {
+    margin-top: 0;
+    padding-top: 24px !important;
+}

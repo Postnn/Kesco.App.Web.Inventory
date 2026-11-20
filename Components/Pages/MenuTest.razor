@@ -1,0 +1,49 @@
+@page "/menu-test"
+@using Clayzor.Lib.Web.Controls.Components.Navigation
+
+<PageTitle>Проверка навигационного меню</PageTitle>
+
+<div class="d-flex flex-column gap-4">
+    <ClayNavigationMenu Items="_manyItems" Options="_options" />
+    <ClayNavigationMenu Items="_nestedItems" Options="_options" />
+</div>
+
+@code {
+    private readonly ClayNavigationMenuOptions _options = new() { AriaLabel = "Тестовое меню" };
+    private readonly IReadOnlyList<ClayNavigationMenuItem> _manyItems =
+    [
+        new ClayNavigationMenuItem
+        {
+            Text = "80 пунктов",
+            Children = Enumerable.Range(1, 80).Select(index => new ClayNavigationMenuItem
+            {
+                Text = $"Длинное название тестового пункта меню номер {index}",
+                Href = "/?id=1001",
+                IsActive = index == 1,
+                Children = index == 2
+                    ? [new ClayNavigationMenuItem { Text = "Вложенный уровень", Href = "/?id=1001" }]
+                    : [],
+            }).ToList(),
+        },
+    ];
+
+    private readonly IReadOnlyList<ClayNavigationMenuItem> _nestedItems =
+    [
+        new ClayNavigationMenuItem
+        {
+            Text = "Второе меню",
+            Children =
+            [
+                new ClayNavigationMenuItem
+                {
+                    Text = "Родительский пункт",
+                    Children =
+                    [
+                        new ClayNavigationMenuItem { Text = "Пункт второго уровня", Href = "/?id=1001" },
+                    ],
+                },
+                new ClayNavigationMenuItem { Text = "Обычный пункт", Href = "/?id=1001" },
+            ],
+        },
+    ];
+}
