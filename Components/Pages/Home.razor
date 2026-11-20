@@ -2,24 +2,28 @@
 @using Clayzor.Lib.Web.Settings
 @inject ClayAppSettings AppSettings
 
-<PageTitle>@AppSettings.ApplicationName</PageTitle>
+<PageTitle>@_pageTitle</PageTitle>
 
 <div class="inventory-home">
     @if (!HideNavigationMenu)
     {
         <header class="inventory-home__navigation">
-            <InventoryMainMenu CurrentQueryId="CurrentQueryId" />
-            <MudIconButton Class="inventory-theme-toggle"
-                           Icon="@(ParentLayout?.IsDarkMode == true ? Icons.Material.Filled.LightMode : Icons.Material.Filled.DarkMode)"
-                           Title="@(ParentLayout?.IsDarkMode == true ? "Светлая тема" : "Тёмная тема")"
-                           OnClick="@(() => ParentLayout?.ToggleDarkMode())" />
+            <InventoryMainMenu CurrentQueryId="CurrentQueryId">
+                <Actions>
+                    <MudIconButton Class="inventory-theme-toggle"
+                                   Size="Size.Small"
+                                   Icon="@(ParentLayout?.IsDarkMode == true ? Icons.Material.Filled.LightMode : Icons.Material.Filled.DarkMode)"
+                                   Title="@(ParentLayout?.IsDarkMode == true ? "Светлая тема" : "Тёмная тема")"
+                                   OnClick="@(async () => { if (ParentLayout is not null) await ParentLayout.ToggleDarkModeAsync(); })" />
+                </Actions>
+            </InventoryMainMenu>
         </header>
     }
 
     @if (CurrentQueryId is not null)
     {
         <section class="inventory-home__grid" aria-label="Рабочая область грида">
-            <ClayGrid TEntity="IClayGridRow" Options="_gridOptions" />
+            <ClayGrid TEntity="IClayGridRow" Options="_gridOptions" TitleChanged="OnGridTitleChanged" />
         </section>
     }
     else if (HasInvalidQueryId)

@@ -1,5 +1,6 @@
 @inherits LayoutComponentBase
 @using Clayzor.Lib.Web.Controls.Themes
+@inject IJSRuntime JS
 
 <MudThemeProvider Theme="_theme" @bind-IsDarkMode="_isDarkMode" ObserveSystemDarkModeChange="false" />
 <MudPopoverProvider />
@@ -17,10 +18,38 @@
 </CascadingValue>
 
 @code {
+    private const string ThemeStorageKey = "clay-inventory-theme";
     private readonly MudTheme _theme = ClayTheme.Create();
     private bool _isDarkMode;
 
     internal bool IsDarkMode => _isDarkMode;
 
-    internal void ToggleDarkMode() => _isDarkMode = !_isDarkMode;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        try
+        {
+            var stored = await JS.InvokeAsync<string?>("localStorage.getItem", ThemeStorageKey);
+            var isDarkMode = stored == "dark";
+            if (_isDarkMode == isDarkMode) return;
+            _isDarkMode = isDarkMode;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception exception) when (exception is JSException or JSDisconnectedException or InvalidOperationException)
+        {
+        }
+    }
+
+    internal async Task ToggleDarkModeAsync()
+    {
+        _isDarkMode = !_isDarkMode;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.setItem", ThemeStorageKey, _isDarkMode ? "dark" : "light");
+        }
+        catch (Exception exception) when (exception is JSException or JSDisconnectedException or InvalidOperationException)
+        {
+        }
+    }
 }

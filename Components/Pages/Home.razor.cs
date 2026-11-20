@@ -18,7 +18,11 @@ public partial class Home
         ShowPrint = true,
         ShowExcel = true,
         FillAvailableHeight = true,
+        CompactLayout = true,
     };
+
+    private string _pageTitle = string.Empty;
+    private int? _titleQueryId;
 
     /// <summary>Строковый код запроса из URL.</summary>
     [SupplyParameterFromQuery(Name = "id")] public string? Id { get; set; }
@@ -39,9 +43,16 @@ public partial class Home
     /// <inheritdoc />
     protected override void OnParametersSet()
     {
+        if (_titleQueryId != CurrentQueryId)
+        {
+            _titleQueryId = CurrentQueryId;
+            _pageTitle = AppSettings.ApplicationName;
+        }
         _gridOptions.DynamicGridId = CurrentQueryId;
         _gridOptions.ShowTitle = !IsLegacyFlag(HideTitle);
     }
+
+    private void OnGridTitleChanged(string title) => _pageTitle = title;
 
     private static bool IsLegacyFlag(string? value) =>
         string.Equals(value, "1", StringComparison.Ordinal)

@@ -20,6 +20,7 @@ builder.Configuration["URI_tel_form"] = WebConfigExtensions.ReadAppSettingFromWe
 builder.Configuration["pickupGroups"] = WebConfigExtensions.ReadAppSettingFromWebConfig("pickupGroups");
 builder.Configuration["URI_equipment_form_ins"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_equipment_form_ins");
 builder.Configuration["URI_equipment_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_equipment_form");
+builder.Configuration["URI_styles"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_styles");
 builder.Configuration["URI_user_search"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_user_search");
 builder.Configuration["URI_resource_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_resource_form");
 builder.Configuration["URI_resource_search"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_resource_search");

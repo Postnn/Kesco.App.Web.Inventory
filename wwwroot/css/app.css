@@ -541,7 +541,7 @@
     display: flex;
     flex: 1 1 0;
     flex-direction: column;
-    gap: 12px;
+    gap: 5px;
     min-width: 0;
     min-height: 0;
 }
@@ -561,8 +561,12 @@
 
 .inventory-theme-toggle {
     flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
     min-height: 34px;
-    border-bottom: 2px solid var(--clay-gold);
+    padding: 0;
+    border-bottom: 0;
+    border-radius: 0;
 }
 
 .inventory-home__grid {
@@ -587,11 +591,15 @@
 
 @media (max-width: 600px) {
     .inventory-home {
-        gap: 8px;
+        gap: 5px;
     }
 }
 
 .inventory-layout-content {
     margin-top: 0;
-    padding-top: 24px !important;
+    padding-top: 0 !important;
+}
+
+.mud-main-content:has(.inventory-home) {
+    padding: 0 5px 5px !important;
 }

@@ -24,6 +24,9 @@ public partial class InventoryMainMenu
     /// <summary>Текущий код запроса для активного пункта и контекстного отчёта.</summary>
     [Parameter] public int? CurrentQueryId { get; set; }
 
+    /// <summary>Дополнительные действия внутри полосы меню.</summary>
+    [Parameter] public RenderFragment? Actions { get; set; }
+
     [Inject] private DbManager Db { get; set; } = default!;
     [Inject] private IConfiguration Configuration { get; set; } = default!;
     [Inject] private NavigationManager Navigation { get; set; } = default!;
