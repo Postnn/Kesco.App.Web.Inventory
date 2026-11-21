@@ -59,7 +59,7 @@
     font-size: 14px;
 }
 
-/* Компактные формы: высота однострочных полей совпадает с ClaySelect (32px). */
+/* Компактные формы: высота однострочных полей задана глобально в clay.css. */
 .model-equipment-form .model-equipment-fields {
     gap: 6px;
 }
@@ -67,22 +67,6 @@
 :is(.model-equipment-form, .equipment-form) .mud-input-control.mud-input-control-margin-dense {
     margin-top: 0;
     margin-bottom: 0;
-}
-
-:is(.model-equipment-form, .equipment-form) .mud-input-control:has(input) .mud-input {
-    height: 32px;
-    min-height: 32px;
-    box-sizing: border-box;
-}
-
-:is(.model-equipment-form, .equipment-form) .mud-input-control:has(input) .mud-input-root {
-    padding-top: 4px;
-    padding-bottom: 4px;
-}
-
-:is(.model-equipment-form, .equipment-form) .mud-input-control-helper-container {
-    min-height: 0;
-    padding: 0;
 }
 
 .model-equipment-form .model-equipment-label {
