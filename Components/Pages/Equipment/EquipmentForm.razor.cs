@@ -1654,7 +1654,7 @@ public partial class EquipmentForm : IDisposable
         catch (Microsoft.Data.SqlClient.SqlException)
         {
             if (!_disposed && version == _accountingVersion)
-                _validationMessage = "Запись бухгалтерского учёта не удалена. Подробности — в сообщении базы данных.";
+                _validationMessage = "Результат удаления бухгалтерского учёта неизвестен. Обновите запись и проверьте состояние данных.";
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException)
         {
@@ -1919,7 +1919,7 @@ public partial class EquipmentForm : IDisposable
         catch (Microsoft.Data.SqlClient.SqlException)
         {
             if (!_disposed && version == _upsVersion)
-                _validationMessage = "Подключение UPS не сохранено. Подробности — в сообщении базы данных.";
+                _validationMessage = "Результат сохранения подключения UPS неизвестен. Обновите запись и проверьте состояние данных.";
         }
         catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {

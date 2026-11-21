@@ -28,7 +28,7 @@
                 <ClayColumnDef ColumnId="1" SqlName="Server" DisplayName="Сервер" />
             </ColumnDefs>
             <Columns>
-                <ClayColumn TEntity="UpsServerLink" ColumnId="1" TextSelector="@(item => item.ServerName)" />
+                <ClayColumn TEntity="UpsServerLink" ColumnId="1" TextSelector="@(item => string.IsNullOrWhiteSpace(item.ServerName) ? item.EquipmentName : item.ServerName)" />
             </Columns>
             <RowActions Context="item">
                 <ClayCheckbox State="item.TurnOffConfigured > 0" OnToggle="() => ToggleServer(item)" Label="Выключение" />
