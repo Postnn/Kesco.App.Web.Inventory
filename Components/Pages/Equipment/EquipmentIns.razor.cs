@@ -43,39 +43,39 @@ public partial class EquipmentIns : IDisposable
     };
     private readonly ClaySelectOptions _typeOptions = new()
     {
-        Required = true, AutoSelectSingle = true, MaxItems = 300, Placeholder = "Введите тип оборудования",
+        Required = true, AutoSelectSingle = true, MaxItems = 300, Placeholder = "Выберите тип оборудования",
     };
     private readonly ClaySelectOptions _modelOptions = new()
     {
-        Required = true, AutoSelectSingle = true, Placeholder = "Введите модель",
+        Required = true, AutoSelectSingle = true, Placeholder = "Выберите модель",
     };
     private readonly ClaySelectOptions _ownerOptions = new()
     {
-        Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца",
+        Required = true, AutoSelectSingle = true, Placeholder = "Выберите владельца",
     };
     private readonly ClaySelectOptions _personOptions = new()
     {
-        AutoSelectSingle = true, Placeholder = "Введите поставщика",
+        AutoSelectSingle = true, Placeholder = "Выберите поставщика",
     };
     private readonly ClaySelectOptions _documentOptions = new()
     {
-        AutoSelectSingle = true, Placeholder = "Введите документ поступления",
+        AutoSelectSingle = true, Placeholder = "Выберите документ поступления",
     };
     private readonly ClaySelectOptions _locationOptions = new()
     {
-        Required = true, AutoSelectSingle = true, Placeholder = "Введите расположение",
+        Required = true, AutoSelectSingle = true, Placeholder = "Выберите расположение",
     };
     private readonly ClaySelectOptions _responsibleOptions = new()
     {
-        AutoSelectSingle = true, Placeholder = "Введите сотрудника",
+        AutoSelectSingle = true, Placeholder = "Выберите сотрудника",
     };
     private readonly ClaySelectOptions _accountingDocumentOptions = new()
     {
-        AutoSelectSingle = true, Placeholder = "Введите документ поступления",
+        AutoSelectSingle = true, Placeholder = "Выберите документ поступления",
     };
     private readonly ClaySelectOptions _tenantOptions = new()
     {
-        AutoSelectSingle = true, Placeholder = "Введите арендатора",
+        AutoSelectSingle = true, Placeholder = "Выберите арендатора",
     };
     private readonly ClayDatePickerOptions _dateOptions = new() { Required = true, Clearable = false };
     private readonly ClayTimeOptions _timeOptions = new() { Required = true, Clearable = false };

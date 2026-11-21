@@ -17,6 +17,7 @@ public partial class Home
         SelectVisible = true,
         ShowPrint = true,
         ShowExcel = true,
+        FilterTrayExpandedByDefault = true,
         FillAvailableHeight = true,
         CompactLayout = true,
     };

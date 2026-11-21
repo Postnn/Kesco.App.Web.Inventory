@@ -29,10 +29,10 @@ public partial class EquipmentForm : IDisposable
 
     private readonly CancellationTokenSource _pageCts = new();
     private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "equipment-form", MaxWidth = "100%" };
-    private readonly ClaySelectOptions _typeOptions = new() { Required = true, AutoSelectSingle = true, MaxItems = 300, Placeholder = "Введите тип оборудования" };
-    private readonly ClaySelectOptions _modelOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите модель" };
-    private readonly ClaySelectOptions _phonePoolOptions = new() { AutoSelectSingle = true, Placeholder = "Введите телефонный пул" };
-    private readonly ClaySelectOptions _phoneOptions = new() { AutoSelectSingle = true, Placeholder = "Введите телефонный номер" };
+    private readonly ClaySelectOptions _typeOptions = new() { Required = true, AutoSelectSingle = true, MaxItems = 300, Placeholder = "Выберите тип оборудования" };
+    private readonly ClaySelectOptions _modelOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите модель" };
+    private readonly ClaySelectOptions _phonePoolOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите телефонный пул" };
+    private readonly ClaySelectOptions _phoneOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите телефонный номер" };
     private readonly ClayGridOptions _phoneGridOptions = new() { EmptyText = "Нет телефонных номеров", ShowAddButton = false, ShowHeader = false };
     private int _hotelPhoneCount;
     private readonly ClayGridOptions _locationGridOptions = new() { EmptyText = "Нет расположений", AddTooltip = "Добавить расположение" };
@@ -66,11 +66,11 @@ public partial class EquipmentForm : IDisposable
     private List<EquipmentRouterInventoryItem> _routerInventory = [];
     private List<UpsServerLink> _upsLinks = [];
     private EquipmentActualInventory? _lastInventory;
-    private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
-    private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Введите документ поступления" };
-    private readonly ClaySelectOptions _writeOffDocumentOptions = new() { Placeholder = "Введите документ списания" };
-    private readonly ClaySelectOptions _shipperOptions = new() { AutoSelectSingle = true, Placeholder = "Введите поставщика" };
-    private readonly ClaySelectOptions _tenantOptions = new() { AutoSelectSingle = true, Placeholder = "Введите арендатора" };
+    private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите владельца" };
+    private readonly ClaySelectOptions _receiptDocumentOptions = new() { Placeholder = "Выберите документ поступления" };
+    private readonly ClaySelectOptions _writeOffDocumentOptions = new() { Placeholder = "Выберите документ списания" };
+    private readonly ClaySelectOptions _shipperOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите поставщика" };
+    private readonly ClaySelectOptions _tenantOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите арендатора" };
     private readonly ClayTextBoxOptions _snOptions = new() { MaxLength = 50 };
     private readonly ClayTextBoxOptions _networkNameOptions = new() { MaxLength = 50 };
     private readonly ClayTextBoxOptions _macOptions = new() { MaxLength = 17 };
@@ -124,6 +124,7 @@ public partial class EquipmentForm : IDisposable
     private bool _saving;
     private bool _loaded;
     private bool _notFound;
+    private string? _loadError;
     private bool _allowNavigation;
     private bool _disposed;
     private int _loadedId = -1;
@@ -146,8 +147,23 @@ public partial class EquipmentForm : IDisposable
     private DocumentSelectDataSource ReceiptDocumentSource => Services.GetRequiredKeyedService<DocumentSelectDataSource>("receipt");
     private DocumentSelectDataSource WriteOffDocumentSource => Services.GetRequiredKeyedService<DocumentSelectDataSource>("writeoff");
     private string Title => _model is null ? $"Оборудование #{Id}" : $"[{Id}] {_model.EquipmentTypeName} {_model.ModelName}";
-    private bool IsModified => _loaded && _model is not null && Snapshot() != _originalSnapshot;
+    private const string PendingSyncWarning = "Основные данные и телефонные связи уже сохранены в БД, но синхронизация АТС не завершена. При закрытии повтор из этой формы будет потерян; потребуется ручная синхронизация.";
+    private bool HasPendingPhoneSync => _pendingPhoneSync is not null;
+    private bool HasUnsavedDraft => _loaded && _model is not null && Snapshot() != _originalSnapshot;
+    private bool IsModified => HasUnsavedDraft || HasPendingPhoneSync;
     private bool CanSave => IsModified && _canEdit && !_loading && !_saving;
+    private string CloseConfirmation(string draftMessage)
+    {
+        if (!HasPendingPhoneSync) return draftMessage;
+        return HasUnsavedDraft ? $"{draftMessage} {PendingSyncWarning}" : PendingSyncWarning;
+    }
+    private string RefreshConfirmation()
+    {
+        const string draftMessage = "Отменить несохранённые изменения и загрузить запись повторно?";
+        if (!HasPendingPhoneSync) return draftMessage;
+        const string pendingMessage = "Основные данные и телефонные связи уже сохранены в БД, но синхронизация АТС не завершена. Обновление записи сохранит ожидающую синхронизацию и возможность повтора через «Применить».";
+        return HasUnsavedDraft ? $"{draftMessage} {pendingMessage}" : pendingMessage;
+    }
     private bool HasSelectedModel => _model?.ModelId is > 0 && _selectedModel is not null;
     private bool ShowNetworkName => HasSelectedModel && _selectedType?.HasNetworkName > 0;
     private bool ShowOperations => _canManageUps || _canChangeNetwork;
@@ -311,6 +327,7 @@ public partial class EquipmentForm : IDisposable
         _loading = true;
         _loaded = false;
         _notFound = false;
+        _loadError = null;
         _validationMessage = null;
         _accountsVisible = false;
         StateHasChanged();
@@ -462,6 +479,11 @@ public partial class EquipmentForm : IDisposable
         catch (OperationCanceledException) when (_disposed || !IsCurrent(version, id))
         {
         }
+        catch (Microsoft.Data.SqlClient.SqlException) when (IsCurrent(version, id))
+        {
+            _model = null;
+            _loadError = "Не удалось загрузить оборудование из-за ошибки соединения или SQL. Повторите загрузку после восстановления соединения.";
+        }
         finally
         {
             if (IsCurrent(version, id))
@@ -470,6 +492,12 @@ public partial class EquipmentForm : IDisposable
                 StateHasChanged();
             }
         }
+    }
+
+    private async Task RetryLoadAsync()
+    {
+        if (!_loading)
+            await LoadCurrentAsync(Id);
     }
 
     private bool IsCurrent(int version, int id) => !_disposed && version == _operationVersion && Id == id;
@@ -772,7 +800,8 @@ public partial class EquipmentForm : IDisposable
     private sealed record PendingPhoneSync(
         int EquipmentId,
         List<EquipmentPhoneLink> Original,
-        List<EquipmentPhoneLink> Current);
+        List<EquipmentPhoneLink> Current,
+        IReadOnlyList<PhoneSyncOperation>? Operations = null);
 
     private static List<EquipmentPhoneLink> ClonePhones(IEnumerable<EquipmentPhoneLink> phones) =>
         phones.Select(item => new EquipmentPhoneLink
@@ -1567,7 +1596,9 @@ public partial class EquipmentForm : IDisposable
                 Notes = existing.Notes,
             };
         var parameters = new DialogParameters<EquipmentAccountingDialog> { { dialog => dialog.Value, value } };
-        var result = await ShowDialogAsync<EquipmentAccountingDialog>("Бухгалтерский учёт", parameters);
+        var result = await ShowDialogAsync<EquipmentAccountingDialog>(
+            "Бухгалтерский учёт", parameters,
+            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true });
         if (result is null || result.Canceled || result.Data is not EquipmentAccounting accounting)
             return;
         var version = ++_accountingVersion;
@@ -1644,6 +1675,7 @@ public partial class EquipmentForm : IDisposable
     {
         if (_model is null)
             return;
+        var preserveDraft = HasUnsavedDraft;
         var version = _accountingVersion;
         var equipmentId = _model.Id;
         var accounting = await Service.GetAccountingAsync(equipmentId);
@@ -1680,6 +1712,8 @@ public partial class EquipmentForm : IDisposable
         if (_disposed || version != _accountingVersion || _model.Id != equipmentId)
             return;
         _canUseAccounting = canUseAccounting;
+        if (!preserveDraft)
+            _originalSnapshot = Snapshot();
     }
 
     private async Task OpenPhoneConfigAsync()
@@ -2085,7 +2119,9 @@ public partial class EquipmentForm : IDisposable
                 var pending = new PendingPhoneSync(model.Id, ClonePhones(_originalPhones), ClonePhones(_phones));
                 try
                 {
-                    warnings.AddRange(await Service.SynchronizePhonesAsync(model.Id, pending.Original, pending.Current));
+                    var results = await Service.SynchronizePhoneOperationsAsync(model.Id, pending.Original, pending.Current);
+                    warnings.AddRange(results.Where(result => !result.Success).Select(result => result.Error!));
+                    pending = pending with { Operations = results.Where(result => !result.Success).Select(result => result.Operation).ToArray() };
                 }
                 catch (Microsoft.Data.SqlClient.SqlException)
                 {
@@ -2150,15 +2186,20 @@ public partial class EquipmentForm : IDisposable
         try
         {
             await Task.Delay(100);
-            var warnings = await Service.SynchronizePhonesAsync(pending.EquipmentId, pending.Original, pending.Current);
+            var results = pending.Operations is null
+                ? await Service.SynchronizePhoneOperationsAsync(pending.EquipmentId, pending.Original, pending.Current)
+                : await Service.ExecutePhoneSyncOperationsAsync(pending.Operations);
             if (!IsCurrentSave(model, version))
                 return false;
-            if (warnings.Count > 0)
+            var errors = results.Where(result => !result.Success).ToList();
+            _pendingPhoneSync = errors.Count > 0
+                ? pending with { Operations = errors.Select(result => result.Operation).ToArray() }
+                : null;
+            if (errors.Count > 0)
             {
-                _warningMessage = "Телефонные связи сохранены. " + string.Join(" ", warnings) + " Повторите синхронизацию через «Применить».";
+                _warningMessage = "Телефонные связи сохранены. " + string.Join(" ", errors.Select(result => result.Error)) + " Повторите синхронизацию через «Применить».";
                 return false;
             }
-            _pendingPhoneSync = null;
             _warningMessage = null;
             return true;
         }
@@ -2213,7 +2254,7 @@ public partial class EquipmentForm : IDisposable
     {
         if (_model is null || _loading || _saving)
             return;
-        if (IsModified && !await ConfirmAsync("Обновление", "Отменить несохранённые изменения и загрузить запись повторно?"))
+        if (IsModified && !await ConfirmAsync("Обновление", RefreshConfirmation()))
             return;
         _warningMessage = null;
         await LoadCurrentAsync(Id);
@@ -2221,7 +2262,7 @@ public partial class EquipmentForm : IDisposable
 
     private async Task CancelAsync()
     {
-        if (IsModified && !await ConfirmAsync("Закрытие формы", "Закрыть форму без сохранения изменений?"))
+        if (IsModified && !await ConfirmAsync("Закрытие формы", CloseConfirmation("Закрыть форму без сохранения изменений?")))
             return;
         await CloseAsync();
     }
@@ -2256,17 +2297,20 @@ public partial class EquipmentForm : IDisposable
         if (!IsModified)
             return;
         context.PreventNavigation();
-        if (!await ConfirmAsync("Переход на другую страницу", "Покинуть форму без сохранения изменений?"))
+        if (!await ConfirmAsync("Переход на другую страницу", CloseConfirmation("Покинуть форму без сохранения изменений?")))
             return;
         _allowNavigation = true;
         Navigation.NavigateTo(context.TargetLocation);
     }
 
-    private async Task<DialogResult?> ShowDialogAsync<T>(string title, DialogParameters<T> parameters) where T : IComponent
+    private async Task<DialogResult?> ShowDialogAsync<T>(
+        string title,
+        DialogParameters<T> parameters,
+        DialogOptions? options = null) where T : IComponent
     {
         var equipmentId = _model?.Id;
         var operationVersion = _operationVersion;
-        var dialog = await DialogService.ShowAsync<T>(title, parameters);
+        var dialog = await DialogService.ShowAsync<T>(title, parameters, options);
         var result = await dialog.Result;
         if (equipmentId is not null &&
             (!IsCurrent(operationVersion, equipmentId.Value) || _model?.Id != equipmentId))

@@ -107,13 +107,15 @@ public class EquipmentFormService
 
     /// <summary>Загружает основную запись оборудования для редактирования.</summary>
     public virtual async Task<Equipment?> GetAsync(int id) =>
-        (await _db.QueryAsync<Equipment>(SQLQueries.SELECT_ID_Оборудование, new { Id = id }))
-            .SingleOrDefault();
+        await _db.RunDbAsync(async connection =>
+            (await connection.QueryAsync<Equipment>(SQLQueries.SELECT_ID_Оборудование, new { Id = id }))
+                .SingleOrDefault());
 
     /// <summary>Проверяет роль 43 и сохраняет 15 основных полей существующего оборудования.</summary>
     public virtual async Task UpdateAsync(Equipment equipment)
     {
         await EnsureInventoryEditAsync();
+        await ValidateEquipmentForSaveAsync(equipment);
         await equipment.UpdateAsync(_db);
     }
 
@@ -200,9 +202,17 @@ public class EquipmentFormService
     public virtual async Task<string> GetAccountPasswordAsync(int equipmentId, string login)
     {
         await EnsureAccountAccessAsync(false);
-        return await _db.ExecuteScalarAsync<string>(
-            SQLQueries.SELECT_ОборудованиеУчётнаяЗаписьПароль,
-            new { EquipmentId = equipmentId, Login = login }, commandType: CommandType.Text) ?? string.Empty;
+        return await _db.RunDbAsync(async connection =>
+        {
+            var rows = (await connection.QueryAsync<string>(
+                SQLQueries.SELECT_ОборудованиеУчётнаяЗаписьПароль,
+                new { EquipmentId = equipmentId, Login = login }, commandType: CommandType.Text)).ToList();
+            if (rows.Count == 0)
+                throw new InvalidOperationException("Учётная запись не найдена или была удалена. Обновите список.");
+            if (rows.Count > 1)
+                throw new InvalidOperationException("Не удалось однозначно определить учётную запись. Обновите список.");
+            return rows[0] ?? string.Empty;
+        });
     }
 
     /// <summary>Добавляет учётную запись после проверки ролей 102 и 43.</summary>
@@ -236,9 +246,14 @@ public class EquipmentFormService
     {
         if (!await HasRoleAsync(42))
             throw new UnauthorizedAccessException("Недостаточно прав для просмотра кодов SIM.");
-        return (await _db.QueryAsync<EquipmentSimSecrets>(
-            SQLQueries.SELECT_SIMКарта_Секреты, new { EquipmentId = equipmentId })).SingleOrDefault()
-            ?? new EquipmentSimSecrets();
+        return await _db.RunDbAsync(async connection =>
+        {
+            var secrets = (await connection.QueryAsync<EquipmentSimSecrets>(
+                SQLQueries.SELECT_SIMКарта_Секреты, new { EquipmentId = equipmentId })).SingleOrDefault();
+            if (secrets is null)
+                throw new InvalidOperationException("Сведения SIM не найдены или были удалены. Обновите список.");
+            return secrets;
+        });
     }
 
     /// <summary>Ищет другую активную SIM с тем же номером.</summary>
@@ -505,6 +520,7 @@ public class EquipmentFormService
         IReadOnlyCollection<EquipmentPhoneLink> current)
     {
         await EnsureInventoryEditAsync();
+        await ValidateEquipmentForSaveAsync(equipment);
         await equipment.UpdateWithPhonesAsync(_db, original, current);
     }
 
@@ -514,7 +530,17 @@ public class EquipmentFormService
         IReadOnlyCollection<EquipmentPhoneLink> original,
         IReadOnlyCollection<EquipmentPhoneLink> current)
     {
-        var errors = new List<string>();
+        var results = await SynchronizePhoneOperationsAsync(equipmentId, original, current);
+        return results.Where(result => !result.Success).Select(result => result.Error!).ToList();
+    }
+
+    /// <summary>Планирует и выполняет синхронизацию, возвращая результат каждой отдельной операции.</summary>
+    public virtual async Task<IReadOnlyList<PhoneSyncResult>> SynchronizePhoneOperationsAsync(
+        int equipmentId,
+        IReadOnlyCollection<EquipmentPhoneLink> original,
+        IReadOnlyCollection<EquipmentPhoneLink> current)
+    {
+        var results = new List<PhoneSyncResult>();
         var currentIds = current.Select(item => item.PhoneId).ToHashSet();
         var originalIds = original.Select(item => item.PhoneId).ToHashSet();
         var originalById = original.ToDictionary(item => item.PhoneId);
@@ -526,7 +552,7 @@ public class EquipmentFormService
              item.AutoDialDelay != source.AutoDialDelay ||
              item.IsDefault != source.IsDefault)).ToList();
         if (added.Count == 0 && deleted.Count == 0 && changed.Count == 0)
-            return errors;
+            return results;
         var phones = deleted.Select(item => (item.PhoneId, Deleted: true))
             .Concat(added.Concat(changed).Select(item => (item.PhoneId, Deleted: false)))
             .OrderBy(item => item.PhoneId);
@@ -540,49 +566,71 @@ public class EquipmentFormService
             .ToList();
         if (equipmentIds.Count == 0)
             equipmentIds.Add(equipmentId);
+        var operations = new List<PhoneSyncOperation>();
         var needsCcm = false;
         var hasXorcom = false;
         foreach (var phone in phones)
         {
+            var operation = new PhoneSyncOperation(PhoneSyncKind.Xorcom, phone.PhoneId.ToString(), phone.Deleted);
             var lookup = (await _db.QueryAsync<PhoneNumberLookup>(
                 SQLQueries.SELECT_ТелефонныйНомерПоИдентификатору, new { Id = phone.PhoneId })).SingleOrDefault();
             if (lookup is null)
             {
-                errors.Add($"Телефонный номер #{phone.PhoneId} не найден для синхронизации.");
+                results.Add(new PhoneSyncResult(operation, $"Телефонный номер #{phone.PhoneId} не найден для синхронизации."));
                 continue;
             }
             needsCcm |= lookup.StationId == 0;
             if (string.IsNullOrWhiteSpace(lookup.XorcomName))
                 continue;
             hasXorcom = true;
-            var parameters = new Dapper.DynamicParameters();
-            parameters.Add("@КодТелефонногоНомера", phone.PhoneId, DbType.Int32);
-            var hasDeletedParameter = await _db.ExecuteScalarAsync<int>(
-                SQLQueries.SELECT_ПроцедураИмеетПараметр,
-                new { ProcedureName = SQLQueries.SP_PhoneSync_Xorcom, ParameterName = "@Удаление" },
-                commandType: CommandType.Text) > 0;
-            if (hasDeletedParameter)
-                parameters.Add("@Удаление", phone.Deleted ? 1 : 0, DbType.Int32);
-            parameters.Add("@RETURN_VALUE", value: 0, dbType: DbType.Int32, direction: ParameterDirection.ReturnValue);
-            await _db.ExecuteAsync(SQLQueries.SP_PhoneSync_Xorcom, parameters);
-            var returnCode = parameters.Get<int>("@RETURN_VALUE");
-            if (returnCode != 0)
-                errors.Add($"Xorcom: номер #{phone.PhoneId}, код ошибки {returnCode}.");
+            operations.Add(operation);
         }
         if (needsCcm && !hasXorcom)
+            operations.AddRange(equipmentIds.Select(id => new PhoneSyncOperation(PhoneSyncKind.Ccm, id.ToString())));
+        results.AddRange(await ExecutePhoneSyncOperationsAsync(operations));
+        return results;
+    }
+
+    /// <summary>Выполняет только переданные операции и не повторяет успешные команды из прежнего diff.</summary>
+    public virtual async Task<IReadOnlyList<PhoneSyncResult>> ExecutePhoneSyncOperationsAsync(
+        IEnumerable<PhoneSyncOperation> operations)
+    {
+        var results = new List<PhoneSyncResult>();
+        var service = new PhoneFormService(_db);
+        foreach (var operation in operations.Distinct())
         {
-            foreach (var id in equipmentIds)
-            {
-                var parameters = new Dapper.DynamicParameters();
-                parameters.Add("@КодОборудования", id, DbType.Int32);
-                parameters.Add("@RETURN_VALUE", value: 0, dbType: DbType.Int32, direction: ParameterDirection.ReturnValue);
-                await _db.ExecuteAsync(SQLQueries.SP_PhoneSync_Ccm, parameters);
-                var returnCode = parameters.Get<int>("@RETURN_VALUE");
-                if (returnCode != 0)
-                    errors.Add($"CCM: оборудование #{id}, код ошибки {returnCode}.");
-            }
+            var phoneId = operation.Kind == PhoneSyncKind.Xorcom ? int.Parse(operation.Key) : 0;
+            results.AddRange(await service.SynchronizeAsync(phoneId, [operation]));
         }
-        return errors;
+        return results;
+    }
+
+    private async Task ValidateEquipmentForSaveAsync(Equipment equipment)
+    {
+        var errors = new List<string>();
+        if (equipment.EquipmentTypeId is null || equipment.ModelId is null)
+            errors.Add("Выберите тип и модель оборудования.");
+        if (equipment.OwnerId is null)
+            errors.Add("Укажите владельца оборудования.");
+        var hasWriteOff = equipment.WriteOffAtUtc is not null && equipment.WriteOffAtUtc != DateTime.MinValue;
+        if (equipment.DocumentWriteOffId is not null && !hasWriteOff)
+            errors.Add("Укажите дату списания.");
+        if (equipment.EquipmentTypeId != (int)ТипыОборудования.SIM_карта &&
+            hasWriteOff && equipment.DocumentWriteOffId is null)
+            errors.Add("Укажите документ списания.");
+        if (errors.Count > 0)
+            throw new InvalidOperationException(string.Join(" ", errors));
+
+        var type = await GetRequiredTypeAsync(equipment);
+        if (type.IsSerialNumberRequired > 0 && string.IsNullOrWhiteSpace(equipment.SerialNumber))
+            errors.Add("Укажите серийный номер.");
+        if (type.MacAddressCount > 0 &&
+            (!Equipment.IsValidMacAddress(equipment.MacAddress) ||
+             !Equipment.IsValidMacAddress(equipment.MacAddress2) ||
+             !Equipment.IsValidMacAddress(equipment.MacAddressIlo)))
+            errors.Add("MAC-адрес должен содержать 12 hex-символов; допустимы разделители пробел, двоеточие, дефис и точка.");
+        if (errors.Count > 0)
+            throw new InvalidOperationException(string.Join(" ", errors));
     }
 
     private async Task EnsureInventoryEditAsync()

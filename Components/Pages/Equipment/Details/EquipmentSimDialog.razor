@@ -75,8 +75,8 @@
     private readonly ClayTextBoxOptions _phoneOptions = new() { Required = true, MaxLength = 50 };
     private readonly ClayDatePickerOptions _activationDateOptions = new() { Required = true };
     private readonly ClayTimeOptions _activationTimeOptions = new() { Required = true };
-    private readonly ClaySelectOptions _contractOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите договор" };
-    private readonly ClaySelectOptions _personOptions = new() { AutoSelectSingle = true, Placeholder = "Введите лицо персональных данных" };
+    private readonly ClaySelectOptions _contractOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите договор" };
+    private readonly ClaySelectOptions _personOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите лицо персональных данных" };
     private readonly ClayTextBoxOptions _pinOptions = new() { MaxLength = 4, InputType = InputType.Password };
     private readonly ClayTextBoxOptions _pin2Options = new() { MaxLength = 8, InputType = InputType.Password };
     private readonly ClayTextBoxOptions _pukOptions = new() { MaxLength = 8, InputType = InputType.Password };
@@ -137,9 +137,11 @@
                 Secrets.Puk = secrets.Puk;
                 Secrets.Puk2 = secrets.Puk2;
             }
-            catch (UnauthorizedAccessException ex)
+            catch (Exception ex) when (ex is UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
             {
-                _loadError = ex.Message;
+                _loadError = ex is UnauthorizedAccessException or InvalidOperationException
+                    ? ex.Message
+                    : "Не удалось прочитать коды SIM. Повторите открытие диалога; сохранение заблокировано.";
             }
         }
         _loading = false;
@@ -167,6 +169,8 @@
 
     private void Apply()
     {
+        if (_loading || _loadError is not null)
+            return;
         _error = null;
         if (ActivatedDate is null || ActivatedTime is null)
         {

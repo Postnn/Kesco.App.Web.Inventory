@@ -27,7 +27,7 @@
     </DialogContent>
     <DialogActions>
         <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="_loading" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || _error is not null)" />
     </DialogActions>
 </MudDialog>
 
@@ -76,9 +76,11 @@
             {
                 Password = await Service.GetAccountPasswordAsync(EquipmentId, OriginalLogin!);
             }
-            catch (UnauthorizedAccessException ex)
+            catch (Exception ex) when (ex is UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
             {
-                _error = ex.Message;
+                _error = ex is UnauthorizedAccessException or InvalidOperationException
+                    ? ex.Message
+                    : "Не удалось прочитать пароль. Повторите открытие диалога; сохранение заблокировано.";
             }
         }
         _loading = false;
@@ -89,6 +91,8 @@
 
     private void Apply()
     {
+        if (_loading || _error is not null)
+            return;
         Login = Login.Trim();
         if (Login.Length == 0)
         {

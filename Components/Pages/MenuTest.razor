@@ -20,6 +20,8 @@
                 Text = $"Длинное название тестового пункта меню номер {index}",
                 Href = "/?id=1001",
                 IsActive = index == 1,
+                Disabled = index == 3,
+                Title = index == 3 ? "Недоступный пункт для проверки клавиатуры" : null,
                 Children = index == 2
                     ? [new ClayNavigationMenuItem { Text = "Вложенный уровень", Href = "/?id=1001" }]
                     : [],

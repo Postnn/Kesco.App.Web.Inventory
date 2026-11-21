@@ -109,7 +109,7 @@
     private readonly ClaySelectOptions _equipmentTypeOptions = new()
     {
         Label = "Тип оборудования",
-        Placeholder = "Введите название типа",
+        Placeholder = "Выберите название типа",
         Required = true,
         AutoSelectSingle = true,
     };
@@ -125,7 +125,7 @@
     private readonly ClaySelectOptions _employeeOptions = new()
     {
         Label = "Сотрудник",
-        Placeholder = "Введите имя сотрудника",
+        Placeholder = "Выберите имя сотрудника",
         AlwaysShowAdvancedSearch = true,
     };
 
@@ -134,7 +134,7 @@
         _equipmentModelId = null;
         _equipmentModel = null;
         _equipmentModelSource.Filter.EquipmentTypeId = type?.Id;
-        _equipmentModelOptions.Placeholder = type is null ? "Сначала выберите тип" : "Введите модель";
+        _equipmentModelOptions.Placeholder = type is null ? "Сначала выберите тип" : "Выберите модель";
         return Task.CompletedTask;
     }
 

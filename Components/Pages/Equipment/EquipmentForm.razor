@@ -67,6 +67,15 @@
         {
             <MudAlert Severity="Severity.Warning">Оборудование с указанным идентификатором не найдено.</MudAlert>
         }
+        else if (_loadError is not null)
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-3">
+                <div class="d-flex flex-wrap gap-2 align-center">
+                    <span>@_loadError</span>
+                    <ClayToolbarButton Options="_refreshOptions" OnClick="RetryLoadAsync" />
+                </div>
+            </MudAlert>
+        }
         else if (_model is not null)
         {
             if (!_canEdit)

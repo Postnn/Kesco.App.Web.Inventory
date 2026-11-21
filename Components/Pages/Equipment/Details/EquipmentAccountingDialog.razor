@@ -46,23 +46,27 @@
         }
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Поступление:</span>
-            <ClayDatePicker @bind-Value="Value.DateFrom" Options="_fromOptions" />
-            <ClaySelect TItem="DocumentLookup" TValue="int?"
-                        DataSource="ReceiptSource"
-                        ValueSelector="@(item => (int?)item.Id)"
-                        TextSelector="@(item => item.Name)"
-                        @bind-Value="Value.ReceiptDocumentId"
-                        Options="_documentOptions" />
+            <div class="equipment-accounting-date-document">
+                <ClayDatePicker @bind-Value="Value.DateFrom" Options="_fromOptions" />
+                <ClaySelect TItem="DocumentLookup" TValue="int?"
+                            DataSource="ReceiptSource"
+                            ValueSelector="@(item => (int?)item.Id)"
+                            TextSelector="@(item => item.Name)"
+                            @bind-Value="Value.ReceiptDocumentId"
+                            Options="_documentOptions" />
+            </div>
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Списание:</span>
-            <ClayDatePicker @bind-Value="Value.DateTo" />
-            <ClaySelect TItem="DocumentLookup" TValue="int?"
-                        DataSource="WriteOffSource"
-                        ValueSelector="@(item => (int?)item.Id)"
-                        TextSelector="@(item => item.Name)"
-                        @bind-Value="Value.WriteOffDocumentId"
-                        Options="_documentOptions" />
+            <div class="equipment-accounting-date-document">
+                <ClayDatePicker @bind-Value="Value.DateTo" />
+                <ClaySelect TItem="DocumentLookup" TValue="int?"
+                            DataSource="WriteOffSource"
+                            ValueSelector="@(item => (int?)item.Id)"
+                            TextSelector="@(item => item.Name)"
+                            @bind-Value="Value.WriteOffDocumentId"
+                            Options="_documentOptions" />
+            </div>
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Примечания:</span>
@@ -78,9 +82,9 @@
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Введите владельца" };
-    private readonly ClaySelectOptions _tenantOptions = new() { AutoSelectSingle = true, Placeholder = "Введите арендатора" };
-    private readonly ClaySelectOptions _documentOptions = new() { AutoSelectSingle = true, Placeholder = "Введите документ" };
+    private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите владельца" };
+    private readonly ClaySelectOptions _tenantOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите арендатора" };
+    private readonly ClaySelectOptions _documentOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите документ" };
     private readonly ClayTextBoxOptions _inventoryOptions = new() { Required = true, MaxLength = 50 };
     private readonly ClayDatePickerOptions _fromOptions = new() { Required = true };
     private readonly ClayTextAreaOptions _notesOptions = new() { MaxLength = 255, Lines = 2 };

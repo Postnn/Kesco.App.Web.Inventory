@@ -1,5 +1,7 @@
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
+@using Clayzor.Lib.Web.Controls.Components.Grid
+@using Kesco.App.Web.Inventory.Rules
 
 <MudDialog>
     <TitleContent>Тестирование UPS</TitleContent>
@@ -21,7 +23,23 @@
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Серверы:</span>
-            <ClayTextBox @bind-Value="Value.Servers" Options="_serversOptions" />
+            <div>
+                @if (UncheckedServerNames.Count > 0)
+                {
+                    <MudAlert Severity="Severity.Warning">В списке серверов, получивших уведомление, выбраны не все сервера. Отсутствуют следующие: @string.Join(", ", UncheckedServerNames).</MudAlert>
+                }
+                <ClayGrid TEntity="UpsTestServerSelectionItem" Items="ServerRows" Options="_serverGridOptions">
+                    <ColumnDefs>
+                        <ClayColumnDef ColumnId="1" SqlName="ServerName" DisplayName="Сервер" />
+                    </ColumnDefs>
+                    <Columns>
+                        <ClayColumn TEntity="UpsTestServerSelectionItem" ColumnId="1" TextSelector="@(item => item.Name)" />
+                    </Columns>
+                    <RowActions Context="item">
+                        <ClayCheckbox State="item.IsChecked" ReadOnly="@(!item.IsRecognized)" OnToggle="() => ToggleServer(item)" Label="Получил уведомление" />
+                    </RowActions>
+                </ClayGrid>
+            </div>
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Ошибки:</span>
@@ -40,8 +58,21 @@
     private readonly ClayDatePickerOptions _dateOptions = new() { Required = true };
     private readonly ClayTimeOptions _timeOptions = new() { Required = true };
     private readonly ClayNumberOptions _batteryOptions = new() { Required = true, Min = 0 };
-    private readonly ClayTextBoxOptions _serversOptions = new() { MaxLength = 4000 };
+    private readonly ClayGridOptions _serverGridOptions = new()
+    {
+        Id = "ups-test-servers",
+        Class = "equipment-detail-grid",
+        EmptyText = "Нет серверов для выбора",
+        ShowToolbar = false,
+        ShowPagination = false,
+        AutoHeight = true,
+        AllowColumnReorder = false,
+        AllowSorting = false,
+        ColumnMenuMode = ColumnMenuMode.Hidden,
+    };
     private readonly ClayTextAreaOptions _issuesOptions = new() { MaxLength = 4000, Lines = 3 };
+    private readonly List<UpsTestServerSelectionItem> _selectedServers = [];
+    private bool _selectionInitialized;
     private string? _error;
 
     [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
@@ -49,11 +80,35 @@
     /// <summary>Редактируемый тест.</summary>
     [Parameter] public UpsTest Value { get; set; } = new();
 
+    /// <summary>Серверы текущего UPS, доступные для выбора.</summary>
+    [Parameter] public IReadOnlyList<UpsServerLink> AvailableServers { get; set; } = [];
+
     /// <summary>Дата тестирования.</summary>
     [Parameter] public DateTime? Date { get; set; }
 
     /// <summary>Время тестирования.</summary>
     [Parameter] public TimeSpan? Time { get; set; }
+
+    private IReadOnlyList<UpsTestServerSelectionItem> ServerRows =>
+        UpsTestServerSelection.BuildRows(_selectedServers, AvailableServers);
+
+    private IReadOnlyList<string> UncheckedServerNames => ServerRows
+        .Where(row => row.IsRecognized && !row.IsChecked)
+        .Select(row => row.Name)
+        .ToArray();
+
+    /// <inheritdoc />
+    protected override void OnParametersSet()
+    {
+        if (_selectionInitialized)
+            return;
+        _selectedServers.AddRange(UpsTestServerSelection.ParseSelected(
+            Value.Servers, UpsTestServerSelection.AvailableNames(AvailableServers)));
+        _selectionInitialized = true;
+    }
+
+    private void ToggleServer(UpsTestServerSelectionItem item) =>
+        UpsTestServerSelection.Toggle(_selectedServers, item);
 
     private void Cancel() => Dialog.Cancel();
 
@@ -64,6 +119,14 @@
             _error = "Укажите дату и время тестирования.";
             return;
         }
+        Value.Servers = UpsTestServerSelection.Format(_selectedServers);
+        var issues = UpsTestServerSelection.PatchIssues(Value.Issues, ServerRows);
+        if (issues.Length > _issuesOptions.MaxLength)
+        {
+            _error = $"Не удалось дописать в поле с \"Ошибками\" список серверов, не получивших уведомление: {string.Join(", ", UncheckedServerNames)}";
+            return;
+        }
+        Value.Issues = issues;
         Value.TestedAt = Date.Value.Date.Add(Time.Value);
         Dialog.Close(DialogResult.Ok(Value));
     }

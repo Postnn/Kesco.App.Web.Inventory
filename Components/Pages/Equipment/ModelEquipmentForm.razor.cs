@@ -25,13 +25,13 @@ public partial class ModelEquipmentForm : IDisposable
         RequiredError = "Выберите тип оборудования",
         AutoSelectSingle = true,
         MaxItems = 300,
-        Placeholder = "Введите название типа",
+        Placeholder = "Выберите название типа",
     };
     private readonly ClaySelectOptions _resourceOptions = new()
     {
         AutoSelectSingle = true,
         AlwaysShowAdvancedSearch = true,
-        Placeholder = "Введите название ресурса",
+        Placeholder = "Выберите название ресурса",
         CreateItemText = "Создать ресурс",
     };
     private readonly ClayTextBoxOptions _modelNameOptions = new() { Required = true, RequiredError = "Укажите модель", MaxLength = 100 };
