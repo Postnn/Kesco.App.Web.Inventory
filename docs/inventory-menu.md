@@ -22,7 +22,7 @@
 | Внешняя форма | `ФормаСписка` + `idQuery=N` | Сохранено; query/fragment сохраняются, повторный `idQuery` заменяется |
 | Активный пункт | Нестабильный `GetHashCode()/menuId` | `КодЗапроса` + текущий `id`, `aria-current=page` |
 | Контекстный отчёт | `ПунктМенюОтчета` + `@ФормаОтчета` | Один корневой пункт; без `idQuery`; отсутствующий ключ → disabled с причиной |
-| Настройки Inventory | Legacy Windows-группы + `URI_inventory_queries` + `_idQuery=NE` | Те же группы через серверный Windows principal; без подтверждённого URI пункт недоступен |
+| Настройки Inventory | Legacy Windows-группы + `URI_inventory_queries` + `_idQuery=NE` | Те же группы плюс `devadmin`/`DOMAIN\devadmin` через серверный Windows principal; без подтверждённого URI пункт видим, но недоступен |
 | Операции | Отдельный корень и legacy `cmd` | По решению владельца корень не переносится; операции находятся в toolbar ClayGrid |
 | Очистка параметров | `ClearFormParams` в listener грида | Пункт «Очистить параметры формы» в групповых операциях dynamic grid |
 | Help/печать/Excel | Дополнительные кнопки MenuSimple | Используются существующие toolbar ClayGrid, без дублирования |
@@ -103,7 +103,7 @@ Home разделена на navigation header, рабочую область г
 
 ### Unit и bUnit
 
-- `InventoryMenuTests`: **10/10** — ветки URL, query/fragment, XSS-схемы, отчёт/настройки, реальные базовые URI, состав/порядок/активность, отсутствие «Операций», mapping.
+- `InventoryMenuTests`: **14/14** — ветки URL, query/fragment, XSS-схемы, отчёт/настройки, реальные базовые URI, состав/порядок/активность, отсутствие «Операций», mapping и доступ devadmin.
 - `ClayNavigationMenuTests`: **7/7** — 80 пунктов, вложенность, два независимых экземпляра, disabled/active, unsafe URL, `AdditionalContent` и активная точка только у выбранного пункта.
 - `InventoryHomeTests`: **2/2** — старт без `id`, начальная загрузка и retry после ошибки.
 - `ClayGridReinitTests.ClearDynamicState_WritesDefaultsWithoutStaleCacheRestore`: **1/1** — реальный toolbar/menu + подтверждение, дефолты и отсутствие записи старого `99`.

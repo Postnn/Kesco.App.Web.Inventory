@@ -144,6 +144,7 @@ builder.Services.AddAuthorization(options =>
 {
     options.FallbackPolicy = options.DefaultPolicy;
 });
+builder.Services.AddCascadingAuthenticationState();
 
 // Blazor Server
 builder.Services.AddRazorComponents()
