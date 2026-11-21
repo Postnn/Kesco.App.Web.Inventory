@@ -374,24 +374,19 @@ public class EquipmentFormService
         (await _db.QueryAsync<UpsTest>(
             SQLQueries.SELECT_ID_ТестыПодключенияUPS, new { UpsEquipmentId = upsEquipmentId })).ToList();
 
-    /// <summary>Проверяет роль по владельцу и сохраняет diff серверов и тестов одной транзакцией.</summary>
+    /// <summary>Проверяет актуальные права на исходное оборудование и каждый изменяемый сервер.</summary>
     public virtual async Task SaveUpsDetailsAsync(
         int upsEquipmentId,
+        int sourceServerEquipmentId,
         IReadOnlyCollection<UpsServerLink> originalServers,
         IReadOnlyCollection<UpsServerLink> currentServers,
         IReadOnlyCollection<UpsTest> originalTests,
         IReadOnlyCollection<UpsTest> currentTests)
     {
-        if (upsEquipmentId <= 0)
+        if (upsEquipmentId <= 0 || sourceServerEquipmentId <= 0)
             throw new InvalidOperationException("Подключение UPS отсутствует в БД.");
-        var serverEquipmentId = originalServers.Select(item => item.ServerEquipmentId)
-            .Concat(currentServers.Select(item => item.ServerEquipmentId))
-            .FirstOrDefault(id => id > 0);
-        if (serverEquipmentId <= 0)
-            throw new InvalidOperationException("Не указан сервер подключения UPS.");
-        await EnsureUpsAccessAsync(serverEquipmentId);
         await UpsServerLink.SaveDetailsAsync(
-            _db, upsEquipmentId, originalServers, currentServers, originalTests, currentTests);
+            _db, upsEquipmentId, sourceServerEquipmentId, originalServers, currentServers, originalTests, currentTests);
     }
 
     /// <summary>Загружает последнюю инвентаризацию оборудования.</summary>
@@ -439,14 +434,9 @@ public class EquipmentFormService
         await accounting.SaveAsync(_db);
     }
 
-    /// <summary>Проверяет права и удаляет только последнюю запись бухгалтерского учёта.</summary>
-    public virtual async Task DeleteAccountingAsync(int equipmentId, int? ownerId)
-    {
-        if (!await CanUseAccountingAsync(ownerId))
-            throw new UnauthorizedAccessException("Недостаточно прав для удаления бухгалтерского учёта.");
-        await _db.ExecuteAsync(SQLQueries.DELETE_КодОборудования_ОборудованиеБухУчета,
-            new { КодОборудования = equipmentId }, commandType: CommandType.Text);
-    }
+    /// <summary>Атомарно удаляет подтверждённую запись, если она всё ещё последняя.</summary>
+    public virtual Task DeleteAccountingAsync(int equipmentId, int accountingId) =>
+        EquipmentAccounting.DeleteLatestAsync(_db, equipmentId, accountingId);
 
     /// <summary>Загружает установленное ПО оборудования.</summary>
     public virtual async Task<IReadOnlyList<EquipmentSoftwareInstallation>> GetSoftwareInstallationsAsync(int equipmentId) =>

@@ -9,6 +9,10 @@
 <MudDialog>
     <TitleContent>Подключение UPS #@UpsEquipmentId</TitleContent>
     <DialogContent>
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Error">@_error</MudAlert>
+        }
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Сервер:</span>
             <ClaySelect TItem="UpsEquipmentLookup" TValue="int?"
@@ -78,6 +82,8 @@
         ColumnMenuMode = ColumnMenuMode.Hidden,
     };
     private int? _serverToAdd;
+    private bool _addingServer;
+    private string? _error;
 
     [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
 
@@ -92,17 +98,37 @@
 
     private UpsEquipmentSelectDataSource ServerSource => Services.GetRequiredKeyedService<UpsEquipmentSelectDataSource>("server");
 
-    private void AddServer()
+    private async Task AddServer()
     {
-        if (_serverToAdd is null || Servers.Any(item => item.ServerEquipmentId == _serverToAdd.Value))
+        if (_addingServer || _serverToAdd is null || Servers.Any(item => item.ServerEquipmentId == _serverToAdd.Value))
             return;
-        Servers.Add(new UpsServerLink
+        _addingServer = true;
+        _error = null;
+        try
         {
-            UpsEquipmentId = UpsEquipmentId,
-            ServerEquipmentId = _serverToAdd.Value,
-            ServerName = $"#{_serverToAdd.Value}",
-        });
-        _serverToAdd = null;
+            var serverId = _serverToAdd.Value;
+            var selected = await ServerSource.GetByIdAsync(serverId) ??
+                           throw new InvalidOperationException("Выбранное оборудование не найдено. Обновите список.");
+            Servers.Add(new UpsServerLink
+            {
+                UpsEquipmentId = UpsEquipmentId,
+                ServerEquipmentId = serverId,
+                ServerName = selected.ServerName,
+                EquipmentTypeId = selected.EquipmentTypeId,
+                EquipmentName = selected.Name,
+            });
+            _serverToAdd = null;
+        }
+        catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
+        {
+            _error = ex is InvalidOperationException
+                ? ex.Message
+                : "Не удалось загрузить выбранный сервер. Повторите попытку.";
+        }
+        finally
+        {
+            _addingServer = false;
+        }
     }
 
     private static void ToggleServer(UpsServerLink item) => item.TurnOffConfigured = item.TurnOffConfigured > 0 ? (byte)0 : (byte)1;

@@ -1646,7 +1646,7 @@ public partial class EquipmentForm : IDisposable
         StateHasChanged();
         try
         {
-            await Service.DeleteAccountingAsync(equipmentId, latest.OwnerId);
+            await Service.DeleteAccountingAsync(equipmentId, latest.Id);
             if (_disposed || version != _accountingVersion || _model.Id != equipmentId)
                 return;
             await RefreshAccountingAsync();
@@ -1656,7 +1656,7 @@ public partial class EquipmentForm : IDisposable
             if (!_disposed && version == _accountingVersion)
                 _validationMessage = "Запись бухгалтерского учёта не удалена. Подробности — в сообщении базы данных.";
         }
-        catch (UnauthorizedAccessException ex)
+        catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException)
         {
             if (!_disposed && version == _accountingVersion)
                 _validationMessage = ex.Message;
@@ -1858,17 +1858,38 @@ public partial class EquipmentForm : IDisposable
             return;
         var version = ++_upsVersion;
         var equipmentId = _model.Id;
-        var originalServers = (await Service.GetUpsServersAsync(link.UpsEquipmentId)).ToList();
-        var originalTests = (await Service.GetUpsTestsAsync(link.UpsEquipmentId)).ToList();
-        if (_disposed || version != _upsVersion || _model.Id != equipmentId)
-            return;
-        var dialogServers = CloneUpsServers(originalServers);
+        List<UpsServerLink> originalServers;
+        List<UpsTest> originalTests;
+        List<UpsServerLink> dialogServers;
         var dialogTests = new List<UpsTest>();
-        foreach (var test in originalTests)
+        try
         {
-            var utc = DateTime.SpecifyKind(test.TestedAt, DateTimeKind.Utc);
-            var offset = await JS.InvokeAsync<int>("clayGridTimeZone.getOffsetMinutes", utc.ToString("O"));
-            dialogTests.Add(CloneUpsTest(test, utc.AddMinutes(offset)));
+            originalServers = (await Service.GetUpsServersAsync(link.UpsEquipmentId)).ToList();
+            originalTests = (await Service.GetUpsTestsAsync(link.UpsEquipmentId)).ToList();
+            if (_disposed || version != _upsVersion || _model?.Id != equipmentId)
+                return;
+            dialogServers = CloneUpsServers(originalServers);
+            foreach (var test in originalTests)
+            {
+                var utc = DateTime.SpecifyKind(test.TestedAt, DateTimeKind.Utc);
+                var offset = await JS.InvokeAsync<int>("clayGridTimeZone.getOffsetMinutes", utc.ToString("O"));
+                dialogTests.Add(CloneUpsTest(test, utc.AddMinutes(offset)));
+            }
+            if (_disposed || version != _upsVersion || _model?.Id != equipmentId)
+                return;
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _upsVersion && _model?.Id == equipmentId)
+            {
+                _validationMessage = "Не удалось загрузить подключение UPS. Повторите открытие диалога.";
+                StateHasChanged();
+            }
+            return;
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or JSDisconnectedException)
+        {
+            return;
         }
         var parameters = new DialogParameters<EquipmentUpsDialog>
         {
@@ -1890,7 +1911,7 @@ public partial class EquipmentForm : IDisposable
             if (_disposed || version != _upsVersion || _model.Id != equipmentId)
                 return;
             await Service.SaveUpsDetailsAsync(
-                link.UpsEquipmentId, originalServers, value.Servers, originalTests, currentTests);
+                link.UpsEquipmentId, equipmentId, originalServers, value.Servers, originalTests, currentTests);
             if (_disposed || version != _upsVersion || _model.Id != equipmentId)
                 return;
             await RefreshUpsLinksAsync();
@@ -1933,6 +1954,7 @@ public partial class EquipmentForm : IDisposable
         ServerEquipmentId = item.ServerEquipmentId,
         TurnOffConfigured = item.TurnOffConfigured,
         ServerName = item.ServerName,
+        EquipmentTypeId = item.EquipmentTypeId,
         EquipmentName = item.EquipmentName,
     }).ToList();
 
