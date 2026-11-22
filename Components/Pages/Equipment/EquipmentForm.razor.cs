@@ -88,6 +88,7 @@ public partial class EquipmentForm : IDisposable
     private int _networkAttachmentCount;
     private int _networkVersion;
     private IReadOnlyList<EquipmentNetworkNameHistory> _networkNameHistory = [];
+    private IReadOnlyList<EquipmentNetworkPortLink> _networkPorts = [];
 
     private MudForm? _form;
     private EquipmentEntity? _model;
@@ -265,6 +266,10 @@ public partial class EquipmentForm : IDisposable
         ? EquipmentIns.BuildEditUrl(Configuration["URI_equipment_form"]!, id.Value)
         : null;
 
+    private string? NetUrl(int id) => !string.IsNullOrWhiteSpace(Configuration["URI_net_form"])
+        ? EquipmentIns.BuildEditUrl(Configuration["URI_net_form"]!, id)
+        : null;
+
     private string? PhoneUrl(int id) => !string.IsNullOrWhiteSpace(Configuration["URI_tel_form"])
         ? EquipmentIns.BuildEditUrl(Configuration["URI_tel_form"]!, id)
         : null;
@@ -384,6 +389,7 @@ public partial class EquipmentForm : IDisposable
                 IncludeSim = selectedType?.HasSimCharacteristics > 0,
                 IncludeLicense = selectedType?.HasSoftwareCharacteristics > 0,
                 IncludeNetworkName = selectedType?.HasNetworkName > 0,
+                NetworkName = model.NetworkName,
                 ShowServiceHistory = _showServiceHistory,
                 ShowCompanyRequiredServices = _showCompanyRequiredServices
             });
@@ -409,6 +415,7 @@ public partial class EquipmentForm : IDisposable
             var upsLinks = details.UpsLinks;
             var lastInventory = details.LastInventory;
             var networkAttachmentCount = details.NetworkAttachmentCount;
+            var networkPorts = details.NetworkPorts;
             var networkNameHistory = details.NetworkNameHistory;
             DateTime? localWriteOff = null;
             if (model.WriteOffAtUtc is not null)
@@ -452,6 +459,7 @@ public partial class EquipmentForm : IDisposable
             _upsLinks = upsLinks.ToList();
             _lastInventory = lastInventory;
             _networkAttachmentCount = networkAttachmentCount;
+            _networkPorts = networkPorts;
             _networkNameHistory = networkNameHistory;
             _phoneToAdd = null;
             _phoneVersion++;
@@ -1738,6 +1746,12 @@ public partial class EquipmentForm : IDisposable
             return;
         }
         await JS.InvokeVoidAsync("clayOpen", $"/Equipment/PhoneConfigHandler.ashx?mac={Uri.EscapeDataString(_model.MacAddress!)}", "_blank");
+    }
+
+    private async Task OpenNetAsync(int id)
+    {
+        if (NetUrl(id) is string url)
+            await JS.InvokeVoidAsync("clayOpen", url, "net-form");
     }
 
     private async Task OpenNetworkNameHistoryAsync()

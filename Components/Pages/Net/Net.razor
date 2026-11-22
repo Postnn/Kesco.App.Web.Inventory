@@ -1,0 +1,171 @@
+@page "/Net/Net"
+@layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.Controls.Components.Form
+@using Clayzor.Lib.Web.Controls.Components.Select
+@implements IDisposable
+
+<PageTitle>Локальная сеть</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
+
+<ClayEntityForm Options="_entityFormOptions">
+    <Toolbar>
+        <ClayToolbar>
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || _poeRunning || !_loaded || CurrentUser is null)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
+            @if (_model?.Poe == 1)
+            {
+                <ClayToolbarButton Options="_poeOptions" Disabled="@(_loading || _saving || _poeRunning || CurrentUser is null)" OnClick="RestartPoeAsync" />
+            }
+            <ClayToolbarButton Options="_cancelOptions" Disabled="@(_saving || _poeRunning)" OnClick="CancelAsync" />
+        </ClayToolbar>
+    </Toolbar>
+    <ChildContent>
+        @if (_notFound)
+        {
+            <MudAlert Severity="Severity.Warning">Порт локальной сети с указанным идентификатором не найден.</MudAlert>
+        }
+        else if (_model is not null)
+        {
+            if (CurrentUser is null)
+            {
+                <MudAlert Severity="Severity.Warning">Текущий пользователь не определён. Изменение и перезапуск PoE запрещены.</MudAlert>
+            }
+            @if (!string.IsNullOrWhiteSpace(_validationMessage))
+            {
+                <MudAlert Severity="Severity.Error">@_validationMessage</MudAlert>
+            }
+            <MudText Typo="Typo.subtitle1" Class="font-weight-bold" data-testid="net-port-caption">@PortCaption</MudText>
+            <MudGrid Spacing="2">
+                <MudItem xs="12" md="6">
+                    <div class="equipment-ins-row">
+                        <span class="equipment-ins-label">Розетка:</span>
+                        <div>
+                            <ClaySelect TItem="NetSocketLookup" TValue="int?"
+                                        DataSource="SocketSource"
+                                        ValueSelector="@(item => (int?)item.Id)"
+                                        TextSelector="@(item => item.Name)"
+                                        Value="_model.SocketId"
+                                        ValueChanged="OnSocketChangedAsync"
+                                        Options="_selectOptions" />
+                            @if (!string.IsNullOrWhiteSpace(_socketNotes))
+                            {
+                                <MudText Typo="Typo.caption" Color="Color.Secondary" data-testid="net-socket-notes">@_socketNotes</MudText>
+                            }
+                        </div>
+                    </div>
+                    <div class="equipment-ins-row equipment-ins-row-top">
+                        <span class="equipment-ins-label">Подключено:</span>
+                        <div>
+                            <ClayTextArea @bind-Value="_model.Connected" Options="_textAreaOptions" />
+                            @if (_connectedLinks.Count > 0)
+                            {
+                                <div data-testid="net-connected-links">
+                                    @foreach (var link in _connectedLinks)
+                                    {
+                                        <a href="@($"{Configuration["URI_equipment_form"]}?id={link.EquipmentId}")"
+                                           @onclick="() => OpenEquipmentAsync(link.EquipmentId)" @onclick:preventDefault>@link.Token</a>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+                    <div class="equipment-ins-row equipment-ins-row-top">
+                        <span class="equipment-ins-label">Примечание:</span>
+                        <div>
+                            <ClayTextArea @bind-Value="_model.Description" Options="_textAreaOptions" />
+                            @if (_descriptionLinks.Count > 0)
+                            {
+                                <div data-testid="net-description-links">
+                                    @foreach (var link in _descriptionLinks)
+                                    {
+                                        <a href="@($"{Configuration["URI_equipment_form"]}?id={link.EquipmentId}")"
+                                           @onclick="() => OpenEquipmentAsync(link.EquipmentId)" @onclick:preventDefault>@link.Token</a>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(_linkError))
+                    {
+                        <MudAlert Severity="Severity.Warning">@_linkError</MudAlert>
+                    }
+                </MudItem>
+                <MudItem xs="12" md="6" Class="equipment-ins-fields">
+                    <div class="equipment-ins-row">
+                        <span class="equipment-ins-label">Сотрудник:</span>
+                        <ClaySelect TItem="Employee" TValue="int?"
+                                    DataSource="EmployeeSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.Name)"
+                                    Value="_model.EmployeeId"
+                                    ValueChanged="OnEmployeeChangedAsync"
+                                    Options="_selectOptions" />
+                    </div>
+                    @if (ShowCompanyMismatch)
+                    {
+                        <MudAlert Severity="Severity.Error">Компания сотрудника: #@_employeeOrganizationId</MudAlert>
+                    }
+                    <div class="equipment-ins-row">
+                        <span class="equipment-ins-label">Заказчик:</span>
+                        <ClaySelect TItem="PersonLookup" TValue="int?"
+                                    DataSource="CustomerSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.Name)"
+                                    Value="_model.PersonCustomerId"
+                                    ValueChanged="OnCustomerChanged"
+                                    Options="_customerOptions" />
+                    </div>
+                    @if (ShowSwitch)
+                    {
+                        <div class="equipment-ins-row" data-testid="net-switch-row">
+                            <span class="equipment-ins-label">Переключить на:</span>
+                            <ClayDropDownList TItem="LocalNetworkNeighborPort" TValue="int?"
+                                              Items="_switchPorts"
+                                              ValueSelector="@(item => (int?)item.Id)"
+                                              TextSelector="@(item => item.Name)"
+                                              Value="_switchToId"
+                                              ValueChanged="OnSwitchChanged" />
+                        </div>
+                    }
+                    @if (ShowExchange)
+                    {
+                        <div class="equipment-ins-row" data-testid="net-exchange-row">
+                            <span class="equipment-ins-label">Обменять с:</span>
+                            <ClayDropDownList TItem="LocalNetworkNeighborPort" TValue="int?"
+                                              Items="_exchangePorts"
+                                              ValueSelector="@(item => (int?)item.Id)"
+                                              TextSelector="@(item => item.Name)"
+                                              Value="_exchangeWithId"
+                                              ValueChanged="OnExchangeChanged" />
+                        </div>
+                    }
+                    <div class="equipment-ins-row">
+                        <ClayCheckbox State="_hasReturnDate" StateChanged="OnReturnDateEnabledChanged" Label="Срок возврата" />
+                        @if (_hasReturnDate)
+                        {
+                            <ClayDatePicker @bind-Value="_model.ReturnDate" Options="_dateOptions" />
+                        }
+                    </div>
+                    @if (ShowExpiredWarning)
+                    {
+                        <MudAlert Severity="Severity.Error">просрочено</MudAlert>
+                    }
+                </MudItem>
+            </MudGrid>
+        }
+    </ChildContent>
+    <Footer>
+        <ClayChanged ChangedById="_model?.ChangedById"
+                     ChangedByName="@_model?.ChangedByName"
+                     ChangedAt="_model?.ChangedAtUtc"
+                     ChangedByUrl="@ChangedByUrl" />
+    </Footer>
+</ClayEntityForm>
+
+<MudOverlay Visible="@(_loading || _saving || _poeRunning)" DarkBackground="true">
+    <div class="clay-busy">
+        <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" />
+        <span>@(_poeRunning ? "Перезапуск PoE…" : _saving ? "Сохранение локальной сети…" : "Загрузка локальной сети…")</span>
+    </div>
+</MudOverlay>

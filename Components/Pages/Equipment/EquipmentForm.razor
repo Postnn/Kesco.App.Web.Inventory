@@ -314,6 +314,17 @@
                                 @if (ShowNetworkName)
                                 {
                                     <ClayTextBox @bind-Value="_model.NetworkName" Options="_networkNameOptions" />
+                                    @if (_networkPorts.Any(item => !item.NetworkName.StartsWith("*")))
+                                    {
+                                        <div data-testid="equipment-network-ports">
+                                            @foreach (var port in _networkPorts.Where(item => !item.NetworkName.StartsWith("*")))
+                                            {
+                                                <div class="equipment-form-model-meta">
+                                                    <a href="@NetUrl(port.Id)" @onclick="() => OpenNetAsync(port.Id)" @onclick:preventDefault>@port.DisplayName</a>
+                                                </div>
+                                            }
+                                        </div>
+                                    }
                                 }
                             </div>
                             <span class="equipment-form-label">@(MacCount > 0 ? "MAC:" : string.Empty)</span>

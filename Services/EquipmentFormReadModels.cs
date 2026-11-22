@@ -29,6 +29,9 @@ public sealed class EquipmentFormReadRequest
     /// <summary>Читать историю сетевых имён.</summary>
     public bool IncludeNetworkName { get; set; }
 
+    /// <summary>Сетевое имя для обратного поиска портов локальной сети.</summary>
+    public string? NetworkName { get; set; }
+
     /// <summary>Включать завершённые услуги SIM.</summary>
     public bool ShowServiceHistory { get; set; }
 
@@ -95,6 +98,9 @@ public sealed class EquipmentFormReadResult
 
     /// <summary>Количество подключений рабочей сети.</summary>
     public int NetworkAttachmentCount { get; set; }
+
+    /// <summary>Порты локальной сети, найденные по сетевому имени в поле «Подключено».</summary>
+    public IReadOnlyList<EquipmentNetworkPortLink> NetworkPorts { get; set; } = [];
 
     /// <summary>История сетевых имён.</summary>
     public IReadOnlyList<EquipmentNetworkNameHistory> NetworkNameHistory { get; set; } = [];

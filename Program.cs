@@ -20,6 +20,7 @@ builder.Configuration["URI_tel_form"] = WebConfigExtensions.ReadAppSettingFromWe
 builder.Configuration["pickupGroups"] = WebConfigExtensions.ReadAppSettingFromWebConfig("pickupGroups");
 builder.Configuration["URI_equipment_form_ins"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_equipment_form_ins");
 builder.Configuration["URI_equipment_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_equipment_form");
+builder.Configuration["URI_net_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_net_form");
 builder.Configuration["URI_styles"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_styles");
 builder.Configuration["URI_user_search"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_user_search");
 builder.Configuration["URI_resource_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_resource_form");
@@ -55,6 +56,7 @@ builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.SoftwareEquipmentS
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Equipment.AccountingPersonSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Employees.EmployeeSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Locations.LocationSelectDataSource>();
+builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Locations.NetSocketSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Phones.PhoneTypeSelectDataSource>();
 builder.Services.AddScoped<Clayzor.Lib.Web.DBSelect.Phones.PhoneStationSelectDataSource>();
 builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Phones.PhoneDirectorySelectDataSource>("phoneGroup", (sp, _) =>

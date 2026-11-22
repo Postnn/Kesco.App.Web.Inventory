@@ -51,6 +51,8 @@ public class EquipmentFormService
         Add(SQLQueries.SELECT_ID_vwПодключенияUPS);
         Add(SQLQueries.SELECT_ID_РеальноеРасположениеОборудования_ПоследнееРасположение);
         Add(SQLQueries.SELECT_ID_ConnectedWorkNet);
+        if (request.IncludeNetworkName && !string.IsNullOrWhiteSpace(request.NetworkName))
+            Add(SQLQueries.SELECT_NAME_vwЛокальнаяСеть);
         if (request.IncludeNetworkName) Add(SQLQueries.SELECT_ОборудованиеСетевыеИмена);
 
         var parameters = new
@@ -58,7 +60,8 @@ public class EquipmentFormService
             EquipmentId = request.EquipmentId,
             ServerEquipmentId = request.EquipmentId,
             ShowHistory = request.ShowServiceHistory ? 1 : 0,
-            ShowRequired = request.ShowCompanyRequiredServices ? 1 : 0
+            ShowRequired = request.ShowCompanyRequiredServices ? 1 : 0,
+            СетевоеИмя = request.NetworkName ?? string.Empty
         };
 
         return await _db.RunAsync(async connection =>
@@ -99,6 +102,8 @@ public class EquipmentFormService
             result.UpsLinks = (await reader.ReadAsync<UpsServerLink>()).ToList();
             result.LastInventory = await reader.ReadFirstOrDefaultAsync<EquipmentActualInventory>();
             result.NetworkAttachmentCount = await reader.ReadFirstOrDefaultAsync<int>();
+            if (request.IncludeNetworkName && !string.IsNullOrWhiteSpace(request.NetworkName))
+                result.NetworkPorts = (await reader.ReadAsync<EquipmentNetworkPortLink>()).ToList();
             if (request.IncludeNetworkName)
                 result.NetworkNameHistory = (await reader.ReadAsync<EquipmentNetworkNameHistory>()).ToList();
             return result;
