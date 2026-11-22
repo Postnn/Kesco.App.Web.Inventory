@@ -21,7 +21,16 @@
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
-        @if (_notFound)
+        @if (_loadError is not null)
+        {
+            <MudAlert Severity="Severity.Error">
+                <div class="d-flex flex-wrap gap-2 align-center">
+                    <span>@_loadError</span>
+                    <ClayToolbarButton Options="_retryOptions" Disabled="@_loading" OnClick="RetryLoadAsync" />
+                </div>
+            </MudAlert>
+        }
+        else if (_notFound)
         {
             <MudAlert Severity="Severity.Warning">Порт локальной сети с указанным идентификатором не найден.</MudAlert>
         }
@@ -34,6 +43,10 @@
             @if (!string.IsNullOrWhiteSpace(_validationMessage))
             {
                 <MudAlert Severity="Severity.Error">@_validationMessage</MudAlert>
+            }
+            @if (!string.IsNullOrWhiteSpace(_parentRefreshWarning))
+            {
+                <MudAlert Severity="Severity.Warning">@_parentRefreshWarning</MudAlert>
             }
             <MudText Typo="Typo.subtitle1" Class="font-weight-bold" data-testid="net-port-caption">@PortCaption</MudText>
             <MudGrid Spacing="2">
@@ -104,7 +117,7 @@
                     </div>
                     @if (ShowCompanyMismatch)
                     {
-                        <MudAlert Severity="Severity.Error">Компания сотрудника: #@_employeeOrganizationId</MudAlert>
+                        <MudAlert Severity="Severity.Error">Компания сотрудника: @CompanyMismatchName</MudAlert>
                     }
                     <div class="equipment-ins-row">
                         <span class="equipment-ins-label">Заказчик:</span>

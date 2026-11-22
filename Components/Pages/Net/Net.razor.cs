@@ -36,6 +36,7 @@ public partial class Net : IDisposable
     };
     private readonly ClayToolbarButtonOptions _applyOptions = new() { Text = "Применить", Icon = Icons.Material.Filled.Save };
     private readonly ClayToolbarButtonOptions _cancelOptions = new() { Text = "Отмена", Icon = Icons.Material.Filled.Close };
+    private readonly ClayToolbarButtonOptions _retryOptions = new() { Text = "Повторить", Icon = Icons.Material.Filled.Refresh };
     private readonly ClayToolbarButtonOptions _poeOptions = new()
     {
         Text = "Перезапустить PoE",
@@ -53,10 +54,13 @@ public partial class Net : IDisposable
     private string? _socketNotes;
     private string? _validationMessage;
     private string? _linkError;
+    private string? _loadError;
+    private string? _parentRefreshWarning;
     private string _originalSnapshot = string.Empty;
     private int? _switchToId = -1;
     private int? _exchangeWithId = -1;
     private int? _employeeOrganizationId;
+    private string? _employeeOrganizationName;
     private int _loadVersion;
     private int _employeeVersion;
     private int _socketVersion;
@@ -107,7 +111,10 @@ public partial class Net : IDisposable
         ? $"{Configuration["URI_user_form"]}?id={_model.ChangedById}"
         : null;
     private bool ShowCompanyMismatch => _model?.EmployeeId is > 0 && _model.PersonCustomerId > 0 &&
-        _employeeOrganizationId is > 0 && _model.PersonCustomerId != _employeeOrganizationId;
+        _employeeOrganizationId is not null && _model.PersonCustomerId != _employeeOrganizationId;
+    private string CompanyMismatchName => !string.IsNullOrWhiteSpace(_employeeOrganizationName)
+        ? _employeeOrganizationName
+        : $"#{_employeeOrganizationId}";
     private bool ShowExpiredWarning => _hasReturnDate && _model?.ReturnDate?.Date < DateTime.Today;
 
     /// <summary>Загружает запись после интерактивного рендера и повторно загружает её при смене ID.</summary>
@@ -122,10 +129,21 @@ public partial class Net : IDisposable
     private async Task LoadCurrentAsync(int id)
     {
         var version = ++_loadVersion;
+        _employeeVersion++;
+        _socketVersion++;
         _loading = true;
         _loaded = false;
         _notFound = false;
+        _loadError = null;
+        _validationMessage = null;
+        _parentRefreshWarning = null;
         _linkError = null;
+        _model = null;
+        CurrentUser = null;
+        _equipmentNetworkName = null;
+        _socketNotes = null;
+        _employeeOrganizationId = null;
+        _employeeOrganizationName = null;
         _connectedLinks = [];
         _descriptionLinks = [];
         StateHasChanged();
@@ -140,7 +158,10 @@ public partial class Net : IDisposable
         catch (Microsoft.Data.SqlClient.SqlException)
         {
             if (IsCurrent(version, id))
-                _validationMessage = "Не удалось загрузить порт локальной сети. Повторите открытие после восстановления соединения.";
+            {
+                CurrentUser = null;
+                _loadError = "Не удалось загрузить порт локальной сети. Проверьте соединение и повторите попытку.";
+            }
         }
         finally
         {
@@ -151,6 +172,8 @@ public partial class Net : IDisposable
             }
         }
     }
+
+    private Task RetryLoadAsync() => _loading ? Task.CompletedTask : LoadCurrentAsync(Id);
 
     private async Task LoadDataAsync(int id, int version)
     {
@@ -196,9 +219,13 @@ public partial class Net : IDisposable
         {
             var employee = await EmployeeSource.GetByIdAsync(port.EmployeeId, _pageCts.Token);
             _employeeOrganizationId = employee?.OrganizationId;
+            _employeeOrganizationName = employee?.OrganizationName;
         }
         else
+        {
             _employeeOrganizationId = null;
+            _employeeOrganizationName = null;
+        }
         if (!IsCurrent(version, id))
             return;
 
@@ -239,13 +266,16 @@ public partial class Net : IDisposable
     {
         if (_model is null)
             return;
-        _model.SocketId = id;
+        var model = _model;
+        var portId = Id;
+        model.SocketId = id;
         var version = ++_socketVersion;
         _socketNotes = null;
         if (id is null)
             return;
         var socket = await SocketSource.GetByIdAsync(id, _pageCts.Token);
-        if (_disposed || version != _socketVersion)
+        if (_disposed || version != _socketVersion || !ReferenceEquals(_model, model) ||
+            Id != portId || model.SocketId != id)
             return;
         _socketNotes = string.IsNullOrWhiteSpace(socket?.Notes) ? null : socket.Notes;
     }
@@ -254,23 +284,31 @@ public partial class Net : IDisposable
     {
         if (_model is null)
             return;
-        _model.EmployeeId = id;
+        var model = _model;
+        var portId = Id;
+        model.EmployeeId = id;
         var version = ++_employeeVersion;
         _employeeOrganizationId = null;
+        _employeeOrganizationName = null;
         if (id is null)
             return;
         var employee = await EmployeeSource.GetByIdAsync(id, _pageCts.Token);
-        if (_disposed || version != _employeeVersion)
+        if (_disposed || version != _employeeVersion || !ReferenceEquals(_model, model) ||
+            Id != portId || model.EmployeeId != id)
             return;
         _employeeOrganizationId = employee?.OrganizationId;
+        _employeeOrganizationName = employee?.OrganizationName;
         if (employee?.OrganizationId is > 0)
-            _model.PersonCustomerId = employee.OrganizationId.Value;
+            model.PersonCustomerId = employee.OrganizationId.Value;
     }
 
     private void OnCustomerChanged(int? id)
     {
         if (_model is not null)
+        {
+            _employeeVersion++;
             _model.PersonCustomerId = id ?? 0;
+        }
     }
 
     private void OnSwitchChanged(int? id)
@@ -335,16 +373,29 @@ public partial class Net : IDisposable
                 _exchangeWithId is > 0 ? _exchangeWithId : null);
             if (!IsCurrentSave(model, version))
                 return;
-            await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _pageCts.Token);
-            if (!IsCurrentSave(model, version))
-                return;
             if (closeAfterSave)
             {
-                await CloseAsync();
-                return;
+                _switchToId = -1;
+                _exchangeWithId = -1;
+                _originalSnapshot = Snapshot();
             }
-            _saving = false;
-            await LoadCurrentAsync(model.Id);
+            else
+            {
+                _saving = false;
+                await LoadCurrentAsync(model.Id);
+            }
+            if (_disposed)
+                return;
+            try
+            {
+                await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _pageCts.Token);
+            }
+            catch (Exception ex) when (ex is JSException or JSDisconnectedException)
+            {
+                _parentRefreshWarning = "Изменения сохранены, но родительский грид не обновлён. Обновите его при следующем открытии.";
+            }
+            if (closeAfterSave)
+                await CloseAsync();
         }
         catch (OperationCanceledException) when (_disposed || version != _loadVersion)
         {
@@ -371,12 +422,14 @@ public partial class Net : IDisposable
 
     private async Task RestartPoeAsync()
     {
-        if (_model?.Poe != 1 || CurrentUser is null || _saving || _poeRunning)
+        var model = _model;
+        var version = _loadVersion;
+        if (model?.Poe != 1 || model.Id != Id || CurrentUser is null || _saving || _poeRunning)
             return;
         if (!await ConfirmAsync("Перезапустить PoE?", "Перезапустить PoE для этого порта?"))
             return;
-        var model = _model;
-        var version = _loadVersion;
+        if (!IsCurrentSave(model, version) || model.Poe != 1)
+            return;
         _poeRunning = true;
         _validationMessage = null;
         StateHasChanged();
@@ -384,7 +437,7 @@ public partial class Net : IDisposable
         try
         {
             CurrentUser = await Employee.GetCurrentAsync(Db, _windowsPrincipal, _pageCts.Token);
-            if (!IsCurrentSave(model, version))
+            if (!IsCurrentSave(model, version) || model.Poe != 1)
                 return;
             if (CurrentUser is null)
                 throw new UnauthorizedAccessException("Не удалось подтвердить текущего пользователя. Перезапуск PoE запрещён.");
