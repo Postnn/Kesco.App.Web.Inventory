@@ -1,3 +1,4 @@
+@inherits EquipmentEditorDialogBase<EquipmentAccounting>
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
 @using Clayzor.Lib.Web.Controls.Components.Select
@@ -74,24 +75,21 @@
         </div>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked)" />
     </DialogActions>
 </MudDialog>
 
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите владельца" };
-    private readonly ClaySelectOptions _tenantOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите арендатора" };
-    private readonly ClaySelectOptions _documentOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите документ" };
-    private readonly ClayTextBoxOptions _inventoryOptions = new() { Required = true, MaxLength = 50 };
-    private readonly ClayDatePickerOptions _fromOptions = new() { Required = true };
-    private readonly ClayTextAreaOptions _notesOptions = new() { MaxLength = 255, Lines = 2 };
+    private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите владельца", DraftKey = "accounting.owner" };
+    private readonly ClaySelectOptions _tenantOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите арендатора", DraftKey = "accounting.tenant" };
+    private readonly ClaySelectOptions _documentOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите документ", DraftKey = "accounting.document" };
+    private readonly ClayTextBoxOptions _inventoryOptions = new() { Required = true, MaxLength = 50, DraftKey = "accounting.inventory-number" };
+    private readonly ClayDatePickerOptions _fromOptions = new() { Required = true, DraftKey = "accounting.from" };
+    private readonly ClayTextAreaOptions _notesOptions = new() { MaxLength = 255, Lines = 2, DraftKey = "accounting.notes" };
     private bool _ready;
-    private string? _error;
-
-    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
 
     /// <summary>Редактируемая запись.</summary>
     [Parameter] public EquipmentAccounting Value { get; set; } = new();
@@ -120,13 +118,5 @@
         Value.ApplyMaterialRules();
     }
 
-    private void Cancel() => Dialog.Cancel();
-
-    private void Apply()
-    {
-        _error = Value.Validate();
-        if (_error is not null)
-            return;
-        Dialog.Close(DialogResult.Ok(Value));
-    }
+    private Task Apply() => ApplyAsync(Value, Value.Validate);
 }

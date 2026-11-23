@@ -1,3 +1,4 @@
+@inherits EquipmentEditorDialogBase<EquipmentLicense>
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
 
@@ -18,6 +19,10 @@
                               ValueChanged="OnTypeChanged"
                               Options="_typeOptions" />
         </div>
+        @if (!string.IsNullOrWhiteSpace(SelectedType?.Description))
+        {
+            <MudAlert Severity="Severity.Info">@SelectedType.Description</MudAlert>
+        }
         @if (SelectedType?.Resale == 0)
         {
             <div class="equipment-ins-row">
@@ -50,24 +55,21 @@
         </div>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked)" />
     </DialogActions>
 </MudDialog>
 
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClayDropDownListOptions _typeOptions = new() { Required = true };
-    private readonly ClayTextBoxOptions _numberOptions = new() { Required = true, MaxLength = 50 };
-    private readonly ClayTextBoxOptions _urlOptions = new() { MaxLength = 50 };
-    private readonly ClayNumberOptions _serverOptions = new() { Required = true, Min = 0 };
-    private readonly ClayNumberOptions _clientOptions = new() { Required = true, Min = 1 };
-    private readonly ClayDatePickerOptions _dateOptions = new();
-    private readonly ClayTextBoxOptions _distributionOptions = new() { MaxLength = 100 };
-    private string? _error;
-
-    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+    private readonly ClayDropDownListOptions _typeOptions = new() { Required = true, DraftKey = "license.type" };
+    private readonly ClayTextBoxOptions _numberOptions = new() { Required = true, MaxLength = 50, DraftKey = "license.number" };
+    private readonly ClayTextBoxOptions _urlOptions = new() { MaxLength = 50, DraftKey = "license.url" };
+    private readonly ClayNumberOptions _serverOptions = new() { Required = true, Min = 0, DraftKey = "license.servers" };
+    private readonly ClayNumberOptions _clientOptions = new() { Required = true, Min = 1, DraftKey = "license.clients" };
+    private readonly ClayDatePickerOptions _dateOptions = new() { DraftKey = "license.date" };
+    private readonly ClayTextBoxOptions _distributionOptions = new() { MaxLength = 100, DraftKey = "license.distribution" };
 
     /// <summary>Редактируемая лицензия.</summary>
     [Parameter] public EquipmentLicense Value { get; set; } = new();
@@ -92,13 +94,5 @@
         _dateOptions.Required = type.Temporary > 0;
     }
 
-    private void Cancel() => Dialog.Cancel();
-
-    private void Apply()
-    {
-        _error = Value.Validate(SelectedType);
-        if (_error is not null)
-            return;
-        Dialog.Close(DialogResult.Ok(Value));
-    }
+    private Task Apply() => ApplyAsync(Value, () => Value.Validate(SelectedType));
 }

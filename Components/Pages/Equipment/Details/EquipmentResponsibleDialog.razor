@@ -1,3 +1,4 @@
+@inherits EquipmentEditorDialogBase<EquipmentResponsibleDialogResult>
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
 @using Clayzor.Lib.Web.Controls.Components.Select
@@ -63,35 +64,38 @@
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Примечания:</span>
-            <ClayTextBox @bind-Value="Notes" Options="_notesOptions" />
+            <ClayTextArea @bind-Value="Notes" Options="_notesOptions" />
         </div>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked)" />
     </DialogActions>
 </MudDialog>
 
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClaySelectOptions _employeeOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите сотрудника" };
-    private readonly ClaySelectOptions _locationOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите расположение" };
-    private readonly ClayDatePickerOptions _fromDateOptions = new() { Required = true };
-    private readonly ClayTimeOptions _fromTimeOptions = new() { Required = true };
-    private readonly ClayDatePickerOptions _toDateOptions = new() { Required = true };
-    private readonly ClayTimeOptions _toTimeOptions = new() { Required = true };
-    private readonly ClayDatePickerOptions _returnDateOptions = new();
-    private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300 };
-    private string? _error;
-
-    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+    private readonly ClaySelectOptions _employeeOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите сотрудника", DraftKey = "responsible.employee" };
+    private readonly ClaySelectOptions _locationOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите расположение", DraftKey = "responsible.location" };
+    private readonly ClayDatePickerOptions _fromDateOptions = new() { Required = true, DraftKey = "responsible.from-date" };
+    private readonly ClayTimeOptions _fromTimeOptions = new() { Required = true, DraftKey = "responsible.from-time" };
+    private readonly ClayDatePickerOptions _toDateOptions = new() { Required = true, DraftKey = "responsible.to-date" };
+    private readonly ClayTimeOptions _toTimeOptions = new() { Required = true, DraftKey = "responsible.to-time" };
+    private readonly ClayDatePickerOptions _returnDateOptions = new() { DraftKey = "responsible.return-date" };
+    private readonly ClayTextAreaOptions _notesOptions = new() { MaxLength = 300, Lines = 3, DraftKey = "responsible.notes" };
 
     /// <summary>Операция с ответственным.</summary>
     [Parameter] public EquipmentResponsibleDialogMode Mode { get; set; }
 
     /// <summary>Требуется новое расположение, отличное от «На руках».</summary>
     [Parameter] public bool RequireLocation { get; set; }
+
+    /// <summary>Действующий сотрудник при изъятии.</summary>
+    [Parameter] public int? CurrentEmployeeId { get; set; }
+
+    /// <summary>Текущее локальное время браузера.</summary>
+    [Parameter] public DateTime Now { get; set; } = DateTime.Now;
 
     /// <summary>Ответственный сотрудник.</summary>
     [Parameter] public int? EmployeeId { get; set; }
@@ -133,48 +137,38 @@
     private async Task OpenEmployeeViewAsync(Employee employee) =>
         await JS.InvokeVoidAsync("clayOpen", EquipmentIns.BuildEditUrl(Configuration["URI_user_form"]!, employee.Id), "_blank");
 
-    private void Cancel() => Dialog.Cancel();
+    private Task Apply()
+    {
+        var from = FromDate?.Date.Add(FromTime ?? TimeSpan.Zero);
+        var to = ToDate?.Date.Add(ToTime ?? TimeSpan.Zero);
+        var draft = new EquipmentResponsibleDialogResult(
+            EmployeeId, from, to, ReturnDate, Notes ?? string.Empty, LocationId);
+        return ApplyAsync(draft, () => Validate(from, to));
+    }
 
-    private void Apply()
+    private string? Validate(DateTime? from, DateTime? to)
     {
         if (Mode != EquipmentResponsibleDialogMode.Edit)
         {
             if (Mode == EquipmentResponsibleDialogMode.Issue && (EmployeeId is null || FromDate is null || FromTime is null))
-            {
-                _error = "Укажите сотрудника, дату и время выдачи.";
-                return;
-            }
+                return "Укажите сотрудника, дату и время выдачи.";
             if (Mode == EquipmentResponsibleDialogMode.Withdraw && (ToDate is null || ToTime is null))
-            {
-                _error = "Укажите дату и время изъятия.";
-                return;
-            }
+                return "Укажите дату и время изъятия.";
             if (Mode == EquipmentResponsibleDialogMode.Withdraw && EmployeeId is not null && (FromDate is null || FromTime is null))
-            {
-                _error = "Для следующего ответственного укажите дату и время начала.";
-                return;
-            }
-            if (RequireLocation && (LocationId is null || LocationId == 55))
-            {
-                _error = "Выберите новое расположение, отличное от «На руках».";
-                return;
-            }
+                return "Для следующего ответственного укажите дату и время начала.";
+            if (Mode == EquipmentResponsibleDialogMode.Withdraw && EmployeeId is not null && EmployeeId == CurrentEmployeeId)
+                return "Следующий ответственный должен отличаться от действующего.";
+            if (RequireLocation && (LocationId is null || LocationId == (int)Clayzor.Lib.Entities.Расположения.На_руках))
+                return "Выберите новое расположение, отличное от «На руках».";
         }
-        var from = FromDate?.Date.Add(FromTime ?? TimeSpan.Zero);
-        var to = ToDate?.Date.Add(ToTime ?? TimeSpan.Zero);
-        if (from > DateTime.Now || to > DateTime.Now)
-        {
-            _error = "Дата и время не могут быть в будущем.";
-            return;
-        }
-        var periodStart = Mode == EquipmentResponsibleDialogMode.Withdraw ? to ?? from : from;
+        if (from > Now || to > Now)
+            return "Дата и время не могут быть в будущем.";
+        var periodStart = Mode == EquipmentResponsibleDialogMode.Withdraw
+            ? EmployeeId is not null ? from : to ?? from
+            : from;
         if (ReturnDate is not null && periodStart is not null &&
-            (ReturnDate.Value.Date < periodStart.Value.Date || ReturnDate.Value.Date > DateTime.Today.AddMonths(3)))
-        {
-            _error = "Срок возврата должен быть не раньше начала периода и не позднее трёх месяцев.";
-            return;
-        }
-        Dialog.Close(DialogResult.Ok(new EquipmentResponsibleDialogResult(
-            EmployeeId, from, to, ReturnDate, Notes ?? string.Empty, LocationId)));
+            (ReturnDate.Value.Date < periodStart.Value.Date || ReturnDate.Value.Date > Now.Date.AddMonths(3)))
+            return "Срок возврата должен быть не раньше начала периода и не позднее трёх месяцев.";
+        return null;
     }
 }

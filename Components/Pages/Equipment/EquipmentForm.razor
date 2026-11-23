@@ -32,6 +32,12 @@
                 <ClayMenu Icon="@Icons.Material.Filled.ArrowDropDown" ButtonOptions="_operationsOptions"
                           AnchorOrigin="Origin.BottomLeft" TransformOrigin="Origin.TopLeft"
                           Disabled="@(_loading || _saving || !_loaded)">
+                    @if (CanConfigurePhone)
+                    {
+                        <MudMenuItem Icon="@Icons.Material.Filled.SettingsPhone" OnClick="ConfigurePhoneEquipmentAsync">
+                            Настроить оборудование
+                        </MudMenuItem>
+                    }
                     @if (_canManageUps)
                     {
                         <MudMenuItem Icon="@Icons.Material.Filled.Power" OnClick="OpenUpsLinkDialogAsync">
@@ -87,6 +93,10 @@
                 <MudAlert Severity="Severity.Warning" Class="mb-3">
                     Для изменения оборудования требуется роль «Специалист по инвентаризации оборудования» (43).
                 </MudAlert>
+            }
+            if (!string.IsNullOrWhiteSpace(_draftStorageError))
+            {
+                <MudAlert Severity="Severity.Error" Class="mb-3">@_draftStorageError</MudAlert>
             }
             if (!string.IsNullOrWhiteSpace(_validationMessage))
             {
@@ -368,6 +378,10 @@
                         </div>
                     }
                 </div>
+            @if (!string.IsNullOrWhiteSpace(_statusMessage))
+            {
+                <MudAlert Severity="Severity.Info" Class="mt-3">@_statusMessage</MudAlert>
+            }
             @if (!string.IsNullOrWhiteSpace(_warningMessage))
             {
                 <MudAlert Severity="Severity.Warning" Class="mt-3">@_warningMessage</MudAlert>
@@ -395,11 +409,16 @@
                         </ColumnDefs>
                         <Columns>
                             <ClayColumn TEntity="EquipmentAccount" ColumnId="1" TextSelector="@(item => item.Login)" />
-                            <ClayColumn TEntity="EquipmentAccount" ColumnId="2" TextSelector="@(_ => "*****")" />
+                            <ClayColumn TEntity="EquipmentAccount" ColumnId="2">
+                                <CellTemplate>@AccountPasswordDisplay(context.Item)</CellTemplate>
+                            </ClayColumn>
                             <ClayColumn TEntity="EquipmentAccount" ColumnId="3" TextSelector="@(item => item.LimitedRights > 0 ? "Да" : "Нет")" />
                             <ClayColumn TEntity="EquipmentAccount" ColumnId="4" TextSelector="@(item => item.Notes)" />
                         </Columns>
                         <RowActions Context="item">
+                            <ClayButton Icon="@(_accountPasswords.ContainsKey(item.Login) ? Icons.Material.Filled.VisibilityOff : Icons.Material.Filled.Visibility)"
+                                        Text="@(_accountPasswords.ContainsKey(item.Login) ? "Скрыть пароль" : "Показать пароль")"
+                                        Disabled="@_saving" OnClick="@(() => ToggleAccountPasswordAsync(item))" />
                             <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить учётную запись"
                                         Disabled="@(!CanEditAccounts || _saving)" OnClick="@(() => OpenAccountDialogAsync(item))" />
                             <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить учётную запись"
@@ -576,7 +595,7 @@
                 </ClayGrid>
             }
             <ClayGrid TEntity="EquipmentLocationPeriod" Items="_locations" Options="_locationGridOptions"
-                      OnAdd="@(() => OpenLocationDialogAsync(null))" AddDisabled="@(!_canEdit || _saving)">
+                      RowClass="LocationRowClass" OnAdd="@(() => OpenLocationDialogAsync(null))" AddDisabled="@(!_canEdit || _saving)">
                 <ColumnDefs>
                     <ClayColumnDef ColumnId="1" SqlName="Date" DisplayName="Дата" />
                     <ClayColumnDef ColumnId="2" SqlName="Location" DisplayName="Расположение" />
@@ -620,7 +639,7 @@
                 </div>
             }
             <ClayGrid TEntity="EquipmentResponsiblePeriod" Items="_responsibles" Options="_responsibleGridOptions"
-                      OnAdd="@(() => OpenResponsibleDialogAsync(EquipmentResponsibleDialogMode.Issue, null))" AddDisabled="@(!_canEdit || _saving)">
+                      RowClass="ResponsibleRowClass" OnAdd="@(() => OpenResponsibleDialogAsync(EquipmentResponsibleDialogMode.Issue, null))" AddDisabled="@(!_canEdit || _saving)">
                 <ColumnDefs>
                     <ClayColumnDef ColumnId="1" SqlName="Period" DisplayName="Период" />
                     <ClayColumnDef ColumnId="2" SqlName="Employee" DisplayName="Ответственный" />

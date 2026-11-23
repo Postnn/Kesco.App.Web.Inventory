@@ -1,3 +1,4 @@
+@inherits EquipmentEditorDialogBase<EquipmentSoftwareInstallation>
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
 @using Clayzor.Lib.Web.Controls.Components.Select
@@ -35,33 +36,34 @@
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Деинсталлировано:</span>
-            <ClayDatePicker @bind-Value="Value.UninstalledAt" />
+            <ClayDatePicker Value="Value.UninstalledAt" ValueChanged="OnUninstalledAtChanged" />
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Примечания:</span>
-            <ClayTextBox @bind-Value="Value.Notes" Options="_notesOptions" />
+            <ClayTextArea @bind-Value="Value.Notes" Options="_notesOptions" />
         </div>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked)" />
     </DialogActions>
 </MudDialog>
 
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClaySelectOptions _softwareOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите программное обеспечение" };
-    private readonly ClayTextBoxOptions _installedOptions = new() { Required = true, MaxLength = 100 };
-    private readonly ClayTextBoxOptions _distributionOptions = new() { Required = true, MaxLength = 100 };
-    private readonly ClayDatePickerOptions _installedAtOptions = new() { Required = true };
-    private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300 };
-    private string? _error;
-
-    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+    private readonly ClaySelectOptions _softwareOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите программное обеспечение", DraftKey = "software.software" };
+    private readonly ClayTextBoxOptions _installedOptions = new() { Required = true, MaxLength = 100, DraftKey = "software.installed" };
+    private readonly ClayTextBoxOptions _distributionOptions = new() { Required = true, MaxLength = 100, DraftKey = "software.distribution" };
+    private readonly ClayDatePickerOptions _installedAtOptions = new() { Required = true, DraftKey = "software.installed-at" };
+    private readonly ClayTextAreaOptions _notesOptions = new() { MaxLength = 300, Lines = 3, DraftKey = "software.notes" };
 
     /// <summary>Редактируемая запись установки.</summary>
     [Parameter] public EquipmentSoftwareInstallation Value { get; set; } = new();
+
+    /// <inheritdoc />
+    protected override void OnParametersSet() =>
+        _okButtonOptions.Text = Value.UninstalledAt is null ? "OK" : "Подтвердить деинсталляцию";
 
     private void OnSoftwareChanged(SoftwareEquipmentLookup? software)
     {
@@ -69,13 +71,11 @@
             Value.Installed = software.InstalledName;
     }
 
-    private void Cancel() => Dialog.Cancel();
-
-    private void Apply()
+    private void OnUninstalledAtChanged(DateTime? value)
     {
-        _error = Value.Validate();
-        if (_error is not null)
-            return;
-        Dialog.Close(DialogResult.Ok(Value));
+        Value.UninstalledAt = value;
+        _okButtonOptions.Text = value is null ? "OK" : "Подтвердить деинсталляцию";
     }
+
+    private Task Apply() => ApplyAsync(Value, Value.Validate);
 }

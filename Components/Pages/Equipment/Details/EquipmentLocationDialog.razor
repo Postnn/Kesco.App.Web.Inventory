@@ -1,3 +1,4 @@
+@inherits EquipmentEditorDialogBase<EquipmentLocationDialogResult>
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
 @using Clayzor.Lib.Web.Controls.Components.Select
@@ -5,6 +6,7 @@
 @using Clayzor.Lib.Web.DBSelect.Locations
 @inject LocationSelectDataSource LocationSource
 @inject EmployeeSelectDataSource EmployeeSource
+@inject Kesco.App.Web.Inventory.Services.EquipmentFormService Service
 @inject IConfiguration Configuration
 @inject IJSRuntime JS
 
@@ -22,8 +24,20 @@
                         ValueSelector="@(item => (int?)item.Id)"
                         TextSelector="@(item => item.Name)"
                         @bind-Value="LocationId"
+                        SelectedItemChanged="OnLocationChangedAsync"
                         Options="_locationOptions" />
         </div>
+        @if (_advisoryError is not null)
+        {
+            <MudAlert Severity="Severity.Warning">@_advisoryError</MudAlert>
+        }
+        @if (_advisories.Count > 0)
+        {
+            <MudAlert Severity="Severity.Info">
+                На этом рабочем месте уже находится другое оборудование этой группы:
+                @string.Join("; ", _advisories.Select(item => item.DisplayText)).
+            </MudAlert>
+        }
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">С:</span>
             <div class="equipment-ins-date">
@@ -50,33 +64,39 @@
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Примечания:</span>
-            <ClayTextBox @bind-Value="Notes" Options="_notesOptions" />
+            <ClayTextArea @bind-Value="Notes" Options="_notesOptions" />
         </div>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked)" />
     </DialogActions>
 </MudDialog>
 
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClaySelectOptions _locationOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите расположение" };
-    private readonly ClaySelectOptions _employeeOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите сотрудника" };
-    private readonly ClayDatePickerOptions _fromDateOptions = new() { Required = true };
-    private readonly ClayTimeOptions _fromTimeOptions = new() { Required = true };
-    private readonly ClayDatePickerOptions _returnDateOptions = new();
-    private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300 };
-    private string? _error;
+    private readonly ClaySelectOptions _locationOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите расположение", DraftKey = "location.location" };
+    private readonly ClaySelectOptions _employeeOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите сотрудника", DraftKey = "location.employee" };
+    private readonly ClayDatePickerOptions _fromDateOptions = new() { Required = true, DraftKey = "location.from-date" };
+    private readonly ClayTimeOptions _fromTimeOptions = new() { Required = true, DraftKey = "location.from-time" };
+    private readonly ClayDatePickerOptions _returnDateOptions = new() { DraftKey = "location.return-date" };
+    private readonly ClayTextAreaOptions _notesOptions = new() { MaxLength = 300, Lines = 3, DraftKey = "location.notes" };
+    private IReadOnlyList<EquipmentWorkplaceAdvisoryItem> _advisories = [];
+    private string? _advisoryError;
+    private int _advisoryVersion;
 
-    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+    /// <summary>Идентификатор текущего оборудования.</summary>
+    [Parameter] public int EquipmentId { get; set; }
 
     /// <summary>Признак редактирования существующего периода.</summary>
     [Parameter] public bool IsEdit { get; set; }
 
     /// <summary>Требуется одновременно назначить ответственного.</summary>
     [Parameter] public bool RequireResponsible { get; set; }
+
+    /// <summary>Текущее локальное время браузера.</summary>
+    [Parameter] public DateTime Now { get; set; } = DateTime.Now;
 
     /// <summary>Идентификатор расположения.</summary>
     [Parameter] public int? LocationId { get; set; }
@@ -96,13 +116,39 @@
     /// <summary>Примечания.</summary>
     [Parameter] public string Notes { get; set; } = string.Empty;
 
-    private bool ResponsibleRequired => RequireResponsible && LocationId == 55;
+    private bool ResponsibleRequired => RequireResponsible && LocationId == (int)Clayzor.Lib.Entities.Расположения.На_руках;
 
     private Func<Employee, Task>? EmployeeViewItem =>
         !string.IsNullOrWhiteSpace(Configuration["URI_user_form"]) ? OpenEmployeeViewAsync : null;
 
     private async Task OpenEmployeeViewAsync(Employee employee) =>
         await JS.InvokeVoidAsync("clayOpen", EquipmentIns.BuildEditUrl(Configuration["URI_user_form"]!, employee.Id), "_blank");
+
+    private async Task OnLocationChangedAsync(LocationLookup? location)
+    {
+        if (IsEdit || LocationId is null)
+        {
+            _advisories = [];
+            _advisoryError = null;
+            return;
+        }
+        var version = ++_advisoryVersion;
+        var locationId = LocationId.Value;
+        _advisoryError = null;
+        try
+        {
+            var items = await Service.GetWorkplaceAdvisoryAsync(EquipmentId, locationId);
+            if (version != _advisoryVersion || LocationId != locationId)
+                return;
+            _advisories = items;
+        }
+        catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            if (version == _advisoryVersion && LocationId == locationId)
+                _advisoryError = "Не удалось проверить другое оборудование на рабочем месте. Операция расположения остаётся доступной.";
+        }
+        await InvokeAsync(StateHasChanged);
+    }
 
     /// <inheritdoc />
     protected override void OnParametersSet()
@@ -114,32 +160,24 @@
         _fromTimeOptions.Disabled = IsEdit;
     }
 
-    private void Cancel() => Dialog.Cancel();
+    private Task Apply()
+    {
+        var from = (FromDate ?? Now.Date).Date.Add(FromTime ?? TimeSpan.Zero);
+        var draft = new EquipmentLocationDialogResult(
+            LocationId ?? 0, from, ReturnDate, Notes ?? string.Empty, ResponsibleRequired ? EmployeeId : null);
+        return ApplyAsync(draft, () => Validate(from));
+    }
 
-    private void Apply()
+    private string? Validate(DateTime from)
     {
         if (!IsEdit && (LocationId is null || FromDate is null || FromTime is null))
-        {
-            _error = "Укажите расположение, дату и время начала.";
-            return;
-        }
+            return "Укажите расположение, дату и время начала.";
         if (ResponsibleRequired && EmployeeId is null)
-        {
-            _error = "Для расположения «На руках» укажите ответственного сотрудника.";
-            return;
-        }
-        var from = (FromDate ?? DateTime.Today).Date.Add(FromTime ?? TimeSpan.Zero);
-        if (from > DateTime.Now)
-        {
-            _error = "Дата и время начала не могут быть в будущем.";
-            return;
-        }
-        if (ReturnDate is not null && (ReturnDate.Value.Date < from.Date || ReturnDate.Value.Date > DateTime.Today.AddMonths(3)))
-        {
-            _error = "Срок возврата должен быть не раньше даты начала и не позднее трёх месяцев.";
-            return;
-        }
-        Dialog.Close(DialogResult.Ok(new EquipmentLocationDialogResult(
-            LocationId!.Value, from, ReturnDate, Notes ?? string.Empty, ResponsibleRequired ? EmployeeId : null)));
+            return "Для расположения «На руках» укажите ответственного сотрудника.";
+        if (from > Now)
+            return "Дата и время начала не могут быть в будущем.";
+        if (ReturnDate is not null && (ReturnDate.Value.Date < from.Date || ReturnDate.Value.Date > Now.Date.AddMonths(3)))
+            return "Срок возврата должен быть не раньше даты начала и не позднее трёх месяцев.";
+        return null;
     }
 }

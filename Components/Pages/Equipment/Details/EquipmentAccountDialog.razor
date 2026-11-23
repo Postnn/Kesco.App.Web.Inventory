@@ -1,3 +1,4 @@
+@inherits EquipmentEditorDialogBase<EquipmentAccountDialogResult>
 @using Clayzor.Lib.Web.Controls.Components.Form
 @inject Kesco.App.Web.Inventory.Services.EquipmentFormService Service
 
@@ -26,22 +27,19 @@
         </div>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || _readFailed)" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || _readFailed || _saving || _saveBlocked)" />
     </DialogActions>
 </MudDialog>
 
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClayTextBoxOptions _loginOptions = new() { Required = true, MaxLength = 50 };
-    private readonly ClayTextBoxOptions _passwordOptions = new() { MaxLength = 128, InputType = InputType.Password };
-    private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300 };
+    private readonly ClayTextBoxOptions _loginOptions = new() { Required = true, MaxLength = 50, DraftKey = "account.login" };
+    private readonly ClayTextBoxOptions _passwordOptions = new() { MaxLength = 128, InputType = InputType.Password, DraftKey = "account.password" };
+    private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300, DraftKey = "account.notes" };
     private bool _loading = true;
     private bool _readFailed;
-    private string? _error;
-
-    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
 
     /// <summary>Идентификатор оборудования.</summary>
     [Parameter] public int EquipmentId { get; set; }
@@ -96,20 +94,13 @@
             _error = null;
     }
 
-    private void Cancel() => Dialog.Cancel();
-
-    private void Apply()
+    private Task Apply()
     {
         if (_loading || _readFailed)
-            return;
+            return Task.CompletedTask;
         Login = Login.Trim();
-        if (Login.Length == 0)
-        {
-            _error = "Укажите логин.";
-            return;
-        }
-        _error = null;
-        Dialog.Close(DialogResult.Ok(new EquipmentAccountDialogResult(
-            Login, Password, LimitedRights == true, Notes ?? string.Empty)));
+        var draft = new EquipmentAccountDialogResult(
+            Login, Password, LimitedRights == true, Notes ?? string.Empty);
+        return ApplyAsync(draft, () => Login.Length == 0 ? "Укажите логин." : null);
     }
 }

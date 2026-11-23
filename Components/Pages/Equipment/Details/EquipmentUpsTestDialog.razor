@@ -55,9 +55,9 @@
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClayDatePickerOptions _dateOptions = new() { Required = true };
-    private readonly ClayTimeOptions _timeOptions = new() { Required = true };
-    private readonly ClayNumberOptions _batteryOptions = new() { Required = true, Min = 0 };
+    private readonly ClayDatePickerOptions _dateOptions = new() { Required = true, DraftKey = "ups-test.date" };
+    private readonly ClayTimeOptions _timeOptions = new() { Required = true, DraftKey = "ups-test.time" };
+    private readonly ClayNumberOptions _batteryOptions = new() { Required = true, Min = 0, DraftKey = "ups-test.battery" };
     private readonly ClayGridOptions _serverGridOptions = new()
     {
         Id = "ups-test-servers",

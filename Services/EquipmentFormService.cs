@@ -11,16 +11,20 @@ namespace Kesco.App.Web.Inventory.Services;
 public class EquipmentFormService
 {
     private readonly DbManager _db;
-    private readonly AuthenticationStateProvider? _authenticationStateProvider;
+    private readonly ICurrentUserPrincipalProvider? _principalProvider;
 
     /// <summary>Создаёт сервис без UI-авторизации для тестов и небезопасных для ролей вызовов.</summary>
-    public EquipmentFormService(DbManager db) : this(db, null) { }
+    public EquipmentFormService(DbManager db) : this(db, (ICurrentUserPrincipalProvider?)null) { }
 
     /// <summary>Создаёт сервис с подключением и серверной Windows-идентичностью текущего circuit.</summary>
     public EquipmentFormService(DbManager db, AuthenticationStateProvider? authenticationStateProvider)
+        : this(db, authenticationStateProvider is null ? null : new CircuitCurrentUserPrincipalProvider(authenticationStateProvider)) { }
+
+    /// <summary>Создаёт сервис с явным источником доверенной идентичности HTTP-запроса или circuit.</summary>
+    public EquipmentFormService(DbManager db, ICurrentUserPrincipalProvider? principalProvider)
     {
         _db = db;
-        _authenticationStateProvider = authenticationStateProvider;
+        _principalProvider = principalProvider;
     }
 
     /// <summary>Читает независимые секции формы одним SQL batch на соединении текущего circuit.</summary>
@@ -148,6 +152,13 @@ public class EquipmentFormService
         (await _db.QueryRequiredAsync<int?>(SQLQueries.SELECT_ТелефонныйНомерОборудованиеПодключения,
             new { PhoneId = phoneId, EmployeeId = employeeId, LocationId = locationId })).SingleOrDefault();
 
+    /// <summary>Загружает другое оборудование той же legacy-группы на выбранном рабочем месте без изменения данных.</summary>
+    public virtual async Task<IReadOnlyList<EquipmentWorkplaceAdvisoryItem>> GetWorkplaceAdvisoryAsync(
+        int equipmentId, int locationId) =>
+        (await _db.QueryRequiredAsync<EquipmentWorkplaceAdvisoryItem>(
+            SQLQueries.SELECT_ПредупреждениеОборудованиеНаРабочемМесте,
+            new { Id = locationId, IT = 1, EquipmentId = equipmentId })).ToList();
+
     /// <summary>Загружает историю расположений оборудования.</summary>
     public virtual async Task<IReadOnlyList<EquipmentLocationPeriod>> GetLocationsAsync(int equipmentId) =>
         (await _db.QueryRequiredAsync<EquipmentLocationPeriod>(
@@ -201,6 +212,15 @@ public class EquipmentFormService
         EquipmentLocationPeriod? location)
     {
         await EnsureInventoryEditAsync();
+        var responsibles = await GetResponsiblesAsync(current.EquipmentId);
+        var active = responsibles.Where(item => item.ToUtc is null).Take(2).ToList();
+        if (active.Count != 1 || active[0].FromUtc != current.FromUtc || active[0].EmployeeId != current.EmployeeId)
+            throw new InvalidOperationException(
+                "Действующий ответственный изменился. Обновите данные и повторите операцию.");
+        if (next is not null && next.EmployeeId == active[0].EmployeeId)
+            throw new InvalidOperationException("Следующий ответственный должен отличаться от действующего.");
+        if (next?.ReturnDate is not null && next.ReturnDate.Value.Date < next.FromUtc.Date)
+            throw new InvalidOperationException("Срок возврата следующего ответственного не может быть раньше его выдачи.");
         await current.WithdrawAsync(_db, next, location);
     }
 
@@ -229,24 +249,30 @@ public class EquipmentFormService
         });
     }
 
-    /// <summary>Добавляет учётную запись после проверки ролей 102 и 43.</summary>
+    /// <summary>Добавляет учётную запись после проверки ролей 102 и 43 и фактического типа.</summary>
     public virtual async Task AddAccountAsync(EquipmentAccount account)
     {
         await EnsureAccountAccessAsync(true);
+        if ((await GetRequiredChildWriteTypeAsync(account.EquipmentId)).MacAddressCount == 0)
+            throw new InvalidOperationException("Учётные записи недоступны для фактического типа оборудования.");
         await account.InsertAsync(_db);
     }
 
-    /// <summary>Обновляет учётную запись после проверки ролей 102 и 43.</summary>
+    /// <summary>Обновляет учётную запись после проверки ролей 102 и 43 и фактического типа.</summary>
     public virtual async Task UpdateAccountAsync(EquipmentAccount account)
     {
         await EnsureAccountAccessAsync(true);
+        if ((await GetRequiredChildWriteTypeAsync(account.EquipmentId)).MacAddressCount == 0)
+            throw new InvalidOperationException("Учётные записи недоступны для фактического типа оборудования.");
         await account.UpdateAsync(_db);
     }
 
-    /// <summary>Удаляет учётную запись после проверки ролей 102 и 43.</summary>
+    /// <summary>Удаляет учётную запись после проверки ролей 102 и 43 и фактического типа.</summary>
     public virtual async Task DeleteAccountAsync(EquipmentAccount account)
     {
         await EnsureAccountAccessAsync(true);
+        if ((await GetRequiredChildWriteTypeAsync(account.EquipmentId)).MacAddressCount == 0)
+            throw new InvalidOperationException("Учётные записи недоступны для фактического типа оборудования.");
         await account.DeleteAsync(_db);
     }
 
@@ -258,6 +284,7 @@ public class EquipmentFormService
     /// <summary>Строит URL детализации только для доступной SIM и актуального ответственного.</summary>
     public virtual async Task<string?> GetSimDetailUrlAsync(int equipmentId, string baseUri)
     {
+        await EnsureTrustedIdentityAsync();
         var responsibles = (await _db.QueryRequiredAsync<EquipmentResponsiblePeriod>(
             SQLQueries.SELECT_ОборудованиеСотрудники, new { EquipmentId = equipmentId })).ToList();
         var sims = (await _db.QueryRequiredAsync<EquipmentSimCard>(
@@ -265,6 +292,8 @@ public class EquipmentFormService
         if (sims.Count != 1)
             return null;
         var sim = sims[0];
+        if (sim.ExecutorPersonId != (int)Лица.Билайн)
+            return null;
         if (sim.IsSubordinate != 1)
         {
             var tarifficationAvailable = await ExecuteRequiredScalarAsync<int>(
@@ -287,7 +316,7 @@ public class EquipmentFormService
     /// <summary>Загружает PIN/PUK после серверной проверки роли.</summary>
     public virtual async Task<EquipmentSimSecrets> GetSimSecretsAsync(int equipmentId)
     {
-        if (!await HasRoleAsync(42))
+        if (!await HasRoleAsync(Роли.Администратор_тарифов_связи))
             throw new UnauthorizedAccessException("Недостаточно прав для просмотра кодов SIM.");
         return await _db.RunDbAsync(async connection =>
         {
@@ -304,22 +333,26 @@ public class EquipmentFormService
         await ExecuteRequiredScalarAsync<int?>(SQLQueries.SELECT_SimКарты_Другая_С_Тем_Же_Номером,
             new { EquipmentId = equipmentId, PhoneNumber = phoneNumber }, commandType: CommandType.Text);
 
-    /// <summary>Проверяет роль 42 и атомарно списывает подтверждённый дубликат и сохраняет SIM.</summary>
+    /// <summary>Проверяет роль 42 и фактический тип, атомарно списывает подтверждённый дубликат и сохраняет SIM.</summary>
     public virtual async Task SaveSimAsync(EquipmentSimCard sim, int? duplicateEquipmentId = null)
     {
-        if (!await HasRoleAsync(42))
+        if (!await HasRoleAsync(Роли.Администратор_тарифов_связи))
             throw new UnauthorizedAccessException("Недостаточно прав для изменения SIM.");
+        if ((await GetRequiredChildWriteTypeAsync(sim.EquipmentId)).HasSimCharacteristics == 0)
+            throw new InvalidOperationException("Сведения SIM недоступны для фактического типа оборудования.");
         var validation = sim.Validate();
         if (validation is not null)
             throw new InvalidOperationException(validation);
         await sim.SaveAsync(_db, duplicateEquipmentId);
     }
 
-    /// <summary>Проверяет роль 42 и удаляет только сведения SIM.</summary>
+    /// <summary>Проверяет роль 42 и фактический тип, затем удаляет только сведения SIM.</summary>
     public virtual async Task DeleteSimAsync(int equipmentId)
     {
-        if (!await HasRoleAsync(42))
+        if (!await HasRoleAsync(Роли.Администратор_тарифов_связи))
             throw new UnauthorizedAccessException("Недостаточно прав для удаления SIM.");
+        if ((await GetRequiredChildWriteTypeAsync(equipmentId)).HasSimCharacteristics == 0)
+            throw new InvalidOperationException("Сведения SIM недоступны для фактического типа оборудования.");
         await _db.ExecuteAsync(
             SQLQueries.DELETE_ID_SIMКарты, new { EquipmentId = equipmentId }, commandType: CommandType.Text);
     }
@@ -339,11 +372,13 @@ public class EquipmentFormService
     public virtual async Task<IReadOnlyList<SimServiceType>> GetSimServiceTypesAsync() =>
         (await _db.QueryRequiredAsync<SimServiceType>(SQLQueries.SELECT_ТипыДопУслугСотОператора)).ToList();
 
-    /// <summary>Проверяет роль 42, валидацию и сохраняет дополнительную услугу SIM.</summary>
+    /// <summary>Проверяет роль 42 и фактический тип, валидацию и сохраняет дополнительную услугу SIM.</summary>
     public virtual async Task SaveSimServiceAsync(EquipmentSimService service)
     {
-        if (!await HasRoleAsync(42))
+        if (!await HasRoleAsync(Роли.Администратор_тарифов_связи))
             throw new UnauthorizedAccessException("Недостаточно прав для изменения дополнительной услуги SIM.");
+        if ((await GetRequiredChildWriteTypeAsync(service.EquipmentId)).HasSimCharacteristics == 0)
+            throw new InvalidOperationException("Дополнительные услуги SIM недоступны для фактического типа оборудования.");
         var validation = service.Validate(DateTime.Today);
         if (validation is not null)
             throw new InvalidOperationException(validation);
@@ -353,7 +388,7 @@ public class EquipmentFormService
     /// <summary>Возвращает конфигурацию IP-телефона после проверки роли 102.</summary>
     public virtual async Task<string> GetPhoneConfigAsync(string mac)
     {
-        if (!await HasRoleAsync(102))
+        if (!await HasRoleAsync(Роли.Дежурный_инженер))
             throw new UnauthorizedAccessException("Недостаточно прав для получения конфигурации телефона.");
         var parameters = new Dapper.DynamicParameters();
         parameters.Add("@MACадрес", mac, System.Data.DbType.String, size: 12);
@@ -428,6 +463,7 @@ public class EquipmentFormService
     {
         if (upsEquipmentId <= 0 || sourceServerEquipmentId <= 0)
             throw new InvalidOperationException("Подключение UPS отсутствует в БД.");
+        await EnsureTrustedIdentityAsync();
         await UpsServerLink.SaveDetailsAsync(
             _db, upsEquipmentId, sourceServerEquipmentId, originalServers, currentServers, originalTests, currentTests);
     }
@@ -453,8 +489,8 @@ public class EquipmentFormService
     {
         if (personId is null or <= 0)
             return false;
-        var hasRole = await HasRoleForPersonAsync(66, personId) ||
-                      await HasRoleForPersonAsync(68, personId);
+        var hasRole = await HasRoleForPersonAsync(Роли.Бухгалтер, personId) ||
+                      await HasRoleForPersonAsync(Роли.Главный_бухгалтер_1С, personId);
         if (!hasRole)
             return false;
         return await ExecuteRequiredScalarAsync<int>(SQLQueries.SELECT_ЛицоВедетБухгалтерскийУчет,
@@ -478,18 +514,23 @@ public class EquipmentFormService
     }
 
     /// <summary>Атомарно удаляет подтверждённую запись, если она всё ещё последняя.</summary>
-    public virtual Task DeleteAccountingAsync(int equipmentId, int accountingId) =>
-        EquipmentAccounting.DeleteLatestAsync(_db, equipmentId, accountingId);
+    public virtual async Task DeleteAccountingAsync(int equipmentId, int accountingId)
+    {
+        await EnsureTrustedIdentityAsync();
+        await EquipmentAccounting.DeleteLatestAsync(_db, equipmentId, accountingId);
+    }
 
     /// <summary>Загружает установленное ПО оборудования.</summary>
     public virtual async Task<IReadOnlyList<EquipmentSoftwareInstallation>> GetSoftwareInstallationsAsync(int equipmentId) =>
         (await _db.QueryRequiredAsync<EquipmentSoftwareInstallation>(
             SQLQueries.SELECT_ПО_КодОборудования, new { EquipmentId = equipmentId })).ToList();
 
-    /// <summary>Проверяет роль 43, валидацию и сохраняет установку ПО.</summary>
+    /// <summary>Проверяет роль 43 и фактический тип, валидацию и сохраняет установку ПО.</summary>
     public virtual async Task SaveSoftwareInstallationAsync(EquipmentSoftwareInstallation installation)
     {
         await EnsureInventoryEditAsync();
+        if ((await GetRequiredChildWriteTypeAsync(installation.EquipmentId)).HasComputerCharacteristics == 0)
+            throw new InvalidOperationException("Установка ПО недоступна для фактического типа оборудования.");
         var validation = installation.Validate();
         if (validation is not null)
             throw new InvalidOperationException(validation);
@@ -538,10 +579,18 @@ public class EquipmentFormService
     public virtual async Task<IReadOnlyList<StandardConfiguration>> GetStandardConfigurationsAsync() =>
         (await _db.QueryRequiredAsync<StandardConfiguration>(SQLQueries.SELECT_СтандартныеКонфигурации)).ToList();
 
-    /// <summary>Проверяет роль 43 и добавляет или обновляет дневной снимок компьютера.</summary>
-    public virtual async Task SaveComputerAsync(EquipmentComputerSnapshot snapshot)
+    /// <summary>Проверяет роль 43, фактическую модель компьютера и сохраняет дневной снимок.</summary>
+    public virtual async Task SaveComputerAsync(EquipmentComputerSnapshot snapshot, DateTime? today = null)
     {
         await EnsureInventoryEditAsync();
+        var context = (await _db.QueryRequiredAsync<ComputerModelContext>(
+            SQLQueries.SELECT_КомпьютерКонтекстСохранения, new { snapshot.EquipmentId })).SingleOrDefault()
+            ?? throw new InvalidOperationException("Оборудование или его модель не найдены. Обновите данные.");
+        if (context.HasComputerCharacteristics == 0)
+            throw new InvalidOperationException("Конфигурация компьютера недоступна для фактического типа оборудования.");
+        var validation = snapshot.ValidateConfiguration(today ?? DateTime.Today, context.MemoryBanks);
+        if (validation is not null)
+            throw new InvalidOperationException(validation);
         await snapshot.SaveAsync(_db);
     }
 
@@ -554,6 +603,18 @@ public class EquipmentFormService
         await EnsureInventoryEditAsync();
         await ValidateEquipmentForSaveAsync(equipment);
         await equipment.UpdateWithPhonesAsync(_db, original, current);
+    }
+
+    /// <summary>Настраивает сохранённый IP-телефон по актуальным связям без повторного SQL UPDATE.</summary>
+    public virtual async Task<IReadOnlyList<PhoneSyncResult>> ConfigurePhoneEquipmentAsync(int equipmentId)
+    {
+        await EnsureInventoryEditAsync();
+        var equipment = await GetAsync(equipmentId) ??
+                        throw new InvalidOperationException("Оборудование не найдено.");
+        if (equipment.EquipmentTypeId != (int)ТипыОборудования.IP_телефон)
+            throw new InvalidOperationException("Команда доступна только для сохранённого IP-телефона.");
+        var current = await GetPhonesAsync(equipmentId);
+        return await SynchronizePhoneOperationsAsync(equipmentId, [], current);
     }
 
     /// <summary>Синхронизирует изменённые номера и оборудование с подтверждёнными АТС.</summary>
@@ -572,6 +633,7 @@ public class EquipmentFormService
         IReadOnlyCollection<EquipmentPhoneLink> original,
         IReadOnlyCollection<EquipmentPhoneLink> current)
     {
+        await EnsureInventoryEditAsync();
         var results = new List<PhoneSyncResult>();
         var currentIds = current.Select(item => item.PhoneId).ToHashSet();
         var originalIds = original.Select(item => item.PhoneId).ToHashSet();
@@ -579,10 +641,7 @@ public class EquipmentFormService
         var added = current.Where(item => !originalIds.Contains(item.PhoneId)).ToList();
         var deleted = original.Where(item => !currentIds.Contains(item.PhoneId)).ToList();
         var changed = current.Where(item => originalById.TryGetValue(item.PhoneId, out var source) &&
-            (item.ConnectionEquipmentId != source.ConnectionEquipmentId ||
-             item.AutoDialNumber != source.AutoDialNumber ||
-             item.AutoDialDelay != source.AutoDialDelay ||
-             item.IsDefault != source.IsDefault)).ToList();
+            HasSyncChanges(source, item)).ToList();
         if (added.Count == 0 && deleted.Count == 0 && changed.Count == 0)
             return results;
         var phones = deleted.Select(item => (item.PhoneId, Deleted: true))
@@ -619,12 +678,78 @@ public class EquipmentFormService
         }
         if (needsCcm && !hasXorcom)
             operations.AddRange(equipmentIds.Select(id => new PhoneSyncOperation(PhoneSyncKind.Ccm, id.ToString())));
-        results.AddRange(await ExecutePhoneSyncOperationsAsync(operations));
+        results.AddRange(await ExecutePhoneSyncOperationsCoreAsync(operations));
         return results;
     }
 
-    /// <summary>Выполняет только переданные операции и не повторяет успешные команды из прежнего diff.</summary>
+    /// <summary>Повторяет только неуспешные операции после свежей проверки прав и актуального контекста.</summary>
     public virtual async Task<IReadOnlyList<PhoneSyncResult>> ExecutePhoneSyncOperationsAsync(
+        int equipmentId,
+        IReadOnlyCollection<EquipmentPhoneLink> original,
+        IReadOnlyCollection<EquipmentPhoneLink> current,
+        IEnumerable<PhoneSyncOperation> operations)
+    {
+        await EnsureInventoryEditAsync();
+        await EnsurePhoneSyncContextCurrentAsync(equipmentId, original, current);
+        EnsureOperationsBelongToDiff(equipmentId, original, current, operations);
+        return await ExecutePhoneSyncOperationsCoreAsync(operations);
+    }
+
+    private async Task EnsurePhoneSyncContextCurrentAsync(
+        int equipmentId,
+        IReadOnlyCollection<EquipmentPhoneLink> original,
+        IReadOnlyCollection<EquipmentPhoneLink> current)
+    {
+        if (await GetAsync(equipmentId) is null)
+            throw new InvalidOperationException("Оборудование не найдено. Повтор синхронизации отменён.");
+        var actual = (await GetPhonesAsync(equipmentId)).ToDictionary(item => item.PhoneId);
+        var currentIds = current.Select(item => item.PhoneId).ToHashSet();
+        if (original.Any(item => !currentIds.Contains(item.PhoneId) && actual.ContainsKey(item.PhoneId)))
+            throw new InvalidOperationException("Удалённая телефонная связь была создана повторно. Повтор синхронизации отменён.");
+        foreach (var expected in current)
+        {
+            if (!actual.TryGetValue(expected.PhoneId, out var persisted) || HasSyncChanges(expected, persisted))
+                throw new InvalidOperationException("Телефонные связи изменились в другой сессии. Повтор синхронизации отменён.");
+        }
+    }
+
+    private static void EnsureOperationsBelongToDiff(
+        int equipmentId,
+        IReadOnlyCollection<EquipmentPhoneLink> original,
+        IReadOnlyCollection<EquipmentPhoneLink> current,
+        IEnumerable<PhoneSyncOperation> operations)
+    {
+        var originalById = original.ToDictionary(item => item.PhoneId);
+        var currentById = current.ToDictionary(item => item.PhoneId);
+        var affectedIds = originalById.Keys.Concat(currentById.Keys).Where(phoneId =>
+        {
+            var hasOriginal = originalById.TryGetValue(phoneId, out var before);
+            var hasCurrent = currentById.TryGetValue(phoneId, out var after);
+            return hasOriginal != hasCurrent || hasOriginal && hasCurrent && HasSyncChanges(before!, after!);
+        }).ToHashSet();
+        var affected = original.Concat(current).Where(item => affectedIds.Contains(item.PhoneId)).ToList();
+        var equipmentIds = affected.Select(item => item.ConnectionEquipmentId).Where(id => id is > 0)
+            .Select(id => id!.Value).Append(equipmentId).ToHashSet();
+        foreach (var operation in operations.Distinct())
+        {
+            if (operation.Kind == PhoneSyncKind.Ccm &&
+                int.TryParse(operation.Key, out var targetId) && equipmentIds.Contains(targetId))
+                continue;
+            if (operation.Kind == PhoneSyncKind.Xorcom && int.TryParse(operation.Key, out var phoneId) &&
+                affectedIds.Contains(phoneId) &&
+                operation.Deleting == (originalById.ContainsKey(phoneId) && !currentById.ContainsKey(phoneId)))
+                continue;
+            throw new UnauthorizedAccessException("Операция АТС не соответствует подтверждённому изменению оборудования.");
+        }
+    }
+
+    private static bool HasSyncChanges(EquipmentPhoneLink source, EquipmentPhoneLink target) =>
+        source.ConnectionEquipmentId != target.ConnectionEquipmentId ||
+        source.AutoDialNumber != target.AutoDialNumber ||
+        source.AutoDialDelay != target.AutoDialDelay ||
+        source.IsDefault != target.IsDefault;
+
+    private async Task<IReadOnlyList<PhoneSyncResult>> ExecutePhoneSyncOperationsCoreAsync(
         IEnumerable<PhoneSyncOperation> operations)
     {
         var results = new List<PhoneSyncResult>();
@@ -637,6 +762,18 @@ public class EquipmentFormService
         return results;
     }
 
+    private sealed class ComputerModelContext
+    {
+        /// <summary>Фактическая модель оборудования.</summary>
+        public int ModelId { get; set; }
+        /// <summary>Фактический тип модели.</summary>
+        public int EquipmentTypeId { get; set; }
+        /// <summary>Признак характеристик компьютера.</summary>
+        public byte HasComputerCharacteristics { get; set; }
+        /// <summary>Число банков памяти фактической модели.</summary>
+        public int? MemoryBanks { get; set; }
+    }
+
     private async Task ValidateEquipmentForSaveAsync(Equipment equipment)
     {
         var errors = new List<string>();
@@ -644,16 +781,22 @@ public class EquipmentFormService
             errors.Add("Выберите тип и модель оборудования.");
         if (equipment.OwnerId is null)
             errors.Add("Укажите владельца оборудования.");
-        var hasWriteOff = equipment.WriteOffAtUtc is not null && equipment.WriteOffAtUtc != DateTime.MinValue;
-        if (equipment.DocumentWriteOffId is not null && !hasWriteOff)
-            errors.Add("Укажите дату списания.");
-        if (equipment.EquipmentTypeId != (int)ТипыОборудования.SIM_карта &&
-            hasWriteOff && equipment.DocumentWriteOffId is null)
-            errors.Add("Укажите документ списания.");
         if (errors.Count > 0)
             throw new InvalidOperationException(string.Join(" ", errors));
 
-        var type = await GetRequiredTypeAsync(equipment);
+        var type = (await _db.QueryRequiredAsync<EquipmentType>(
+            SQLQueries.SELECT_МодельОборудованияТипДляСохранения,
+            new { ModelId = equipment.ModelId.GetValueOrDefault() })).SingleOrDefault()
+            ?? throw new InvalidOperationException("Модель оборудования не найдена.");
+        if (type.Id != equipment.EquipmentTypeId)
+            throw new InvalidOperationException("Выбранная модель не соответствует типу оборудования. Обновите модель и повторите операцию.");
+
+        var hasWriteOff = equipment.WriteOffAtUtc is not null && equipment.WriteOffAtUtc != DateTime.MinValue;
+        if (equipment.DocumentWriteOffId is not null && !hasWriteOff)
+            errors.Add("Укажите дату списания.");
+        if (type.Id != (int)ТипыОборудования.SIM_карта &&
+            hasWriteOff && equipment.DocumentWriteOffId is null)
+            errors.Add("Укажите документ списания.");
         if (type.IsSerialNumberRequired > 0 && string.IsNullOrWhiteSpace(equipment.SerialNumber))
             errors.Add("Укажите серийный номер.");
         if (type.MacAddressCount > 0 &&
@@ -663,19 +806,32 @@ public class EquipmentFormService
             errors.Add("MAC-адрес должен содержать 12 hex-символов; допустимы разделители пробел, двоеточие, дефис и точка.");
         if (errors.Count > 0)
             throw new InvalidOperationException(string.Join(" ", errors));
+
+        if (type.MacAddressCount > 0)
+        {
+            equipment.MacAddress = Equipment.NormalizeMacAddress(equipment.MacAddress);
+            equipment.MacAddress2 = Equipment.NormalizeMacAddress(equipment.MacAddress2);
+            equipment.MacAddressIlo = Equipment.NormalizeMacAddress(equipment.MacAddressIlo);
+        }
     }
 
     private async Task EnsureInventoryEditAsync()
     {
-        if (!await HasRoleAsync(43))
+        if (!await HasRoleAsync(Роли.Специалист_по_инвентаризации_оборудования))
             throw new UnauthorizedAccessException("Недостаточно прав для изменения оборудования.");
     }
 
     private async Task EnsureAccountAccessAsync(bool write)
     {
-        if (!await HasRoleAsync(102) || write && !await HasRoleAsync(43))
+        if (!await HasGlobalRoleAsync(Роли.Дежурный_инженер) ||
+            write && !await HasRoleAsync(Роли.Специалист_по_инвентаризации_оборудования))
             throw new UnauthorizedAccessException("Недостаточно прав для работы с учётными записями оборудования.");
     }
+
+    private async Task<EquipmentType> GetRequiredChildWriteTypeAsync(int equipmentId) =>
+        (await _db.QueryRequiredAsync<EquipmentType>(
+            SQLQueries.SELECT_ОборудованиеТипДляДочернихЗаписей, new { EquipmentId = equipmentId })).SingleOrDefault()
+        ?? throw new InvalidOperationException("Оборудование или его модель не найдены. Обновите данные.");
 
     private async Task<EquipmentType> GetRequiredTypeAsync(Equipment equipment)
     {
@@ -691,7 +847,8 @@ public class EquipmentFormService
         var equipment = await GetAsync(equipmentId) ??
                         throw new InvalidOperationException("Оборудование не найдено.");
         var type = await GetRequiredTypeAsync(equipment);
-        if (type.HasComputerCharacteristics == 0 || !await HasRoleAsync(103))
+        if (type.HasComputerCharacteristics == 0 ||
+            !await HasGlobalRoleAsync(Роли.Исполнитель_заявок_службы_поддержки_пользователей))
             throw new UnauthorizedAccessException("Недостаточно прав для изменения подключения рабочей сети.");
     }
 
@@ -701,7 +858,7 @@ public class EquipmentFormService
                         throw new InvalidOperationException("Оборудование не найдено.");
         var type = await GetRequiredTypeAsync(equipment);
         if (equipment.EquipmentTypeId is not < 100 || type.HasSimCharacteristics != 0 ||
-            !await HasRoleForPersonAsync(43, equipment.OwnerId))
+            !await HasRoleForPersonAsync(Роли.Специалист_по_инвентаризации_оборудования, equipment.OwnerId))
             throw new UnauthorizedAccessException("Недостаточно прав для изменения подключений UPS.");
     }
 
@@ -710,9 +867,9 @@ public class EquipmentFormService
         var equipment = await GetAsync(equipmentId) ??
                         throw new InvalidOperationException("Оборудование не найдено.");
         var type = await GetRequiredTypeAsync(equipment);
-        var hasRole = await HasRoleForPersonAsync(44, equipment.OwnerId) ||
+        var hasRole = await HasRoleForPersonAsync(Роли.Специалист_по_инвентаризации_по, equipment.OwnerId) ||
                       equipment.TenantId is not null && equipment.TenantId != equipment.OwnerId &&
-                      await HasRoleForPersonAsync(44, equipment.TenantId);
+                      await HasRoleForPersonAsync(Роли.Специалист_по_инвентаризации_по, equipment.TenantId);
         if (type.HasSoftwareCharacteristics == 0 || !hasRole)
             throw new UnauthorizedAccessException("Недостаточно прав для изменения лицензии.");
     }
@@ -724,15 +881,28 @@ public class EquipmentFormService
     public virtual async Task<Employee?> GetCurrentUserAsync() =>
         await Employee.GetCurrentAsync(_db, await GetWindowsPrincipalAsync());
 
-    private async Task<string?> GetWindowsPrincipalAsync()
+    /// <summary>Получает текущего сотрудника со снимком effective roles для отображения формы.</summary>
+    public virtual async Task<Employee?> GetCurrentUserWithRolesAsync() =>
+        await Employee.GetCurrentWithRolesAsync(_db, await GetWindowsPrincipalAsync());
+
+    private async Task EnsureTrustedIdentityAsync()
     {
-        if (_authenticationStateProvider is null)
-            return null;
-        var authentication = await _authenticationStateProvider.GetAuthenticationStateAsync();
-        return authentication.User.Identity?.Name;
+        if (await GetCurrentUserAsync() is null)
+            throw new UnauthorizedAccessException("Не удалось подтвердить текущего сотрудника.");
     }
 
+    private Task<string?> GetWindowsPrincipalAsync() =>
+        _principalProvider?.GetWindowsPrincipalAsync() ?? Task.FromResult<string?>(null);
+
     /// <summary>Проверяет роль текущего пользователя с учётом замещений через Employee.</summary>
-    public virtual async Task<bool> HasRoleAsync(int roleId) =>
-        await Employee.HasRoleAsync(_db, await GetWindowsPrincipalAsync(), (Роли)roleId);
+    public virtual async Task<bool> HasRoleAsync(Роли role) =>
+        await Employee.HasRoleAsync(_db, await GetWindowsPrincipalAsync(), role);
+
+    /// <summary>Проверяет роль по фактическому лицу; при отсутствии лица допускается только global.</summary>
+    public virtual async Task<bool> HasRoleForPersonAsync(Роли role, int? personId) =>
+        await Employee.HasRoleAsync(_db, await GetWindowsPrincipalAsync(), role,
+            EmployeeRoleScope.PersonOrGlobal, personId);
+
+    private async Task<bool> HasGlobalRoleAsync(Роли role) =>
+        await Employee.HasRoleAsync(_db, await GetWindowsPrincipalAsync(), role, EmployeeRoleScope.Global);
 }

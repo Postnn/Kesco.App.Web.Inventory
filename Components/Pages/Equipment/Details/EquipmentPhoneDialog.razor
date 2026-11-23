@@ -21,8 +21,8 @@
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClayDatePickerOptions _dateOptions = new();
-    private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300 };
+    private readonly ClayDatePickerOptions _dateOptions = new() { DraftKey = "phone.return-date" };
+    private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300, DraftKey = "phone.notes" };
 
     [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
 

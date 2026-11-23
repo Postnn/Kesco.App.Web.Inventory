@@ -1,3 +1,4 @@
+@inherits EquipmentEditorDialogBase<EquipmentUpsDialogResult>
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Grid
 @using Clayzor.Lib.Web.Controls.Components.Form
@@ -13,6 +14,10 @@
         {
             <MudAlert Severity="Severity.Error">@_error</MudAlert>
         }
+        @if (Servers.Any(item => !IsComputer(item)))
+        {
+            <MudAlert Severity="Severity.Info">Признак «Выключение настроено» доступен только для компьютеров. Для другого оборудования значение доступно только для чтения.</MudAlert>
+        }
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Сервер:</span>
             <ClaySelect TItem="UpsEquipmentLookup" TValue="int?"
@@ -26,12 +31,23 @@
         <ClayGrid TEntity="UpsServerLink" Items="Servers" Options="_serverGridOptions">
             <ColumnDefs>
                 <ClayColumnDef ColumnId="1" SqlName="Server" DisplayName="Сервер" />
+                <ClayColumnDef ColumnId="2" SqlName="ChangedBy" DisplayName="Изменил" />
+                <ClayColumnDef ColumnId="3" SqlName="ChangedAt" DisplayName="Изменено" />
             </ColumnDefs>
             <Columns>
                 <ClayColumn TEntity="UpsServerLink" ColumnId="1" TextSelector="@(item => string.IsNullOrWhiteSpace(item.ServerName) ? item.EquipmentName : item.ServerName)" />
+                <ClayColumn TEntity="UpsServerLink" ColumnId="2" TextSelector="@(item => item.ChangedByName)" />
+                <ClayColumn TEntity="UpsServerLink" ColumnId="3">
+                    <CellTemplate>
+                        @if (context.Item.ChangedAt != default)
+                        {
+                            <ClayLocalTime Value="context.Item.ChangedAt" />
+                        }
+                    </CellTemplate>
+                </ClayColumn>
             </Columns>
             <RowActions Context="item">
-                <ClayCheckbox State="item.TurnOffConfigured > 0" OnToggle="() => ToggleServer(item)" Label="Выключение" />
+                <ClayCheckbox State="item.TurnOffConfigured > 0" ReadOnly="@(!IsComputer(item))" OnToggle="() => ToggleServer(item)" Label="Выключение" />
                 <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить сервер" OnClick="() => Servers.Remove(item)" />
             </RowActions>
         </ClayGrid>
@@ -41,12 +57,23 @@
                 <ClayColumnDef ColumnId="2" SqlName="BatteryTime" DisplayName="Батарея" />
                 <ClayColumnDef ColumnId="3" SqlName="Servers" DisplayName="Серверы" />
                 <ClayColumnDef ColumnId="4" SqlName="Issues" DisplayName="Ошибки" />
+                <ClayColumnDef ColumnId="5" SqlName="ChangedBy" DisplayName="Изменил" />
+                <ClayColumnDef ColumnId="6" SqlName="ChangedAt" DisplayName="Изменено" />
             </ColumnDefs>
             <Columns>
                 <ClayColumn TEntity="UpsTest" ColumnId="1" TextSelector="@(item => item.TestedAt.ToString("dd.MM.yyyy HH:mm:ss"))" />
                 <ClayColumn TEntity="UpsTest" ColumnId="2" TextSelector="@(item => item.BatteryTime.ToString())" />
                 <ClayColumn TEntity="UpsTest" ColumnId="3" TextSelector="@(item => item.Servers)" />
                 <ClayColumn TEntity="UpsTest" ColumnId="4" TextSelector="@(item => item.Issues)" />
+                <ClayColumn TEntity="UpsTest" ColumnId="5" TextSelector="@(item => item.ChangedByName)" />
+                <ClayColumn TEntity="UpsTest" ColumnId="6">
+                    <CellTemplate>
+                        @if (context.Item.ChangedAt != default)
+                        {
+                            <ClayLocalTime Value="context.Item.ChangedAt" />
+                        }
+                    </CellTemplate>
+                </ClayColumn>
             </Columns>
             <RowActions Context="item">
                 <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить тест" OnClick="() => EditTest(item)" />
@@ -54,8 +81,8 @@
         </ClayGrid>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked)" />
     </DialogActions>
 </MudDialog>
 
@@ -63,7 +90,7 @@
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
     private readonly ClayToolbarButtonOptions _addButtonOptions = new() { Text = "Добавить" };
-    private readonly ClaySelectOptions _serverOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите сервер" };
+    private readonly ClaySelectOptions _serverOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите сервер", DraftKey = "ups.server" };
     private readonly ClayGridOptions _serverGridOptions = SectionOptions("ups-servers", "Нет серверов", false);
     private readonly ClayGridOptions _testGridOptions = SectionOptions("ups-tests", "Нет тестов", true);
 
@@ -83,12 +110,24 @@
     };
     private int? _serverToAdd;
     private bool _addingServer;
-    private string? _error;
-
-    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
 
     /// <summary>Идентификатор UPS.</summary>
     [Parameter] public int UpsEquipmentId { get; set; }
+
+    /// <summary>Возвращает актуальное локальное время браузера.</summary>
+    [Parameter] public Func<Task<DateTime>>? GetNow { get; set; }
+
+    /// <summary>Уведомляет владельца DR-01 об изменении состава редакторов.</summary>
+    [Parameter] public Func<Task>? DraftChanged { get; set; }
+
+    /// <summary>Идентификатор вложенного теста для восстановления.</summary>
+    [Parameter] public int? RestoreTestId { get; set; }
+
+    /// <summary>Уведомляет DR-01 об открытии восстановленного вложенного теста.</summary>
+    [Parameter] public Func<Task>? NotifyTestOpened { get; set; }
+
+    /// <summary>Устанавливает идентификатор открытого вложенного теста DR-01.</summary>
+    [Parameter] public Func<int?, Task>? NestedTestChanged { get; set; }
 
     /// <summary>Редактируемые серверы.</summary>
     [Parameter] public List<UpsServerLink> Servers { get; set; } = [];
@@ -97,6 +136,27 @@
     [Parameter] public List<UpsTest> Tests { get; set; } = [];
 
     private UpsEquipmentSelectDataSource ServerSource => Services.GetRequiredKeyedService<UpsEquipmentSelectDataSource>("server");
+
+    /// <inheritdoc />
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && RestoreTestId is not null)
+        {
+            var testId = RestoreTestId.Value;
+            var item = Tests.FirstOrDefault(test => test.Id == testId);
+            var isNew = item is null;
+            item ??= new UpsTest
+            {
+                UpsEquipmentId = UpsEquipmentId,
+                TestedAt = GetNow is null ? DateTime.Now : await GetNow(),
+            };
+            var updated = await EditTest(item);
+            if (isNew && updated is not null)
+                Tests.Add(updated);
+        }
+        if (DraftChanged is not null)
+            await DraftChanged();
+    }
 
     private async Task AddServer()
     {
@@ -131,11 +191,20 @@
         }
     }
 
-    private static void ToggleServer(UpsServerLink item) => item.TurnOffConfigured = item.TurnOffConfigured > 0 ? (byte)0 : (byte)1;
+    private static bool IsComputer(UpsServerLink item) =>
+        item.EquipmentTypeId == (int)ТипыОборудования.Компьютер;
+
+    private static void ToggleServer(UpsServerLink item)
+    {
+        if (!IsComputer(item))
+            return;
+        item.TurnOffConfigured = item.TurnOffConfigured > 0 ? (byte)0 : (byte)1;
+    }
 
     private async Task AddTest()
     {
-        var item = new UpsTest { UpsEquipmentId = UpsEquipmentId, TestedAt = DateTime.Now };
+        var now = GetNow is null ? DateTime.Now : await GetNow();
+        var item = new UpsTest { UpsEquipmentId = UpsEquipmentId, TestedAt = now };
         var updated = await EditTest(item);
         if (updated is not null)
             Tests.Add(updated);
@@ -151,6 +220,8 @@
             BatteryTime = item.BatteryTime,
             Servers = item.Servers,
             Issues = item.Issues,
+            ChangedByName = item.ChangedByName,
+            ChangedAt = item.ChangedAt,
         };
         var parameters = new DialogParameters<EquipmentUpsTestDialog>
         {
@@ -159,18 +230,31 @@
             { dialog => dialog.Time, value.TestedAt.TimeOfDay },
             { dialog => dialog.AvailableServers, Servers },
         };
-        var dialog = await DialogService.ShowExAsync<EquipmentUpsTestDialog>(
-            "Тестирование UPS", parameters, new DialogOptionsEx { DragMode = MudDialogDragMode.Simple });
-        var result = await dialog.Result;
-        if (result is null || result.Canceled || result.Data is not UpsTest updated)
-            return null;
-        var index = Tests.IndexOf(item);
-        if (index >= 0)
-            Tests[index] = updated;
-        return updated;
+        if (NestedTestChanged is not null)
+            await NestedTestChanged(item.Id);
+        try
+        {
+            var dialog = await DialogService.ShowExAsync<EquipmentUpsTestDialog>(
+                "Тестирование UPS", parameters, new DialogOptionsEx { DragMode = MudDialogDragMode.Simple });
+            if (RestoreTestId == item.Id && NotifyTestOpened is not null)
+            {
+                RestoreTestId = null;
+                await NotifyTestOpened();
+            }
+            var result = await dialog.Result;
+            if (result is null || result.Canceled || result.Data is not UpsTest updated)
+                return null;
+            var index = Tests.IndexOf(item);
+            if (index >= 0)
+                Tests[index] = updated;
+            return updated;
+        }
+        finally
+        {
+            if (NestedTestChanged is not null)
+                await NestedTestChanged(null);
+        }
     }
 
-    private void Cancel() => Dialog.Cancel();
-
-    private void Apply() => Dialog.Close(DialogResult.Ok(new EquipmentUpsDialogResult(Servers, Tests)));
+    private Task Apply() => ApplyAsync(new EquipmentUpsDialogResult(Servers, Tests), () => null);
 }

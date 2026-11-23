@@ -62,3 +62,21 @@
 - `ModelId` и подтверждённый объект модели раздельно управляют видимостью; backup ClaySelect сохраняется для Escape.
 - Поисковый ввод не является бизнес-подтверждением. Поздние SQL/JS-ответы проверяют версии и ID.
 - Права чтения, права записи и очистка скрытых значений вычисляются раздельно.
+
+
+## Итоговое уточнение EQ8
+
+| Область | Актуальное состояние Clayzor | Локальная проверка |
+|---|---|---|
+| Identity и роли | HTTP PhoneConfig использует `HttpContext.User`, circuit — инициализированный AuthenticationStateProvider. UX получает `Employee CurrentUser` со снимком effective roles; write/external guards свежие. Accounts и secret read — global102, network — global103 | HTTP pipeline, principal mismatch, ANY/global/person/null, отзыв роли |
+| АТС | Retry проверяет свежего Employee, diff и актуальные связи, включая законно удалённую связь. «Настроить оборудование» работает без UPDATE | Revoked/foreign/changed target, failed-only retry, dirty/saved UI |
+| Дочерние редакторы | Общий `EquipmentEditorDialogBase` различает Rejected/Unknown/Committed/RefreshFailed. Диалог не закрывается до commit; refresh error не повторяет DML | Настоящие OK-кнопки bUnit, сохранение видимого ввода, write-count=1 |
+| Concurrency | Основной UPDATE и phone diff сравнивают исходный `ChangedAtUtc`; истории используют точный `От` с долями секунды. Child commit выполняет трёхсторонний merge baseline без затирания dirty-полей | V1 A/B, .500, affected 0/2, rollback и phone-order |
+| SQL-подборы | Phone exclusions находятся до ORDER BY, OR-фильтры оборудования сгруппированы. ПДн использует CTE активных технических тарифов и фактический тип лица | Итоговый SQL real data source, параметры, SQL error vs empty |
+| Время | Location/Responsible/Computer/SIM/UPS используют browser-local clock; исходные ключи остаются UTC. SIM «Сейчас» и UPS AddTest не используют server `DateTime.Now` | Unit/bUnit и browser UTC+3; beta DST/zones |
+| SIM и услуги | Custom-услуга без типа сохраняется, старый custom можно редактировать. SIM detail повторно проверяет оператора Билайн. «Сейчас», duplicate cancel и secret/Contract/Fill races защищены | Catalog/custom/empty, operator change, secret/late resolve tests |
+| Компьютер | Sticky error устранена; конфигурации и лимит RAM проверяются доменом UI и Service по фактической модели. HD/SSD горизонтальны | 2 банка→3→удаление→Apply, config pairs, direct invalid no DML |
+| UPS | Raw `ServerName` отделён от `EquipmentName`; unnamed fallback не становится адресатом. Computer-only shutdown guard, original diff, audit и точный same-row conflict реализованы | Named/unnamed/historical, applicability, rollback, DOM audit |
+| Оставшиеся UX | Show/hide password без43, activation Now, license description, overdue returns, workplace advisory, multiline notes, явная деинсталляция | bUnit/DOM, query contracts, SQL error vs empty |
+| DR-01 | Общий зашифрованный IndexedDB draft с raw input, user/tab isolation, revisions, operation snapshots и schema backup. Reconnect reload блокируется при ошибке сохранности. Восстановление не выполняет бизнес-команды | C# API/reconnect 7 tests; Chrome last-char reload, process restart, schema 1→2 deployment и child restore |
+| Осознанно открыто | R01/R04, физические АТС/UPS/ICMP/WOL, внешний биллинг, SQL2008R2/triggers/multiuser Windows и полная DST/mobile beta-матрица | Не выдаются за локальный PASS |
