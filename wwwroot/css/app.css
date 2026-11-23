@@ -122,6 +122,31 @@
     min-width: 0;
 }
 
+.equipment-computer-components {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow-x: auto;
+    padding-bottom: 4px;
+}
+
+.equipment-computer-number {
+    flex: 0 0 120px;
+    min-width: 0;
+}
+
+.equipment-computer-configuration {
+    display: grid;
+    grid-template-columns: minmax(320px, 1fr) var(--clay-date-time-width);
+    gap: 8px;
+}
+
+.equipment-computer-configuration > * {
+    min-width: 0;
+}
+
 .equipment-form-fields {
     display: flex;
     flex-direction: column;
@@ -367,6 +392,7 @@
 
     .equipment-ins-date,
     .equipment-ins-mac,
+    .equipment-computer-configuration,
     .equipment-accounting-date-document {
         grid-template-columns: 1fr;
     }

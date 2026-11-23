@@ -109,7 +109,9 @@
     {
         _locationOptions.ReadOnly = IsEdit;
         _fromDateOptions.ReadOnly = IsEdit;
+        _fromDateOptions.Disabled = IsEdit;
         _fromTimeOptions.ReadOnly = IsEdit;
+        _fromTimeOptions.Disabled = IsEdit;
     }
 
     private void Cancel() => Dialog.Cancel();

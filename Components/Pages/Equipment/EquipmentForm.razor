@@ -442,7 +442,7 @@
                         <ClayColumn TEntity="EquipmentSimCard" ColumnId="2" TextSelector="@(item => FormatDisplayDate(item.ActivatedAtUtc, true))" />
                         <ClayColumn TEntity="EquipmentSimCard" ColumnId="3" TextSelector="@(item => item.ContractName)" />
                         <ClayColumn TEntity="EquipmentSimCard" ColumnId="4" TextSelector="@(item => item.PersonalDataPersonName)" />
-                        <ClayColumn TEntity="EquipmentSimCard" ColumnId="5" TextSelector="@(item => item.ChangedByName)" />
+                        <ClayColumn TEntity="EquipmentSimCard" ColumnId="5"><CellTemplate>@EmployeeLink(context.Item.ChangedById, context.Item.ChangedByName)</CellTemplate></ClayColumn>
                         <ClayColumn TEntity="EquipmentSimCard" ColumnId="6" TextSelector="@(item => FormatDisplayDate(item.ChangedAt, true))" />
                     </Columns>
                     <RowActions Context="item">
@@ -478,7 +478,7 @@
                         <ClayColumn TEntity="EquipmentLicense" ColumnId="5" TextSelector="@(item => item.ClientCount?.ToString() ?? string.Empty)" />
                         <ClayColumn TEntity="EquipmentLicense" ColumnId="6" TextSelector="@(item => FormatPeriod(item.DateFrom, item.DateTo))" />
                         <ClayColumn TEntity="EquipmentLicense" ColumnId="7" TextSelector="@(item => item.Distribution)" />
-                        <ClayColumn TEntity="EquipmentLicense" ColumnId="8" TextSelector="@(item => item.ChangedByName)" />
+                        <ClayColumn TEntity="EquipmentLicense" ColumnId="8"><CellTemplate>@EmployeeLink(context.Item.ChangedById, context.Item.ChangedByName)</CellTemplate></ClayColumn>
                         <ClayColumn TEntity="EquipmentLicense" ColumnId="9" TextSelector="@(item => FormatDisplayDate(item.ChangedAt, true))" />
                     </Columns>
                     <RowActions Context="item">
@@ -570,7 +570,7 @@
                         }
                         <ClayColumn TEntity="EquipmentComputerSnapshot" ColumnId="7" TextSelector="@(item => item.License)" />
                         <ClayColumn TEntity="EquipmentComputerSnapshot" ColumnId="8" TextSelector="@(item => item.Notes)" />
-                        <ClayColumn TEntity="EquipmentComputerSnapshot" ColumnId="9" TextSelector="@(item => item.ChangedByName)" />
+                        <ClayColumn TEntity="EquipmentComputerSnapshot" ColumnId="9"><CellTemplate>@EmployeeLink(context.Item.ChangedById, context.Item.ChangedByName)</CellTemplate></ClayColumn>
                         <ClayColumn TEntity="EquipmentComputerSnapshot" ColumnId="10" TextSelector="@(item => FormatDisplayDate(item.ChangedAt, true))" />
                     </Columns>
                 </ClayGrid>
@@ -588,7 +588,7 @@
                     <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="1" TextSelector="@(item => FormatLocationDate(item))" />
                     <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="2" TextSelector="@(item => item.LocationName)" />
                     <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="3" TextSelector="@(item => item.Notes)" />
-                    <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="4" TextSelector="@(item => item.ChangedByName)" />
+                    <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="4"><CellTemplate>@EmployeeLink(context.Item.ChangedById, context.Item.ChangedByName)</CellTemplate></ClayColumn>
                     <ClayColumn TEntity="EquipmentLocationPeriod" ColumnId="5" TextSelector="@(item => FormatDisplayDate(item.ChangedAtUtc, true))" />
                 </Columns>
                 <RowActions Context="item">
@@ -604,14 +604,7 @@
                 <div class="equipment-last-inventory-inline">
                     <strong>Последняя инвентаризация:</strong>
                     @FormatDisplayDate(_lastInventory.CheckedAt, true) —
-                    @if (EmployeeUrl(_lastInventory.ChangedById) is string employeeUrl)
-                    {
-                        <a href="@employeeUrl" target="_blank" rel="noopener">@_lastInventory.ChangedByName</a>
-                    }
-                    else
-                    {
-                        @_lastInventory.ChangedByName
-                    }
+                    @EmployeeLink(_lastInventory.ChangedById, _lastInventory.ChangedByName)
                     @if (!string.IsNullOrWhiteSpace(_lastInventory.Notes))
                     {
                         <text>; @_lastInventory.Notes</text>
@@ -637,9 +630,9 @@
                 </ColumnDefs>
                 <Columns>
                     <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="1" TextSelector="@(item => FormatResponsiblePeriod(item))" />
-                    <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="2" TextSelector="@(item => item.EmployeeName)" />
+                    <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="2"><CellTemplate>@EmployeeLink(context.Item.EmployeeId, context.Item.EmployeeName)</CellTemplate></ClayColumn>
                     <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="3" TextSelector="@(item => item.Notes)" />
-                    <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="4" TextSelector="@(item => item.ChangedByName)" />
+                    <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="4"><CellTemplate>@EmployeeLink(context.Item.ChangedById, context.Item.ChangedByName)</CellTemplate></ClayColumn>
                     <ClayColumn TEntity="EquipmentResponsiblePeriod" ColumnId="5" TextSelector="@(item => FormatDisplayDate(item.ChangedAtUtc, true))" />
                 </Columns>
                 <RowActions Context="item">
@@ -675,7 +668,7 @@
                         <ClayColumn TEntity="EquipmentSoftwareInstallation" ColumnId="2" TextSelector="@(item => item.Distribution)" />
                         <ClayColumn TEntity="EquipmentSoftwareInstallation" ColumnId="3" TextSelector="@(item => FormatPeriod(item.InstalledAt, item.UninstalledAt))" />
                         <ClayColumn TEntity="EquipmentSoftwareInstallation" ColumnId="4" TextSelector="@(item => item.Notes)" />
-                        <ClayColumn TEntity="EquipmentSoftwareInstallation" ColumnId="5" TextSelector="@(item => item.ChangedByName)" />
+                        <ClayColumn TEntity="EquipmentSoftwareInstallation" ColumnId="5"><CellTemplate>@EmployeeLink(context.Item.ChangedById, context.Item.ChangedByName)</CellTemplate></ClayColumn>
                         <ClayColumn TEntity="EquipmentSoftwareInstallation" ColumnId="6" TextSelector="@(item => FormatDisplayDate(item.ChangedAt, true))" />
                     </Columns>
                     <RowActions Context="item">
@@ -703,7 +696,7 @@
                     <ClayColumn TEntity="EquipmentAccounting" ColumnId="4" TextSelector="@(item => item.DateFrom?.ToString("dd.MM.yyyy") ?? string.Empty)" />
                     <ClayColumn TEntity="EquipmentAccounting" ColumnId="5" TextSelector="@(item => item.DateTo?.ToString("dd.MM.yyyy") ?? string.Empty)" />
                     <ClayColumn TEntity="EquipmentAccounting" ColumnId="6" TextSelector="@(item => item.Notes)" />
-                    <ClayColumn TEntity="EquipmentAccounting" ColumnId="7" TextSelector="@(item => item.ChangedByName)" />
+                    <ClayColumn TEntity="EquipmentAccounting" ColumnId="7"><CellTemplate>@EmployeeLink(context.Item.ChangedById, context.Item.ChangedByName)</CellTemplate></ClayColumn>
                     <ClayColumn TEntity="EquipmentAccounting" ColumnId="8" TextSelector="@(item => FormatDisplayDate(item.ChangedAt, true))" />
                 </Columns>
                 <RowActions Context="item">
@@ -827,7 +820,7 @@
                                 </CellTemplate>
                             </ClayColumn>
                         }
-                        <ClayColumn TEntity="EquipmentSimService" ColumnId="7" TextSelector="@(item => item.ChangedByName)" />
+                        <ClayColumn TEntity="EquipmentSimService" ColumnId="7"><CellTemplate>@EmployeeLink(context.Item.ChangedById, context.Item.ChangedByName)</CellTemplate></ClayColumn>
                         <ClayColumn TEntity="EquipmentSimService" ColumnId="8" TextSelector="@(item => FormatDisplayDate(item.ChangedAt, true))" />
                     </Columns>
                     <RowActions Context="item">

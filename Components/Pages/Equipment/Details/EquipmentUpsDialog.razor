@@ -159,7 +159,8 @@
             { dialog => dialog.Time, value.TestedAt.TimeOfDay },
             { dialog => dialog.AvailableServers, Servers },
         };
-        var dialog = await DialogService.ShowAsync<EquipmentUpsTestDialog>("Тестирование UPS", parameters);
+        var dialog = await DialogService.ShowExAsync<EquipmentUpsTestDialog>(
+            "Тестирование UPS", parameters, new DialogOptionsEx { DragMode = MudDialogDragMode.Simple });
         var result = await dialog.Result;
         if (result is null || result.Canceled || result.Data is not UpsTest updated)
             return null;

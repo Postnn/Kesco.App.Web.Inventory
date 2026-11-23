@@ -10,63 +10,65 @@
         }
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">RAM, Мб:</span>
-            <div>
+            <div class="equipment-computer-components">
                 @for (var i = 0; i < Ram.Count; i++)
                 {
                     var index = i;
-                    <div class="d-flex gap-1">
+                    <div class="equipment-computer-number">
                         <ClayNumber Value="Ram[index]" ValueChanged="value => Ram[index] = value" Options="_integerOptions" />
-                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить компонент RAM" OnClick="() => Ram.RemoveAt(index)" />
                     </div>
                 }
-                <ClayToolbarButton Options="_addRamButtonOptions" OnClick="() => Ram.Add(0)" />
             </div>
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">HD, Гб:</span>
-            <div>
+            <div class="equipment-computer-components">
+                <ClayButton Icon="@Icons.Material.Filled.Add" Text="Добавить HD" OnClick="() => Hd.Add(0)" />
                 @for (var i = 0; i < Hd.Count; i++)
                 {
                     var index = i;
-                    <div class="d-flex gap-1">
+                    <div class="equipment-computer-number d-flex gap-1">
                         <ClayNumber Value="Hd[index]" ValueChanged="value => Hd[index] = value" Options="_diskOptions" />
                         <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить компонент HD" OnClick="() => Hd.RemoveAt(index)" />
                     </div>
                 }
-                <ClayToolbarButton Options="_addHdButtonOptions" OnClick="() => Hd.Add(0)" />
             </div>
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">SSD, Гб:</span>
-            <div>
+            <div class="equipment-computer-components">
+                <ClayButton Icon="@Icons.Material.Filled.Add" Text="Добавить SSD" OnClick="() => Ssd.Add(0)" />
                 @for (var i = 0; i < Ssd.Count; i++)
                 {
                     var index = i;
-                    <div class="d-flex gap-1">
+                    <div class="equipment-computer-number d-flex gap-1">
                         <ClayNumber Value="Ssd[index]" ValueChanged="value => Ssd[index] = value" Options="_integerOptions" />
                         <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить компонент SSD" OnClick="() => Ssd.RemoveAt(index)" />
                     </div>
                 }
-                <ClayToolbarButton Options="_addSsdButtonOptions" OnClick="() => Ssd.Add(0)" />
             </div>
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Конфигурация 1:</span>
-            <ClayDropDownList TItem="StandardConfiguration" TValue="int?"
-                              Items="Configurations"
-                              ValueSelector="@(item => (int?)item.Id)"
-                              TextSelector="@(item => item.Name)"
-                              @bind-Value="Configuration1Id" />
-            <ClayDatePicker @bind-Value="Configuration1Date" />
+            <div class="equipment-computer-configuration">
+                <ClayDropDownList TItem="StandardConfiguration" TValue="int?"
+                                  Items="Configurations"
+                                  ValueSelector="@(item => (int?)item.Id)"
+                                  TextSelector="@(item => item.Name)"
+                                  @bind-Value="Configuration1Id" />
+                <ClayDatePicker @bind-Value="Configuration1Date" />
+            </div>
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Конфигурация 2:</span>
-            <ClayDropDownList TItem="StandardConfiguration" TValue="int?"
-                              Items="Configurations"
-                              ValueSelector="@(item => (int?)item.Id)"
-                              TextSelector="@(item => item.Name)"
-                              @bind-Value="Configuration2Id" />
-            <ClayDatePicker @bind-Value="Configuration2Date" />
+            <div class="equipment-computer-configuration">
+                <ClayDropDownList TItem="StandardConfiguration" TValue="int?"
+                                  Items="Configurations"
+                                  ValueSelector="@(item => (int?)item.Id)"
+                                  TextSelector="@(item => item.Name)"
+                                  @bind-Value="Configuration2Id" />
+                <ClayDatePicker @bind-Value="Configuration2Date" />
+            </div>
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Лицензия:</span>
@@ -86,9 +88,6 @@
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClayToolbarButtonOptions _addRamButtonOptions = new() { Text = "Добавить RAM" };
-    private readonly ClayToolbarButtonOptions _addHdButtonOptions = new() { Text = "Добавить HD" };
-    private readonly ClayToolbarButtonOptions _addSsdButtonOptions = new() { Text = "Добавить SSD" };
     private readonly ClayNumberOptions _integerOptions = new() { Min = 0, Precision = 0 };
     private readonly ClayNumberOptions _diskOptions = new() { Min = 0, Precision = 2, Step = 0.5m };
     private readonly ClayTextBoxOptions _licenseOptions = new() { MaxLength = 50 };
@@ -154,7 +153,10 @@
         _initialized = true;
         try
         {
-            Ram.AddRange(EquipmentComputerDetail.Parse(RamDetail).Select(value => (decimal?)value));
+            var ram = EquipmentComputerDetail.Parse(RamDetail);
+            Ram.AddRange(ram.Take(Math.Max(0, MemoryBanks)).Select(value => (decimal?)value));
+            while (Ram.Count < MemoryBanks)
+                Ram.Add(0);
             Hd.AddRange(EquipmentComputerDetail.Parse(HdDetail).Select(value => (decimal?)value));
             Ssd.AddRange(EquipmentComputerDetail.Parse(SsdDetail).Select(value => (decimal?)value));
         }

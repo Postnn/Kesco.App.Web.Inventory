@@ -10,8 +10,11 @@ using Kesco.App.Web.Inventory.Components.Pages.Equipment.Details;
 using Kesco.App.Web.Inventory.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Routing;
+using Microsoft.AspNetCore.Components.Web;
 using Microsoft.JSInterop;
 using MudBlazor;
+using MudBlazor.Extensions;
+using MudBlazor.Extensions.Options;
 using EquipmentEntity = Clayzor.Lib.Entities.Inventory.Equipment;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
@@ -319,6 +322,28 @@ public partial class EquipmentForm : IDisposable
         builder.AddContent(5, text);
         builder.CloseElement();
     };
+
+    private RenderFragment EmployeeLink(int employeeId, string? employeeName) => builder =>
+    {
+        var url = EmployeeUrl(employeeId);
+        if (url is null)
+        {
+            builder.AddContent(0, employeeName);
+            return;
+        }
+        builder.OpenElement(0, "a");
+        builder.AddAttribute(1, "href", url);
+        builder.AddAttribute(2, "onclick", EventCallback.Factory.Create(this, () => OpenEmployeeAsync(employeeId)));
+        builder.AddEventPreventDefaultAttribute(3, "onclick", true);
+        builder.AddContent(4, employeeName);
+        builder.CloseElement();
+    };
+
+    private async Task OpenEmployeeAsync(int employeeId)
+    {
+        if (EmployeeUrl(employeeId) is string url)
+            await JS.InvokeVoidAsync("clayOpen", url, "user-form");
+    }
 
     /// <inheritdoc />
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -852,13 +877,14 @@ public partial class EquipmentForm : IDisposable
         if (_model is null || !_canEdit || _saving)
             return;
         var isEdit = existing is not null;
+        var fromLocal = existing is null ? (DateTime?)null : await ConvertUtcToLocalAsync(existing.FromUtc);
         var parameters = new DialogParameters<EquipmentLocationDialog>
         {
             { dialog => dialog.IsEdit, isEdit },
             { dialog => dialog.RequireResponsible, !isEdit && !_responsibles.Any(item => item.ToUtc is null) },
             { dialog => dialog.LocationId, existing?.LocationId },
-            { dialog => dialog.FromDate, existing?.FromUtc.Date },
-            { dialog => dialog.FromTime, existing?.FromUtc.TimeOfDay },
+            { dialog => dialog.FromDate, fromLocal?.Date },
+            { dialog => dialog.FromTime, fromLocal?.TimeOfDay },
             { dialog => dialog.ReturnDate, existing?.ReturnDate },
             { dialog => dialog.Notes, existing?.Notes ?? string.Empty },
         };
@@ -967,22 +993,26 @@ public partial class EquipmentForm : IDisposable
         if (_model is null || !_canEdit || _saving)
             return;
         var requireLocation = mode == EquipmentResponsibleDialogMode.Withdraw && _model.LocationId == OnHandsLocationId;
+        var fromLocal = existing is null ? (DateTime?)null : await ConvertUtcToLocalAsync(existing.FromUtc);
+        var toLocal = existing?.ToUtc is DateTime toUtcValue
+            ? await ConvertUtcToLocalAsync(toUtcValue)
+            : (DateTime?)null;
         var parameters = new DialogParameters<EquipmentResponsibleDialog>
         {
             { dialog => dialog.Mode, mode },
             { dialog => dialog.RequireLocation, requireLocation },
             { dialog => dialog.EmployeeId, mode == EquipmentResponsibleDialogMode.Withdraw ? null : existing?.EmployeeId },
-            { dialog => dialog.FromDate, existing?.FromUtc.Date },
-            { dialog => dialog.FromTime, existing?.FromUtc.TimeOfDay },
-            { dialog => dialog.ToDate, existing?.ToUtc?.Date },
-            { dialog => dialog.ToTime, existing?.ToUtc?.TimeOfDay },
+            { dialog => dialog.FromDate, fromLocal?.Date },
+            { dialog => dialog.FromTime, fromLocal?.TimeOfDay },
+            { dialog => dialog.ToDate, toLocal?.Date },
+            { dialog => dialog.ToTime, toLocal?.TimeOfDay },
             { dialog => dialog.ReturnDate, existing?.ReturnDate },
             { dialog => dialog.Notes, existing?.Notes ?? string.Empty },
         };
         if (mode == EquipmentResponsibleDialogMode.Withdraw)
         {
-            parameters.Add(dialog => dialog.FromDate, existing?.ToUtc?.Date);
-            parameters.Add(dialog => dialog.FromTime, existing?.ToUtc?.TimeOfDay);
+            parameters.Add(dialog => dialog.FromDate, toLocal?.Date);
+            parameters.Add(dialog => dialog.FromTime, toLocal?.TimeOfDay);
         }
         var result = await ShowDialogAsync<EquipmentResponsibleDialog>("Ответственный", parameters);
         if (result is null || result.Canceled || result.Data is not EquipmentResponsibleDialogResult value)
@@ -1078,7 +1108,8 @@ public partial class EquipmentForm : IDisposable
             { dialog => dialog.LimitedRights, existing?.LimitedRights > 0 },
             { dialog => dialog.Notes, existing?.Notes ?? string.Empty },
         };
-        var dialog = await DialogService.ShowAsync<EquipmentAccountDialog>("Учётная запись", parameters);
+        var dialog = await DialogService.ShowExAsync<EquipmentAccountDialog>(
+            "Учётная запись", parameters, new DialogOptionsEx { DragMode = MudDialogDragMode.Simple });
         var result = await dialog.Result;
         if (!IsCurrent(operationVersion, equipmentId) || _model?.Id != equipmentId ||
             result is null || result.Canceled || result.Data is not EquipmentAccountDialogResult value)
@@ -1195,7 +1226,8 @@ public partial class EquipmentForm : IDisposable
             { dialog => dialog.Notes, latest?.Notes ?? string.Empty },
             { dialog => dialog.Configurations, _standardConfigurations },
         };
-        var result = await ShowDialogAsync<EquipmentComputerDialog>("Компьютер", parameters);
+        var result = await ShowDialogAsync<EquipmentComputerDialog>(
+            "Компьютер", parameters, new DialogOptionsEx { MaxWidth = MaxWidth.Medium, FullWidth = true });
         if (result is null || result.Canceled || result.Data is not EquipmentComputerSnapshot snapshot)
             return;
         var version = ++_computerVersion;
@@ -1242,6 +1274,7 @@ public partial class EquipmentForm : IDisposable
         if (_disposed || version != _computerVersion || _model.Id != equipmentId)
             return;
         _computerHistory = history.ToList();
+        await RefreshLocationDisplayDatesAsync();
     }
 
     private async Task OpenSimDialogAsync()
@@ -1271,7 +1304,8 @@ public partial class EquipmentForm : IDisposable
             { dialog => dialog.PersonalDataPersonId, existing?.PersonalDataPersonId },
             { dialog => dialog.CurrentEmployeeId, _responsibles.LastOrDefault(item => item.ToUtc is null)?.EmployeeId },
         };
-        var dialog = await DialogService.ShowAsync<EquipmentSimDialog>("SIM-карта", parameters);
+        var dialog = await DialogService.ShowExAsync<EquipmentSimDialog>(
+            "SIM-карта", parameters, new DialogOptionsEx { DragMode = MudDialogDragMode.Simple });
         var result = await dialog.Result;
         if (!IsCurrent(operationVersion, equipmentId) || _model?.Id != equipmentId ||
             result is null || result.Canceled || result.Data is not EquipmentSimDialogResult value)
@@ -1467,6 +1501,7 @@ public partial class EquipmentForm : IDisposable
         if (_disposed || version != _simServiceVersion || _model.Id != equipmentId)
             return;
         _simServices = services.ToList();
+        await RefreshLocationDisplayDatesAsync();
     }
 
     private async Task OpenLicenseDialogAsync()
@@ -1541,6 +1576,7 @@ public partial class EquipmentForm : IDisposable
         if (_disposed || version != _licenseVersion || _model.Id != equipmentId)
             return;
         _licenses = licenses.ToList();
+        await RefreshLocationDisplayDatesAsync();
         UpdateOptions();
     }
 
@@ -1609,6 +1645,7 @@ public partial class EquipmentForm : IDisposable
         if (_disposed || version != _softwareVersion || _model.Id != equipmentId)
             return;
         _softwareInstallations = installations.ToList();
+        await RefreshLocationDisplayDatesAsync();
     }
 
     private async Task OpenAccountingDialogAsync(EquipmentAccounting? existing)
@@ -1637,7 +1674,7 @@ public partial class EquipmentForm : IDisposable
         var parameters = new DialogParameters<EquipmentAccountingDialog> { { dialog => dialog.Value, value } };
         var result = await ShowDialogAsync<EquipmentAccountingDialog>(
             "Бухгалтерский учёт", parameters,
-            new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true });
+            new DialogOptionsEx { MaxWidth = MaxWidth.Medium, FullWidth = true });
         if (result is null || result.Canceled || result.Data is not EquipmentAccounting accounting)
             return;
         var version = ++_accountingVersion;
@@ -1836,8 +1873,9 @@ public partial class EquipmentForm : IDisposable
             { dialog => dialog.Items, _networkNameHistory },
             { dialog => dialog.FormatDate, utc => FormatDisplayDate(utc, true) },
         };
-        await DialogService.ShowAsync<EquipmentNetworkNameHistoryDialog>(
-            "История сетевых имён", parameters, new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true });
+        await DialogService.ShowExAsync<EquipmentNetworkNameHistoryDialog>(
+            "История сетевых имён", parameters,
+            new DialogOptionsEx { MaxWidth = MaxWidth.Medium, FullWidth = true, DragMode = MudDialogDragMode.Simple });
     }
 
     private async Task SetNetworkAttachmentAsync(bool attach)
@@ -2112,6 +2150,13 @@ public partial class EquipmentForm : IDisposable
         return result;
     }
 
+    private async Task<DateTime> ConvertUtcToLocalAsync(DateTime value)
+    {
+        var utc = DateTime.SpecifyKind(value, DateTimeKind.Utc);
+        var offset = await JS.InvokeAsync<int>("clayGridTimeZone.getOffsetMinutes", utc.ToString("O"));
+        return utc.AddMinutes(offset);
+    }
+
     private async Task<DateTime> ConvertLocalToUtcAsync(DateTime local)
     {
         var milliseconds = await JS.InvokeAsync<long>(
@@ -2125,8 +2170,9 @@ public partial class EquipmentForm : IDisposable
     {
         if (utc == default)
             return string.Empty;
-        var local = _localDates.TryGetValue(utc, out var value) ? value : utc;
-        return local.ToString(includeTime ? "dd.MM.yyyy HH:mm:ss" : "dd.MM.yyyy");
+        return _localDates.TryGetValue(utc, out var local)
+            ? local.ToString(includeTime ? "dd.MM.yyyy HH:mm:ss" : "dd.MM.yyyy")
+            : string.Empty;
     }
 
     private void UpdateOptions()
@@ -2415,11 +2461,13 @@ public partial class EquipmentForm : IDisposable
     private async Task<DialogResult?> ShowDialogAsync<T>(
         string title,
         DialogParameters<T> parameters,
-        DialogOptions? options = null) where T : IComponent
+        DialogOptionsEx? options = null) where T : ComponentBase
     {
         var equipmentId = _model?.Id;
         var operationVersion = _operationVersion;
-        var dialog = await DialogService.ShowAsync<T>(title, parameters, options);
+        options ??= new DialogOptionsEx();
+        options.DragMode = MudDialogDragMode.Simple;
+        var dialog = await DialogService.ShowExAsync<T>(title, parameters, options);
         var result = await dialog.Result;
         if (equipmentId is not null &&
             (!IsCurrent(operationVersion, equipmentId.Value) || _model?.Id != equipmentId))
@@ -2452,7 +2500,8 @@ public partial class EquipmentForm : IDisposable
             { dialog => dialog.ConfirmText, "Да" },
             { dialog => dialog.CancelText, "Нет" },
         };
-        var dialog = await DialogService.ShowAsync<ConfirmDialog>(title, parameters);
+        var dialog = await DialogService.ShowExAsync<ConfirmDialog>(
+            title, parameters, new DialogOptionsEx { DragMode = MudDialogDragMode.Simple });
         var result = await dialog.Result;
         return result is not null && !result.Canceled &&
                (equipmentId is null || IsCurrent(operationVersion, equipmentId.Value) && _model?.Id == equipmentId);
