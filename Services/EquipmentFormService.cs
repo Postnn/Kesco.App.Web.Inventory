@@ -3,6 +3,7 @@ using Clayzor.Lib.DALC;
 using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.Inventory;
 using Dapper;
+using Microsoft.AspNetCore.Components.Authorization;
 
 namespace Kesco.App.Web.Inventory.Services;
 
@@ -10,9 +11,17 @@ namespace Kesco.App.Web.Inventory.Services;
 public class EquipmentFormService
 {
     private readonly DbManager _db;
+    private readonly AuthenticationStateProvider? _authenticationStateProvider;
 
-    /// <summary>Создаёт сервис с подключением текущего Blazor circuit.</summary>
-    public EquipmentFormService(DbManager db) => _db = db;
+    /// <summary>Создаёт сервис без UI-авторизации для тестов и небезопасных для ролей вызовов.</summary>
+    public EquipmentFormService(DbManager db) : this(db, null) { }
+
+    /// <summary>Создаёт сервис с подключением и серверной Windows-идентичностью текущего circuit.</summary>
+    public EquipmentFormService(DbManager db, AuthenticationStateProvider? authenticationStateProvider)
+    {
+        _db = db;
+        _authenticationStateProvider = authenticationStateProvider;
+    }
 
     /// <summary>Читает независимые секции формы одним SQL batch на соединении текущего circuit.</summary>
     public virtual async Task<EquipmentFormReadResult> GetFormDataAsync(EquipmentFormReadRequest request)
@@ -126,27 +135,27 @@ public class EquipmentFormService
 
     /// <summary>Загружает телефонные связи оборудования.</summary>
     public virtual async Task<IReadOnlyList<EquipmentPhoneLink>> GetPhonesAsync(int equipmentId) =>
-        (await _db.QueryAsync<EquipmentPhoneLink>(
+        (await _db.QueryRequiredAsync<EquipmentPhoneLink>(
             SQLQueries.SELECT_ТелефонныеНомераОборудования, new { EquipmentId = equipmentId })).ToList();
 
     /// <summary>Возвращает количество номеров, если текущее расположение является гостиничным номером.</summary>
     public virtual async Task<int> GetHotelPhoneCountAsync(int equipmentId) =>
-        await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_UniquePhoneNumberInHotel,
+        await ExecuteRequiredScalarAsync<int>(SQLQueries.SELECT_UniquePhoneNumberInHotel,
             new { EquipmentId = equipmentId }, commandType: CommandType.Text);
 
     /// <summary>Определяет доступное оборудование подключения аналогового номера.</summary>
     public virtual async Task<int?> GetConnectionEquipmentIdAsync(int phoneId, int? employeeId, int locationId) =>
-        (await _db.QueryAsync<int?>(SQLQueries.SELECT_ТелефонныйНомерОборудованиеПодключения,
+        (await _db.QueryRequiredAsync<int?>(SQLQueries.SELECT_ТелефонныйНомерОборудованиеПодключения,
             new { PhoneId = phoneId, EmployeeId = employeeId, LocationId = locationId })).SingleOrDefault();
 
     /// <summary>Загружает историю расположений оборудования.</summary>
     public virtual async Task<IReadOnlyList<EquipmentLocationPeriod>> GetLocationsAsync(int equipmentId) =>
-        (await _db.QueryAsync<EquipmentLocationPeriod>(
+        (await _db.QueryRequiredAsync<EquipmentLocationPeriod>(
             SQLQueries.SELECT_ОборудованиеРасположение, new { EquipmentId = equipmentId })).ToList();
 
     /// <summary>Проверяет наличие действующего ответственного.</summary>
     public virtual async Task<bool> HasCurrentResponsibleAsync(int equipmentId) =>
-        await _db.ExecuteScalarAsync<int>(
+        await ExecuteRequiredScalarAsync<int>(
             SQLQueries.SELECT_ОборудованиеЕстьТекущийОтветственный,
             new { EquipmentId = equipmentId }, commandType: CommandType.Text) > 0;
 
@@ -168,7 +177,7 @@ public class EquipmentFormService
 
     /// <summary>Загружает историю ответственных сотрудников.</summary>
     public virtual async Task<IReadOnlyList<EquipmentResponsiblePeriod>> GetResponsiblesAsync(int equipmentId) =>
-        (await _db.QueryAsync<EquipmentResponsiblePeriod>(
+        (await _db.QueryRequiredAsync<EquipmentResponsiblePeriod>(
             SQLQueries.SELECT_ОборудованиеСотрудники, new { EquipmentId = equipmentId })).ToList();
 
     /// <summary>Проверяет роль 43 и добавляет нового ответственного.</summary>
@@ -199,7 +208,7 @@ public class EquipmentFormService
     public virtual async Task<IReadOnlyList<EquipmentAccount>> GetAccountsAsync(int equipmentId)
     {
         await EnsureAccountAccessAsync(false);
-        return (await _db.QueryAsync<EquipmentAccount>(
+        return (await _db.QueryRequiredAsync<EquipmentAccount>(
             SQLQueries.SELECT_ОборудованиеУчётныеЗаписи, new { EquipmentId = equipmentId })).ToList();
     }
 
@@ -243,8 +252,37 @@ public class EquipmentFormService
 
     /// <summary>Загружает сведения SIM без PIN/PUK.</summary>
     public virtual async Task<IReadOnlyList<EquipmentSimCard>> GetSimCardsAsync(int equipmentId) =>
-        (await _db.QueryAsync<EquipmentSimCard>(
+        (await _db.QueryRequiredAsync<EquipmentSimCard>(
             SQLQueries.SELECT_SIMКарты_КодОборудования, new { EquipmentId = equipmentId })).ToList();
+
+    /// <summary>Строит URL детализации только для доступной SIM и актуального ответственного.</summary>
+    public virtual async Task<string?> GetSimDetailUrlAsync(int equipmentId, string baseUri)
+    {
+        var responsibles = (await _db.QueryRequiredAsync<EquipmentResponsiblePeriod>(
+            SQLQueries.SELECT_ОборудованиеСотрудники, new { EquipmentId = equipmentId })).ToList();
+        var sims = (await _db.QueryRequiredAsync<EquipmentSimCard>(
+            SQLQueries.SELECT_SIMКарта_Детализация, new { EquipmentId = equipmentId })).ToList();
+        if (sims.Count != 1)
+            return null;
+        var sim = sims[0];
+        if (sim.IsSubordinate != 1)
+        {
+            var tarifficationAvailable = await ExecuteRequiredScalarAsync<int>(
+                SQLQueries.SELECT_SIMДетализация_ЕстьТарификация, null, CommandType.Text);
+            if (tarifficationAvailable != 1)
+                return null;
+            var availableByEmployee = await ExecuteRequiredScalarAsync<int>(
+                SQLQueries.SELECT_SIMДетализация_Подчинённый, new { ContractId = sim.ContractId }, CommandType.Text);
+            if (availableByEmployee != 1)
+                return null;
+        }
+        var responsible = responsibles.Count == 1
+            ? responsibles[0]
+            : responsibles.SingleOrDefault(item => item.ToUtc is null);
+        return responsible is null
+            ? null
+            : sim.BuildAccountingPhoneUri(baseUri, responsible.EmployeeName);
+    }
 
     /// <summary>Загружает PIN/PUK после серверной проверки роли.</summary>
     public virtual async Task<EquipmentSimSecrets> GetSimSecretsAsync(int equipmentId)
@@ -263,7 +301,7 @@ public class EquipmentFormService
 
     /// <summary>Ищет другую активную SIM с тем же номером.</summary>
     public virtual async Task<int?> GetDuplicateSimIdAsync(int equipmentId, string phoneNumber) =>
-        await _db.ExecuteScalarAsync<int?>(SQLQueries.SELECT_SimКарты_Другая_С_Тем_Же_Номером,
+        await ExecuteRequiredScalarAsync<int?>(SQLQueries.SELECT_SimКарты_Другая_С_Тем_Же_Номером,
             new { EquipmentId = equipmentId, PhoneNumber = phoneNumber }, commandType: CommandType.Text);
 
     /// <summary>Проверяет роль 42 и атомарно списывает подтверждённый дубликат и сохраняет SIM.</summary>
@@ -288,18 +326,18 @@ public class EquipmentFormService
 
     /// <summary>Возвращает лицо сотрудника для заполнения ПДн.</summary>
     public virtual async Task<int?> GetEmployeePersonIdAsync(int employeeId) =>
-        await _db.ExecuteScalarAsync<int?>(SQLQueries.SELECT_ЛицоСотрудника,
+        await ExecuteRequiredScalarAsync<int?>(SQLQueries.SELECT_ЛицоСотрудника,
             new { EmployeeId = employeeId }, commandType: CommandType.Text);
 
     /// <summary>Загружает дополнительные услуги текущей SIM.</summary>
     public virtual async Task<IReadOnlyList<EquipmentSimService>> GetSimServicesAsync(
         int equipmentId, bool showHistory, bool showRequired) =>
-        (await _db.QueryAsync<EquipmentSimService>(SQLQueries.SELECT_SIMКартыДопУслугиСотОператора_КодОборудования,
+        (await _db.QueryRequiredAsync<EquipmentSimService>(SQLQueries.SELECT_SIMКартыДопУслугиСотОператора_КодОборудования,
             new { EquipmentId = equipmentId, ShowHistory = showHistory ? 1 : 0, ShowRequired = showRequired ? 1 : 0 })).ToList();
 
     /// <summary>Загружает типы дополнительных услуг.</summary>
     public virtual async Task<IReadOnlyList<SimServiceType>> GetSimServiceTypesAsync() =>
-        (await _db.QueryAsync<SimServiceType>(SQLQueries.SELECT_ТипыДопУслугСотОператора)).ToList();
+        (await _db.QueryRequiredAsync<SimServiceType>(SQLQueries.SELECT_ТипыДопУслугСотОператора)).ToList();
 
     /// <summary>Проверяет роль 42, валидацию и сохраняет дополнительную услугу SIM.</summary>
     public virtual async Task SaveSimServiceAsync(EquipmentSimService service)
@@ -327,7 +365,7 @@ public class EquipmentFormService
 
     /// <summary>Возвращает счётчик подключений рабочей сети.</summary>
     public virtual async Task<int> GetNetworkAttachmentCountAsync(int equipmentId) =>
-        await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_ID_ConnectedWorkNet,
+        await ExecuteRequiredScalarAsync<int>(SQLQueries.SELECT_ID_ConnectedWorkNet,
             new { EquipmentId = equipmentId }, commandType: CommandType.Text);
 
     /// <summary>Проверяет компьютерный тип и роль 103, затем подключает оборудование к рабочей сети.</summary>
@@ -348,7 +386,7 @@ public class EquipmentFormService
 
     /// <summary>Загружает UPS, подключённые к серверу.</summary>
     public virtual async Task<IReadOnlyList<UpsServerLink>> GetUpsLinksAsync(int serverEquipmentId) =>
-        (await _db.QueryAsync<UpsServerLink>(
+        (await _db.QueryRequiredAsync<UpsServerLink>(
             SQLQueries.SELECT_ID_vwПодключенияUPS, new { ServerEquipmentId = serverEquipmentId })).ToList();
 
     /// <summary>Проверяет роль по владельцу и быстро подключает UPS к серверу.</summary>
@@ -371,12 +409,12 @@ public class EquipmentFormService
 
     /// <summary>Загружает серверы выбранного UPS.</summary>
     public virtual async Task<IReadOnlyList<UpsServerLink>> GetUpsServersAsync(int upsEquipmentId) =>
-        (await _db.QueryAsync<UpsServerLink>(
+        (await _db.QueryRequiredAsync<UpsServerLink>(
             SQLQueries.SELECT_ID_СервераПодключенияUPS, new { UpsEquipmentId = upsEquipmentId })).ToList();
 
     /// <summary>Загружает тесты выбранного UPS.</summary>
     public virtual async Task<IReadOnlyList<UpsTest>> GetUpsTestsAsync(int upsEquipmentId) =>
-        (await _db.QueryAsync<UpsTest>(
+        (await _db.QueryRequiredAsync<UpsTest>(
             SQLQueries.SELECT_ID_ТестыПодключенияUPS, new { UpsEquipmentId = upsEquipmentId })).ToList();
 
     /// <summary>Проверяет актуальные права на исходное оборудование и каждый изменяемый сервер.</summary>
@@ -396,18 +434,18 @@ public class EquipmentFormService
 
     /// <summary>Загружает последнюю инвентаризацию оборудования.</summary>
     public virtual async Task<EquipmentActualInventory?> GetLastInventoryAsync(int equipmentId) =>
-        (await _db.QueryAsync<EquipmentActualInventory>(
+        (await _db.QueryRequiredAsync<EquipmentActualInventory>(
             SQLQueries.SELECT_ID_РеальноеРасположениеОборудования_ПоследнееРасположение,
             new { EquipmentId = equipmentId })).SingleOrDefault();
 
     /// <summary>Загружает основные сведения маршрутизатора.</summary>
     public virtual async Task<EquipmentRouterInfo?> GetRouterInfoAsync(int equipmentId) =>
-        (await _db.QueryAsync<EquipmentRouterInfo>(
+        (await _db.QueryRequiredAsync<EquipmentRouterInfo>(
             SQLQueries.SELECT_Routers_КодОборудования, new { EquipmentId = equipmentId })).SingleOrDefault();
 
     /// <summary>Загружает инвентаризацию маршрутизатора.</summary>
     public virtual async Task<IReadOnlyList<EquipmentRouterInventoryItem>> GetRouterInventoryAsync(int equipmentId) =>
-        (await _db.QueryAsync<EquipmentRouterInventoryItem>(
+        (await _db.QueryRequiredAsync<EquipmentRouterInventoryItem>(
             SQLQueries.SELECT_КодОборудования_RouterInventory, new { EquipmentId = equipmentId })).ToList();
 
     /// <summary>Проверяет роли 66/68 и ведение бухгалтерского учёта владельцем.</summary>
@@ -419,13 +457,13 @@ public class EquipmentFormService
                       await HasRoleForPersonAsync(68, personId);
         if (!hasRole)
             return false;
-        return await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_ЛицоВедетБухгалтерскийУчет,
+        return await ExecuteRequiredScalarAsync<int>(SQLQueries.SELECT_ЛицоВедетБухгалтерскийУчет,
             new { PersonId = personId.Value }, commandType: CommandType.Text) == 1;
     }
 
     /// <summary>Загружает историю бухгалтерского учёта.</summary>
     public virtual async Task<IReadOnlyList<EquipmentAccounting>> GetAccountingAsync(int equipmentId) =>
-        (await _db.QueryAsync<EquipmentAccounting>(
+        (await _db.QueryRequiredAsync<EquipmentAccounting>(
             SQLQueries.SELECT_ОборудованиеБухУчета_КодОборудования, new { EquipmentId = equipmentId })).ToList();
 
     /// <summary>Проверяет права и сохраняет запись бухгалтерского учёта.</summary>
@@ -445,7 +483,7 @@ public class EquipmentFormService
 
     /// <summary>Загружает установленное ПО оборудования.</summary>
     public virtual async Task<IReadOnlyList<EquipmentSoftwareInstallation>> GetSoftwareInstallationsAsync(int equipmentId) =>
-        (await _db.QueryAsync<EquipmentSoftwareInstallation>(
+        (await _db.QueryRequiredAsync<EquipmentSoftwareInstallation>(
             SQLQueries.SELECT_ПО_КодОборудования, new { EquipmentId = equipmentId })).ToList();
 
     /// <summary>Проверяет роль 43, валидацию и сохраняет установку ПО.</summary>
@@ -460,12 +498,12 @@ public class EquipmentFormService
 
     /// <summary>Загружает лицензию оборудования.</summary>
     public virtual async Task<IReadOnlyList<EquipmentLicense>> GetLicensesAsync(int equipmentId) =>
-        (await _db.QueryAsync<EquipmentLicense>(
+        (await _db.QueryRequiredAsync<EquipmentLicense>(
             SQLQueries.SELECT_Soft_КодОборудования, new { EquipmentId = equipmentId })).ToList();
 
     /// <summary>Загружает типы лицензирования.</summary>
     public virtual async Task<IReadOnlyList<LicenseType>> GetLicenseTypesAsync() =>
-        (await _db.QueryAsync<LicenseType>(SQLQueries.SELECT_ТипыЛицензирования)).ToList();
+        (await _db.QueryRequiredAsync<LicenseType>(SQLQueries.SELECT_ТипыЛицензирования)).ToList();
 
     /// <summary>Проверяет роль 44 по владельцу/арендатору и сохраняет лицензию.</summary>
     public virtual async Task SaveLicenseAsync(EquipmentLicense license, LicenseType? type)
@@ -477,20 +515,19 @@ public class EquipmentFormService
         await license.SaveAsync(_db);
     }
 
-    /// <summary>Проверяет роль текущего пользователя по конкретному лицу.</summary>
+    /// <summary>Проверяет роль текущего пользователя по конкретному лицу через Employee.</summary>
     public virtual async Task<bool> HasRoleForPersonAsync(int roleId, int? personId) =>
-        await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_ТекущийПользовательИмеетРольПоЛицу,
-            new { RoleId = roleId, PersonId = personId }, commandType: CommandType.Text) == 1;
+        await Employee.HasRoleAsync(_db, await GetWindowsPrincipalAsync(), (Роли)roleId, personId);
 
     /// <summary>Загружает историю сетевых имён от новых записей к старым.</summary>
     public virtual async Task<IReadOnlyList<EquipmentNetworkNameHistory>> GetNetworkNameHistoryAsync(int equipmentId) =>
-        (await _db.QueryAsync<EquipmentNetworkNameHistory>(
+        (await _db.QueryRequiredAsync<EquipmentNetworkNameHistory>(
             SQLQueries.SELECT_ОборудованиеСетевыеИмена, new { EquipmentId = equipmentId })).ToList();
 
     /// <summary>Загружает историю дневных конфигураций компьютера.</summary>
     public virtual async Task<IReadOnlyList<EquipmentComputerSnapshot>> GetComputerHistoryAsync(int equipmentId)
     {
-        var history = (await _db.QueryAsync<EquipmentComputerSnapshot>(
+        var history = (await _db.QueryRequiredAsync<EquipmentComputerSnapshot>(
             SQLQueries.SELECT_Компьютеры_КодОборудования, new { EquipmentId = equipmentId })).ToList();
         foreach (var snapshot in history)
             snapshot.ParseDetails();
@@ -499,7 +536,7 @@ public class EquipmentFormService
 
     /// <summary>Загружает стандартные конфигурации.</summary>
     public virtual async Task<IReadOnlyList<StandardConfiguration>> GetStandardConfigurationsAsync() =>
-        (await _db.QueryAsync<StandardConfiguration>(SQLQueries.SELECT_СтандартныеКонфигурации)).ToList();
+        (await _db.QueryRequiredAsync<StandardConfiguration>(SQLQueries.SELECT_СтандартныеКонфигурации)).ToList();
 
     /// <summary>Проверяет роль 43 и добавляет или обновляет дневной снимок компьютера.</summary>
     public virtual async Task SaveComputerAsync(EquipmentComputerSnapshot snapshot)
@@ -567,7 +604,7 @@ public class EquipmentFormService
         foreach (var phone in phones)
         {
             var operation = new PhoneSyncOperation(PhoneSyncKind.Xorcom, phone.PhoneId.ToString(), phone.Deleted);
-            var lookup = (await _db.QueryAsync<PhoneNumberLookup>(
+            var lookup = (await _db.QueryRequiredAsync<PhoneNumberLookup>(
                 SQLQueries.SELECT_ТелефонныйНомерПоИдентификатору, new { Id = phone.PhoneId })).SingleOrDefault();
             if (lookup is null)
             {
@@ -644,7 +681,7 @@ public class EquipmentFormService
     {
         if (equipment.EquipmentTypeId is null)
             throw new InvalidOperationException("Для оборудования не указан тип.");
-        return (await _db.QueryAsync<EquipmentType>(SQLQueries.SELECT_ТипОборудованияПоИдентификатору,
+        return (await _db.QueryRequiredAsync<EquipmentType>(SQLQueries.SELECT_ТипОборудованияПоИдентификатору,
             new { Id = equipment.EquipmentTypeId.Value })).SingleOrDefault()
             ?? throw new InvalidOperationException("Тип оборудования не найден.");
     }
@@ -680,10 +717,22 @@ public class EquipmentFormService
             throw new UnauthorizedAccessException("Недостаточно прав для изменения лицензии.");
     }
 
-    /// <summary>Проверяет роль текущего пользователя с учётом замещений.</summary>
+    private async Task<T?> ExecuteRequiredScalarAsync<T>(string sql, object? parameters, CommandType commandType) =>
+        (await _db.QueryRequiredAsync<T>(sql, parameters)).SingleOrDefault();
+
+    /// <summary>Получает текущего сотрудника после подтверждения Windows/SQL principal.</summary>
+    public virtual async Task<Employee?> GetCurrentUserAsync() =>
+        await Employee.GetCurrentAsync(_db, await GetWindowsPrincipalAsync());
+
+    private async Task<string?> GetWindowsPrincipalAsync()
+    {
+        if (_authenticationStateProvider is null)
+            return null;
+        var authentication = await _authenticationStateProvider.GetAuthenticationStateAsync();
+        return authentication.User.Identity?.Name;
+    }
+
+    /// <summary>Проверяет роль текущего пользователя с учётом замещений через Employee.</summary>
     public virtual async Task<bool> HasRoleAsync(int roleId) =>
-        await _db.ExecuteScalarAsync<int>(
-            SQLQueries.SELECT_ТекущийПользовательИмеетРоль,
-            new { RoleId = roleId },
-            commandType: CommandType.Text) == 1;
+        await Employee.HasRoleAsync(_db, await GetWindowsPrincipalAsync(), (Роли)roleId);
 }

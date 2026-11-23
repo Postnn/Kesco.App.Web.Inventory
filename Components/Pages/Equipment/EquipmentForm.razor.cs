@@ -84,6 +84,7 @@ public partial class EquipmentForm : IDisposable
     private readonly ClayToolbarButtonOptions _copyOptions = new() { Text = "Копировать", Icon = Icons.Material.Filled.ContentCopy, Title = "Создать оборудование копированием" };
     private readonly ClayToolbarButtonOptions _operationsOptions = new() { Text = "Операции", Icon = Icons.Material.Filled.ArrowDropDown, Title = "Операции с оборудованием" };
     private readonly ClayToolbarButtonOptions _phoneConfigOptions = new() { Text = "Конфигурация", Icon = Icons.Material.Filled.SettingsPhone, Title = "Открыть конфигурацию IP-телефона" };
+    private readonly ClayToolbarButtonOptions _simDetailOptions = new() { Text = "Детализация", Icon = Icons.Material.Filled.ReceiptLong, Title = "Показать детализацию мобильной связи за текущий период" };
     private readonly ClayToolbarButtonOptions _networkHistoryOptions = new() { Text = "История имён", Icon = Icons.Material.Filled.History, Title = "Показать историю сетевых имён" };
     private int _networkAttachmentCount;
     private int _networkVersion;
@@ -91,6 +92,7 @@ public partial class EquipmentForm : IDisposable
     private IReadOnlyList<EquipmentNetworkPortLink> _networkPorts = [];
 
     private MudForm? _form;
+    private Employee? CurrentUser { get; set; }
     private EquipmentEntity? _model;
     private EquipmentType? _selectedType;
     private EquipmentType? _persistedType;
@@ -167,6 +169,9 @@ public partial class EquipmentForm : IDisposable
     }
     private bool HasSelectedModel => _model?.ModelId is > 0 && _selectedModel is not null;
     private bool ShowNetworkName => HasSelectedModel && _selectedType?.HasNetworkName > 0;
+    private bool HideNetworkAndUps => EquipmentNetworkDiagnostics.HideSection(_networkPorts.Count, _model?.EquipmentTypeId);
+    private bool NetworkPortsHaveWarning => _selectedModel is not null && EquipmentNetworkDiagnostics.HasWarning(
+        _networkPorts.Count, _selectedModel.NetworkInterfaces, _model?.MacAddress, _model?.MacAddress2, _model?.EquipmentTypeId);
     private bool ShowOperations => _canManageUps || _canChangeNetwork;
     private bool ShowPhones => HasSelectedModel && _selectedType?.HasPhoneNumber > 0 ||
                                _phones.Count > 0 && _persistedType?.HasPhoneNumber > 0;
@@ -180,6 +185,9 @@ public partial class EquipmentForm : IDisposable
                                  _persistedType?.MacAddressCount > 0 && _accounts.Count > 0);
     private bool ShowSim => _selectedType?.HasSimCharacteristics > 0 ||
                             _persistedType?.HasSimCharacteristics > 0 && _simCards.Count > 0;
+    private bool ShowSimDetail => ShowSim &&
+                                  _simCards.Any(item => item.ExecutorPersonId == (int)Clayzor.Lib.Entities.Лица.Билайн) &&
+                                  !string.IsNullOrWhiteSpace(Configuration["URI_accounting_phone_form"]);
     private bool ShowLicense => _selectedType?.HasSoftwareCharacteristics > 0 ||
                                 _persistedType?.HasSoftwareCharacteristics > 0 && _licenses.Count > 0;
     private bool ShowRouter => _routerInfo is not null || _routerInventory.Count > 0;
@@ -242,6 +250,15 @@ public partial class EquipmentForm : IDisposable
     private static string FormatPeriod(DateTime? from, DateTime? to) => from is null
         ? string.Empty
         : $"{from:dd.MM.yyyy} — {(to is null ? "по н.в." : $"{to:dd.MM.yyyy}")}";
+
+    private bool SimIsBlocked => _simServices.Any(item => item.IsActiveBlock(DateTime.Today));
+    private decimal SimDailyTotal => _simServices.Sum(item => item.DailyCost);
+    private decimal SimMonthlyTotal => _simServices.Sum(item => item.MonthlyCost);
+
+    private static string? SimServiceRowClass(EquipmentSimService item) =>
+        item.GetWarning(DateTime.Today) is not null
+            ? "mud-theme-error"
+            : item.IsTariffPlan > 0 ? "equipment-recommended" : null;
 
     private string FormatLocationDate(EquipmentLocationPeriod item)
     {
@@ -339,6 +356,9 @@ public partial class EquipmentForm : IDisposable
         await Task.Delay(100);
         try
         {
+            CurrentUser = await Service.GetCurrentUserAsync();
+            if (!IsCurrent(version, id))
+                return;
             var model = id > 0 ? await Service.GetAsync(id) : null;
             if (!IsCurrent(version, id))
                 return;
@@ -1257,8 +1277,18 @@ public partial class EquipmentForm : IDisposable
             result is null || result.Canceled || result.Data is not EquipmentSimDialogResult value)
             return;
         var version = ++_simVersion;
-        var duplicateId = await Service.GetDuplicateSimIdAsync(equipmentId, value.PhoneNumber);
-        if (_disposed || version != _simVersion || _model.Id != equipmentId)
+        int? duplicateId;
+        try
+        {
+            duplicateId = await Service.GetDuplicateSimIdAsync(equipmentId, value.PhoneNumber);
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _simVersion)
+                _validationMessage = "Не удалось проверить дубликат SIM. Сведения не сохранены; повторите попытку.";
+            return;
+        }
+        if (_disposed || version != _simVersion || _model is null || _model.Id != equipmentId)
             return;
         if (duplicateId is not null &&
             !await ConfirmAsync("Другая SIM с тем же номером",
@@ -1602,6 +1632,7 @@ public partial class EquipmentForm : IDisposable
                 DateTo = existing.DateTo,
                 WriteOffDocumentId = existing.WriteOffDocumentId,
                 Notes = existing.Notes,
+                ChangedAt = existing.ChangedAt,
             };
         var parameters = new DialogParameters<EquipmentAccountingDialog> { { dialog => dialog.Value, value } };
         var result = await ShowDialogAsync<EquipmentAccountingDialog>(
@@ -1690,6 +1721,9 @@ public partial class EquipmentForm : IDisposable
         if (_disposed || version != _accountingVersion || _model.Id != equipmentId)
             return;
         _accounting = accounting.ToList();
+        await RefreshLocationDisplayDatesAsync();
+        if (_disposed || version != _accountingVersion || _model.Id != equipmentId)
+            return;
         var current = _accounting.LastOrDefault(item => item.DateTo is null) ?? _accounting.LastOrDefault();
         if (current is not null)
         {
@@ -1722,6 +1756,45 @@ public partial class EquipmentForm : IDisposable
         _canUseAccounting = canUseAccounting;
         if (!preserveDraft)
             _originalSnapshot = Snapshot();
+    }
+
+    private async Task OpenSimDetailAsync()
+    {
+        if (_model is null || !ShowSimDetail || _saving)
+            return;
+        var equipmentId = _model.Id;
+        _saving = true;
+        _validationMessage = null;
+        try
+        {
+            var url = await Service.GetSimDetailUrlAsync(equipmentId, Configuration["URI_accounting_phone_form"]!);
+            if (_disposed || _model is null || _model.Id != equipmentId)
+                return;
+            if (url is null)
+            {
+                _warningMessage = "Детализация недоступна: нет актуального ответственного или доступной SIM.";
+                return;
+            }
+            await JS.InvokeVoidAsync("clayOpen", url, "equipment-sim-detail");
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed)
+                _validationMessage = "Не удалось получить параметры детализации. Подробности — в сообщении базы данных.";
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException or UriFormatException)
+        {
+            if (!_disposed)
+                _validationMessage = ex.Message;
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _saving = false;
+                StateHasChanged();
+            }
+        }
     }
 
     private async Task OpenPhoneConfigAsync()
@@ -1776,7 +1849,7 @@ public partial class EquipmentForm : IDisposable
         if (IsModified)
         {
             await SaveAsync(false);
-            if (IsModified)
+            if (IsModified || _disposed || _model is null)
                 return;
         }
         var version = ++_networkVersion;
@@ -1792,7 +1865,7 @@ public partial class EquipmentForm : IDisposable
             else
                 await Service.DetachNetworkAsync(equipmentId);
             var count = await Service.GetNetworkAttachmentCountAsync(equipmentId);
-            if (_disposed || version != _networkVersion || _model.Id != equipmentId)
+            if (_disposed || version != _networkVersion || _model is null || _model.Id != equipmentId)
                 return;
             _networkAttachmentCount = count;
             _warningMessage = attach ? "Оборудование подключено к рабочей сети." : "Оборудование отключено от рабочей сети.";

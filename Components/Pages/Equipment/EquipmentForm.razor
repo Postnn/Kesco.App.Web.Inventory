@@ -49,6 +49,10 @@
             }
             <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
+            @if (ShowSimDetail)
+            {
+                <ClayToolbarButton Options="_simDetailOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="OpenSimDetailAsync" />
+            }
             <ClayToolbarButton Options="_copyOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="CopyAsync" />
             <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || !_loaded)" OnClick="RefreshAsync" />
             <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
@@ -89,7 +93,7 @@
                 <MudAlert Severity="Severity.Error" Class="mb-3">@_validationMessage</MudAlert>
             }
 
-            @if (_upsLinks.Count > 0)
+            @if (_upsLinks.Count > 0 && !HideNetworkAndUps)
             {
                 <div class="equipment-ups-summary">
                     Подключено к:
@@ -314,13 +318,14 @@
                                 @if (ShowNetworkName)
                                 {
                                     <ClayTextBox @bind-Value="_model.NetworkName" Options="_networkNameOptions" />
-                                    @if (_networkPorts.Any(item => !item.NetworkName.StartsWith("*")))
+                                    @if (!HideNetworkAndUps && _networkPorts.Any(item => !item.NetworkName.StartsWith("*")))
                                     {
                                         <div data-testid="equipment-network-ports">
                                             @foreach (var port in _networkPorts.Where(item => !item.NetworkName.StartsWith("*")))
                                             {
                                                 <div class="equipment-form-model-meta">
-                                                    <a href="@NetUrl(port.Id)" @onclick="() => OpenNetAsync(port.Id)" @onclick:preventDefault>@port.DisplayName</a>
+                                                    <a href="@NetUrl(port.Id)" class="@(NetworkPortsHaveWarning ? "mud-error-text" : null)"
+                                                       @onclick="() => OpenNetAsync(port.Id)" @onclick:preventDefault>@port.DisplayName</a>
                                                 </div>
                                             }
                                         </div>
@@ -754,14 +759,26 @@
                     <ClayCheckbox State="_showServiceHistory" StateChanged="value => _showServiceHistory = value == true" Label="Показать историю" OnToggle="OnSimServiceFiltersChangedAsync" />
                     <ClayCheckbox State="_showCompanyRequiredServices" StateChanged="value => _showCompanyRequiredServices = value == true" Label="Показать обязательные услуги" OnToggle="OnSimServiceFiltersChangedAsync" />
                 </div>
+                @if (SimIsBlocked)
+                {
+                    <MudText Typo="Typo.body2" Color="Color.Error" data-testid="sim-block-warning">заблокировано</MudText>
+                }
                 <ClayGrid TEntity="EquipmentSimService" @key="_showCompanyRequiredServices"
                           Items="_simServices" Options="_simServiceGridOptions"
-                          RowClass="@(item => item.IsTariffPlan > 0 ? "equipment-recommended" : null)"
+                          RowClass="SimServiceRowClass"
                           OnAdd="@(() => OpenSimServiceDialogAsync(null))" AddDisabled="@(!CanEditSim || _simCards.Count == 0 || _saving)">
                     <ColumnDefs>
                         <ClayColumnDef ColumnId="1" SqlName="Period" DisplayName="Срок оказания услуги" />
                         <ClayColumnDef ColumnId="2" SqlName="ServiceType" DisplayName="Код услуги" />
                         <ClayColumnDef ColumnId="3" SqlName="Service" DisplayName="Услуга" />
+                        @if (_simServices.Any(item => item.PlannedDateFrom is not null))
+                        {
+                            <ClayColumnDef ColumnId="9" SqlName="PlannedFrom" DisplayName="План подкл." />
+                        }
+                        @if (_simServices.Any(item => item.PlannedDateTo is not null))
+                        {
+                            <ClayColumnDef ColumnId="10" SqlName="PlannedTo" DisplayName="План откл." />
+                        }
                         <ClayColumnDef ColumnId="4" SqlName="DailyCost" DisplayName="Стоимость в день" />
                         <ClayColumnDef ColumnId="5" SqlName="MonthlyCost" DisplayName="Стоимость в месяц" />
                         @if (_showCompanyRequiredServices)
@@ -774,12 +791,41 @@
                     <Columns>
                         <ClayColumn TEntity="EquipmentSimService" ColumnId="1" TextSelector="@(item => FormatPeriod(item.DateFrom, item.DateTo))" />
                         <ClayColumn TEntity="EquipmentSimService" ColumnId="2" TextSelector="@(item => item.ServiceTypeId)" />
-                        <ClayColumn TEntity="EquipmentSimService" ColumnId="3" TextSelector="@(item => item.ServiceName)" />
+                        <ClayColumn TEntity="EquipmentSimService" ColumnId="3">
+                            <CellTemplate>
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                    <span>@context.Item.ServiceName</span>
+                                    @if (context.Item.GetWarning(DateTime.Today) is string warning)
+                                    {
+                                        <MudTooltip Text="@warning">
+                                            <MudIcon Icon="@Icons.Material.Filled.Warning" Color="Color.Error" Size="Size.Small" />
+                                        </MudTooltip>
+                                    }
+                                </MudStack>
+                            </CellTemplate>
+                        </ClayColumn>
+                        @if (_simServices.Any(item => item.PlannedDateFrom is not null))
+                        {
+                            <ClayColumn TEntity="EquipmentSimService" ColumnId="9" TextSelector="@(item => item.PlannedDateFrom?.ToString("dd.MM.yyyy") ?? string.Empty)" />
+                        }
+                        @if (_simServices.Any(item => item.PlannedDateTo is not null))
+                        {
+                            <ClayColumn TEntity="EquipmentSimService" ColumnId="10" TextSelector="@(item => item.PlannedDateTo?.ToString("dd.MM.yyyy") ?? string.Empty)" />
+                        }
                         <ClayColumn TEntity="EquipmentSimService" ColumnId="4" TextSelector="@(item => item.DailyCost.ToString("0.00"))" />
                         <ClayColumn TEntity="EquipmentSimService" ColumnId="5" TextSelector="@(item => item.MonthlyCost.ToString("0.00"))" />
                         @if (_showCompanyRequiredServices)
                         {
-                            <ClayColumn TEntity="EquipmentSimService" ColumnId="6" TextSelector="@(item => item.IsCompanyRequired ? "Да" : string.Empty)" />
+                            <ClayColumn TEntity="EquipmentSimService" ColumnId="6">
+                                <CellTemplate>
+                                    @if (context.Item.IsCompanyRequired)
+                                    {
+                                        <MudTooltip Text="@context.Item.RequiredServiceDescription">
+                                            <MudIcon Icon="@Icons.Material.Filled.CheckBox" Size="Size.Small" />
+                                        </MudTooltip>
+                                    }
+                                </CellTemplate>
+                            </ClayColumn>
                         }
                         <ClayColumn TEntity="EquipmentSimService" ColumnId="7" TextSelector="@(item => item.ChangedByName)" />
                         <ClayColumn TEntity="EquipmentSimService" ColumnId="8" TextSelector="@(item => FormatDisplayDate(item.ChangedAt, true))" />
@@ -789,6 +835,14 @@
                                     Disabled="@(!CanEditSim || _saving)" OnClick="@(() => OpenSimServiceDialogAsync(item))" />
                     </RowActions>
                 </ClayGrid>
+                @if (_simServices.Count > 0)
+                {
+                    <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="3" data-testid="sim-service-totals">
+                        <MudText Typo="Typo.body2">Общая сумма</MudText>
+                        <MudText Typo="Typo.body2">В день: @SimDailyTotal.ToString("0.00")</MudText>
+                        <MudText Typo="Typo.body2">В месяц: @SimMonthlyTotal.ToString("0.00")</MudText>
+                    </MudStack>
+                }
             }
             </MudForm>
         }
