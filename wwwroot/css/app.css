@@ -628,3 +628,60 @@
 .mud-main-content:has(.inventory-home) {
     padding: 0 5px 5px !important;
 }
+
+.territorial-search-page {
+    display: flex;
+    flex-direction: column;
+    block-size: calc(100vh - 24px);
+    block-size: calc(100dvh - 24px);
+}
+
+.territorial-search-page > :not(.territorial-search-grid) {
+    flex: 0 0 auto;
+}
+
+.territorial-search-grid {
+    flex: 1 1 0;
+    min-block-size: 0;
+}
+
+.territorial-search-tree-column {
+    display: flex;
+    flex-direction: column;
+    max-block-size: 100%;
+    min-inline-size: 0;
+}
+
+.territorial-search-tree-panel {
+    display: flex;
+    flex-direction: column;
+    min-block-size: 0;
+}
+
+.territorial-search-tree-panel > :not(.clay-tree) {
+    flex-shrink: 0;
+}
+
+.territorial-search-tree-panel > .clay-tree {
+    min-inline-size: 0;
+}
+
+.territorial-search-tree-panel .clay-tree-scroll {
+    overscroll-behavior-y: contain;
+}
+
+.territorial-form-fields {
+    max-inline-size: 38rem;
+}
+
+.territorial-form-fields .territorial-field-type {
+    max-inline-size: 18rem;
+}
+
+.territorial-form-fields .territorial-field-short {
+    max-inline-size: 10rem;
+}
+
+.territorial-form-fields .territorial-field-phone {
+    max-inline-size: 14rem;
+}

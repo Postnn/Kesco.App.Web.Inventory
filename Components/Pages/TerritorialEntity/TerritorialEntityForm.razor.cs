@@ -21,14 +21,14 @@ public partial class TerritorialEntityForm
 
     [Inject] private ClayFormWindowService WindowService { get; set; } = null!;
 
-    private readonly ClayDropDownListOptions _typeOptions = new() { Label = "Тип", Required = true, DraftKey = "territory.type" };
-    private readonly ClayTextBoxOptions _classificationOptions = new() { Label = "Код ОКСМ", DraftKey = "territory.oksm" };
+    private readonly ClayDropDownListOptions _typeOptions = new() { Label = "Тип", Required = true, DraftKey = "territory.type", Class = "territorial-field-type" };
+    private readonly ClayTextBoxOptions _classificationOptions = new() { Label = "Код ОКСМ", DraftKey = "territory.oksm", Class = "territorial-field-short" };
     private readonly ClayTextBoxOptions _nameOptions = new() { Label = "Название территории на русском языке", Required = true, MaxLength = 80, DraftKey = "territory.name" };
     private readonly ClayTextBoxOptions _alternateNameOptions = new() { Label = "Альтернативное название территории на русском языке", MaxLength = 80, DraftKey = "territory.alternate-name" };
     private readonly ClayTextBoxOptions _captionOptions = new() { Label = "Международное название территории на английском языке", MaxLength = 50, DraftKey = "territory.caption" };
     private readonly ClayTextBoxOptions _alternateCaptionOptions = new() { Label = "Альтернативное международное название территории на английском языке", MaxLength = 50, DraftKey = "territory.alternate-caption" };
-    private readonly ClayTextBoxOptions _abbreviationOptions = new() { Label = "Аббревиатура", MaxLength = 4, DraftKey = "territory.abbreviation" };
-    private readonly ClayTextBoxOptions _countryOptions = new() { Label = "Тел. код страны", Required = true, MaxLength = 20, DraftKey = "territory.country-code" };
+    private readonly ClayTextBoxOptions _abbreviationOptions = new() { Label = "Аббревиатура", MaxLength = 4, DraftKey = "territory.abbreviation", Class = "territorial-field-short" };
+    private readonly ClayTextBoxOptions _countryOptions = new() { Label = "Тел. код страны", Required = true, MaxLength = 20, DraftKey = "territory.country-code", Class = "territorial-field-phone" };
     private readonly ClayTextBoxOptions _directionOptions = new() { Label = "Направление", Required = true, MaxLength = 300, DraftKey = "territory.direction" };
     private TerritorialEntityOption[] _types = [];
     private int _id;

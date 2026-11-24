@@ -5,6 +5,7 @@
 
 <PageTitle>Территории и телефонные коды</PageTitle>
 
+<div class="territorial-search-page">
 @if (ReturnMode is null)
 {
     <InventoryMainMenu />
@@ -20,9 +21,9 @@
 }
 @if (_treeOptions is not null && _source is not null)
 {
-    <MudGrid Spacing="2">
-        <MudItem xs="12" md="4">
-            <MudPaper Class="pa-2" Elevation="0">
+    <MudGrid Spacing="2" Class="territorial-search-grid">
+        <MudItem xs="12" md="4" Class="territorial-search-tree-column">
+            <MudPaper Class="pa-2 territorial-search-tree-panel" Elevation="0">
                 <div class="d-flex align-center justify-space-between">
                     <MudButton Variant="Variant.Text" OnClick="ResetNode" FullWidth="false">Территории</MudButton>
                     <ClayButton Icon="@Icons.Material.Filled.Refresh" Text="Обновить дерево" OnClick="ReloadTreeAsync" />
@@ -58,3 +59,4 @@
 {
     <MudButton OnClick="CloseAsync">Отмена</MudButton>
 }
+</div>
