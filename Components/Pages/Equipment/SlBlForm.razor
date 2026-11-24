@@ -1,0 +1,55 @@
+@page "/Equipment/SlBl_form"
+@page "/Equipment/SlBl_form.aspx"
+@layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.DBSelect.Equipment
+
+<PageTitle>Список безопасных и заблокированных адресов</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@Dirty" OnBeforeInternalNavigation="BeforeNavigationAsync" />
+
+<ClayEntityForm Options="_formOptions">
+    <Toolbar>
+        <ClayToolbar>
+            <ClayToolbarButton Options="SaveButton" Disabled="true" />
+            <ClayToolbarButton Options="RefreshButton" OnClick="RefreshAsync" Disabled="@_busy" />
+            <ClayToolbarButton Options="CloseButton" OnClick="CloseAsync" Disabled="@_busy" />
+        </ClayToolbar>
+    </Toolbar>
+    <ChildContent>
+        <MudText Typo="Typo.h6" HtmlTag="h1" Class="mb-2">Список безопасных и заблокированных адресов</MudText>
+        @if (_busy) { <MudProgressLinear Indeterminate="true" /> }
+        @if (_error is not null) { <MudAlert Class="mb-2" Severity="Severity.Warning">@_error</MudAlert> }
+        @if (CurrentUser is not null && _source is not null)
+        {
+            <MudAlert Class="mb-2" Severity="Severity.Info">Синхронизация недоступна на этом стенде. Можно прочитать списки и подготовить черновик.</MudAlert>
+            <div class="d-flex flex-column gap-2" inert="@_busy" data-draft-scope="main">
+                <ClaySelect TItem="SlBlAddress" TValue="string" DataSource="_source" Options="AddressOptions"
+                            ValueSelector="@(x => x.Address)" TextSelector="@(x => x.Address)"
+                            Value="_address" ValueChanged="ChangeAddressAsync" />
+                <ClayRadioGroup TValue="SlBlKind?" Items="Kinds" Value="_kind" ValueChanged="ChangeKindAsync" />
+                @if (_kind is not null && _address is not null)
+                {
+                    <MudText Typo="Typo.body2">Могут быть использованы следующие форматы: user@@domain.com, server.domain.com, domain.com</MudText>
+                    <ClayTextArea Options="TextOptions" Value="_text" ValueChanged="ChangeTextAsync" />
+                    @if (Dirty && SlBlData.Validate(_text) is { } validation)
+                    {
+                        <MudAlert Severity="Severity.Error">@validation</MudAlert>
+                    }
+                    @if (_differences is { } differences)
+                    {
+                        <MudAlert Severity="Severity.Info">
+                            @if (differences.NotDeleted.Length > 0)
+                            {
+                                <div>Сохраненные записи, которых нет в черновике: @differences.NotDeleted</div>
+                            }
+                            @if (differences.NotSaved.Length > 0)
+                            {
+                                <div>Новые записи, которых нет в сохранённом списке: @differences.NotSaved</div>
+                            }
+                        </MudAlert>
+                    }
+                }
+            </div>
+        }
+    </ChildContent>
+</ClayEntityForm>
