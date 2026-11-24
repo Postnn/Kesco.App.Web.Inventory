@@ -1,0 +1,65 @@
+@page "/TerritorialEntity/PhoneCodeEntity_form"
+@page "/TerritorialEntity/PhoneCodeEntity_form.aspx"
+@layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
+@using Clayzor.Lib.Entities.TerritorialEntity
+@inherits TerritorialEntityCardBase<PhoneCodeEntityForm.FormState>
+
+<PageTitle>Телефонный код</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@(Dirty || Busy)" OnBeforeInternalNavigation="BeforeNavigationAsync" />
+
+<ClayEntityForm>
+    <Toolbar>
+        <ClayToolbar>
+            <ClayToolbarButton Options="OkButton" Disabled="@(Busy || Loading || Draft is null || (Dirty && !CanCommit))" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="ApplyButton" Disabled="@(!Editable || !CanCommit || !Dirty)" OnClick="@(() => SaveAsync(false))" />
+            <ClayToolbarButton Options="ReloadButton" Disabled="@(Busy || Loading || StorageBlocked)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="CancelButton" Disabled="@Busy" OnClick="CancelAsync" />
+            @if (_original is not null && Access.PhoneDelete)
+            {
+                <ClayToolbarButton Options="DeleteButton" Disabled="@(!CanCommit)" OnClick="DeleteAsync" />
+            }
+        </ClayToolbar>
+    </Toolbar>
+    <ChildContent>
+        @if (Loading)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        @if (Message is not null)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-2">@Message</MudAlert>
+        }
+        @if (Validation.Count > 0)
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-2">
+                Запись не сохранена.
+                <ul>@foreach (var error in Validation) { <li>@error</li> }</ul>
+            </MudAlert>
+        }
+        @if (Draft is { } draft)
+        {
+            <div class="d-flex flex-column gap-2" data-draft-scope="main" inert="@Busy">
+                <ClaySelect TItem="TerritorialEntityLookup" TValue="int?" DataSource="_territorySource"
+                            ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.DisplayName)"
+                            Value="@draft.TerritoryId" ValueChanged="ChangeTerritoryAsync" Options="_territoryOptions"
+                            ViewItem="OpenTerritoryAsync" />
+                @if (_territoryConflict)
+                {
+                    <MudAlert Severity="Severity.Warning">Сохранённая территория больше не входит в список допустимых. Выберите действующую территорию перед сохранением.</MudAlert>
+                }
+                <ClayTextBox Options="_codeOptions" Value="@draft.Code" ValueChanged="@(value => UpdateDraftAsync(Draft! with { Code = value ?? "" }))" />
+                <ClayTextBox Options="_lengthOptions" Value="@draft.Length" ValueChanged="@(value => UpdateDraftAsync(Draft! with { Length = value }))" />
+                <ClayDropDownList TItem="TerritorialEntityOption" TValue="int?" Options="_typeOptions" Items="_types"
+                                  ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                  Value="@draft.TypeId" ValueChanged="@(value => UpdateDraftAsync(Draft! with { TypeId = value }))" />
+                <ClayTextBox Options="_commentOptions" Value="@draft.Comment" ValueChanged="@(value => UpdateDraftAsync(Draft! with { Comment = value ?? "" }))" />
+            </div>
+        }
+    </ChildContent>
+    <Footer>
+        @if (_original is { } original)
+        {
+            <ClayChanged ChangedById="@original.ChangedBy" ChangedByName="@original.ChangedByName" ChangedAt="@original.ChangedAt" />
+        }
+    </Footer>
+</ClayEntityForm>
