@@ -1,12 +1,15 @@
 using Kesco.App.Web.Inventory.Components;
 using Kesco.App.Web.Inventory.Components.Pages.Equipment;
 using Clayzor.Lib.DALC;
+using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Web.Controls;
 using Clayzor.Lib.Web.Controls.Components.Tree;
 using Clayzor.Lib.Web.Controls.Components.Tree.State;
 using Clayzor.Lib.Web.Controls.Services;
+using Clayzor.Lib.Web.Controls.Themes;
 using Clayzor.Lib.Web.Settings;
 using Microsoft.AspNetCore.Authentication.Negotiate;
+using Microsoft.AspNetCore.Components.Authorization;
 using MudBlazor.Extensions;
 using MudBlazor.Extensions.Options;
 using MudBlazor.Services;
@@ -149,6 +152,10 @@ builder.Services.AddAuthorization(options =>
     options.FallbackPolicy = options.DefaultPolicy;
 });
 builder.Services.AddCascadingAuthenticationState();
+builder.Services.AddScoped<ClayThemeState>();
+builder.Services.AddScoped<IClayThemePreferenceStore>(sp => new InventoryThemePreferenceStore(
+    async () => (await sp.GetRequiredService<AuthenticationStateProvider>().GetAuthenticationStateAsync()).User,
+    claySettings, ClayThemeSettingsData.InventoryParameter));
 
 // Blazor Server
 builder.Services.AddRazorComponents()

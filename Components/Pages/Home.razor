@@ -1,5 +1,6 @@
 @page "/"
 @using Clayzor.Lib.Web.Settings
+@using Clayzor.Lib.Web.Controls.Themes
 @inject ClayAppSettings AppSettings
 
 <PageTitle>@_pageTitle</PageTitle>
@@ -10,11 +11,10 @@
         <header class="inventory-home__navigation">
             <InventoryMainMenu CurrentQueryId="CurrentQueryId">
                 <Actions>
-                    <MudIconButton Class="inventory-theme-toggle"
-                                   Size="Size.Small"
-                                   Icon="@(ParentLayout?.IsDarkMode == true ? Icons.Material.Filled.LightMode : Icons.Material.Filled.DarkMode)"
-                                   Title="@(ParentLayout?.IsDarkMode == true ? "Светлая тема" : "Тёмная тема")"
-                                   OnClick="@(async () => { if (ParentLayout is not null) await ParentLayout.ToggleDarkModeAsync(); })" />
+                    @if (ThemeState is not null)
+                    {
+                        <div class="inventory-theme-toggle"><ClayThemeSelector /></div>
+                    }
                 </Actions>
             </InventoryMainMenu>
         </header>

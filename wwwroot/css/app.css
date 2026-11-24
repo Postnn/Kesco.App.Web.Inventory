@@ -583,6 +583,9 @@
 
 .inventory-theme-toggle {
     flex: 0 0 auto;
+}
+
+.inventory-theme-toggle .mud-icon-button {
     width: 34px;
     height: 34px;
     min-height: 34px;
