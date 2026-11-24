@@ -24,6 +24,7 @@
 <PageTitle>@Title</PageTitle>
 <NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
+<div data-draft-owner="@_draftOwner" style="display: contents">
 <ClayEntityForm Options="_entityFormOptions">
     <Toolbar>
         <ClayToolbar>
@@ -384,7 +385,28 @@
             }
             @if (!string.IsNullOrWhiteSpace(_warningMessage))
             {
-                <MudAlert Severity="Severity.Warning" Class="mt-3">@_warningMessage</MudAlert>
+                <MudAlert Severity="Severity.Warning" Class="mt-3">
+                    <div>@_warningMessage</div>
+                    @if (_mainConflictFresh is not null)
+                    {
+                        <div class="d-flex flex-wrap gap-2 mt-2">
+                            <ClayToolbarButton Options="_keepDraftOptions" OnClick="() => ResolveMainConflict(true)" />
+                            <ClayToolbarButton Options="_takeFreshOptions" OnClick="() => ResolveMainConflict(false)" />
+                        </div>
+                    }
+                    @if (_draftOperationUnresolved)
+                    {
+                        <div class="d-flex flex-wrap gap-2 mt-2">
+                            <ClayToolbarButton Options="_reconcileOptions" OnClick="ReconcileDraftOperationAsync" />
+                        </div>
+                    }
+                    @if (_pendingPhoneSync?.Attempt is not null)
+                    {
+                        <div class="d-flex flex-wrap gap-2 mt-2">
+                            <ClayToolbarButton Options="_reconcileAtsOptions" OnClick="ReconcilePendingPhoneSyncAsync" />
+                        </div>
+                    }
+                </MudAlert>
             }
             @if (ShowAccounts)
             {
@@ -866,6 +888,7 @@
                      ChangedByUrl="@ChangedByUrl" />
     </Footer>
 </ClayEntityForm>
+</div>
 
 <MudOverlay Visible="@(_loading || _saving)" DarkBackground="true">
     <div class="clay-busy">

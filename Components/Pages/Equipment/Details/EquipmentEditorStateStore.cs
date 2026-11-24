@@ -10,7 +10,8 @@ internal static class EquipmentEditorStateStore
     {
         nameof(EquipmentEditorDialogBase<object>.Save),
         nameof(EquipmentEditorDialogBase<object>.EditorContext),
-        "Dialog", "Password", "Secrets", "Configurations", "Types",
+        "Dialog", "Password", "Secrets", "Configurations", "Types", "AvailableServers",
+        "Today", "Now", "FreshOriginal", "FreshOriginalActive",
     };
 
     internal static string Capture(ComponentBase component)
@@ -19,15 +20,21 @@ internal static class EquipmentEditorStateStore
         foreach (var property in component.GetType().GetProperties())
         {
             if (!IsStateProperty(property) || Excluded.Contains(property.Name) || IsSecret(property.Name) ||
-            typeof(Delegate).IsAssignableFrom(property.PropertyType))
+                typeof(Delegate).IsAssignableFrom(property.PropertyType))
                 continue;
             state[property.Name] = property.GetValue(component);
         }
         if (component is EquipmentComputerDialog computer)
         {
             state["$ram"] = computer.Ram.ToArray();
+            state["$ramSlots"] = computer.RamSlots.ToArray();
+            state["$ramDeleted"] = computer.DeletedRamSlots.ToArray();
             state["$hd"] = computer.Hd.ToArray();
+            state["$hdSlots"] = computer.HdSlots.ToArray();
+            state["$hdDeleted"] = computer.DeletedHdSlots.ToArray();
             state["$ssd"] = computer.Ssd.ToArray();
+            state["$ssdSlots"] = computer.SsdSlots.ToArray();
+            state["$ssdDeleted"] = computer.DeletedSsdSlots.ToArray();
         }
         return JsonSerializer.Serialize(state);
     }
@@ -47,22 +54,37 @@ internal static class EquipmentEditorStateStore
         }
         if (component is EquipmentComputerDialog computer)
         {
-            RestoreComponents(state, "$ram", computer.Ram);
-            RestoreComponents(state, "$hd", computer.Hd);
-            RestoreComponents(state, "$ssd", computer.Ssd);
+            RestoreComponents(state, "$ram", "$ramSlots", "$ramDeleted", computer.Ram, computer.RamSlots, computer.DeletedRamSlots);
+            RestoreComponents(state, "$hd", "$hdSlots", "$hdDeleted", computer.Hd, computer.HdSlots, computer.DeletedHdSlots);
+            RestoreComponents(state, "$ssd", "$ssdSlots", "$ssdDeleted", computer.Ssd, computer.SsdSlots, computer.DeletedSsdSlots);
         }
     }
 
     private static void RestoreComponents(
         IReadOnlyDictionary<string, JsonElement> state,
-        string key,
-        ICollection<decimal?> target)
+        string valuesKey,
+        string slotsKey,
+        string deletedKey,
+        ICollection<decimal?> target,
+        IList<int> slots,
+        ISet<int> deleted)
     {
-        if (!state.TryGetValue(key, out var element))
+        if (!state.TryGetValue(valuesKey, out var element))
             return;
         target.Clear();
-        foreach (var value in element.Deserialize<decimal?[]>() ?? [])
+        var values = element.Deserialize<decimal?[]>() ?? [];
+        foreach (var value in values)
             target.Add(value);
+        slots.Clear();
+        var restoredSlots = state.TryGetValue(slotsKey, out var slotsElement)
+            ? slotsElement.Deserialize<int[]>() ?? []
+            : [];
+        for (var index = 0; index < values.Length; index++)
+            slots.Add(restoredSlots.Length == values.Length ? restoredSlots[index] : index);
+        deleted.Clear();
+        if (state.TryGetValue(deletedKey, out var deletedElement))
+            deleted.UnionWith(deletedElement.Deserialize<int[]>() ?? []);
+        deleted.ExceptWith(slots);
     }
 
     private static bool IsStateProperty(System.Reflection.PropertyInfo property) =>

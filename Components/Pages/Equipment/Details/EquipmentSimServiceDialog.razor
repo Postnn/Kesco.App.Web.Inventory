@@ -63,6 +63,9 @@
     /// <summary>Календарная дата клиента для проверки фактических дат услуги.</summary>
     [Parameter] public DateTime? Today { get; set; }
 
+    /// <summary>Возвращает актуальную business date непосредственно перед Apply.</summary>
+    [Parameter] public Func<Task<DateTime>>? GetToday { get; set; }
+
     private bool IsEdit => Value.Id > 0;
 
     /// <inheritdoc />
@@ -85,7 +88,13 @@
         Value.MonthlyCost = type.MonthlyCost;
     }
 
-    private Task Apply() => ApplyAsync(Value, () => Today is null
-        ? "Календарная дата клиента не задана. Сохранение дополнительной услуги SIM отменено."
-        : Value.Validate(Today.Value));
+    private async Task Apply()
+    {
+        var today = GetToday is null ? Today : (await GetToday()).Date;
+        if (!IsEditorCurrent())
+            return;
+        await ApplyAsync(Value, () => today is null
+            ? "Календарная дата клиента не задана. Сохранение дополнительной услуги SIM отменено."
+            : Value.Validate(today.Value));
+    }
 }

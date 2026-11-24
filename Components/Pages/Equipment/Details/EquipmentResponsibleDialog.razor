@@ -124,6 +124,16 @@
     /// <summary>Примечания.</summary>
     [Parameter] public string Notes { get; set; } = string.Empty;
 
+    /// <summary>Исходный baseline, восстанавливаемый независимо от fresh read.</summary>
+    [Parameter] public EquipmentPeriodOriginal? Original { get; set; }
+
+    /// <summary>Свежая строка для сверки; не заменяет <see cref="Original"/>.</summary>
+    [Parameter] public EquipmentResponsiblePeriod? FreshOriginal { get; set; }
+
+    /// <summary>Признак активности свежей исходной строки.</summary>
+    [Parameter] public bool FreshOriginalActive { get; set; }
+
+    private bool _originalInitialized;
     private string Title => Mode switch
     {
         EquipmentResponsibleDialogMode.Issue => "Выдача оборудования",
@@ -135,7 +145,16 @@
         !string.IsNullOrWhiteSpace(Configuration["URI_user_form"]) ? OpenEmployeeViewAsync : null;
 
     /// <inheritdoc />
-    protected override void OnParametersSet() => _okButtonOptions.Text = ActionText;
+    protected override void OnParametersSet()
+    {
+        _okButtonOptions.Text = ActionText;
+        if (!_originalInitialized && Mode != EquipmentResponsibleDialogMode.Issue &&
+            (Original is not null || FreshOriginal is not null))
+        {
+            Original ??= EquipmentPeriodOriginal.FromResponsible(FreshOriginal!, FreshOriginalActive);
+            _originalInitialized = true;
+        }
+    }
 
     private async Task OpenEmployeeViewAsync(Employee employee) =>
         await JS.InvokeVoidAsync("clayOpen", EquipmentIns.BuildEditUrl(Configuration["URI_user_form"]!, employee.Id), "_blank");
@@ -143,28 +162,38 @@
     private async Task Apply()
     {
         var now = GetNow is null ? Now : await GetNow();
+        if (!IsEditorCurrent())
+            return;
         var from = FromDate?.Date.Add(FromTime ?? TimeSpan.Zero);
         var to = ToDate?.Date.Add(ToTime ?? TimeSpan.Zero);
         var draft = new EquipmentResponsibleDialogResult(
-            EmployeeId, from, to, ReturnDate, Notes ?? string.Empty, LocationId);
+            EmployeeId, from, to, ReturnDate, Notes ?? string.Empty, LocationId)
+        {
+            Original = Original,
+        };
         await ApplyAsync(draft, () => Validate(from, to, now));
     }
 
     private string? Validate(DateTime? from, DateTime? to, DateTime now)
     {
-        if (Mode != EquipmentResponsibleDialogMode.Edit)
+        if (Mode != EquipmentResponsibleDialogMode.Issue)
         {
-            if (Mode == EquipmentResponsibleDialogMode.Issue && (EmployeeId is null || FromDate is null || FromTime is null))
-                return "Укажите сотрудника, дату и время выдачи.";
+            if (Original is null)
+                return "Исходный период ответственности не подтверждён. Черновик сохранён; запись не отправлена.";
+            var originalError = Original.ValidateFresh(FreshOriginal, FreshOriginalActive);
+            if (originalError is not null)
+                return originalError;
             if (Mode == EquipmentResponsibleDialogMode.Withdraw && (ToDate is null || ToTime is null))
                 return "Укажите дату и время изъятия.";
             if (Mode == EquipmentResponsibleDialogMode.Withdraw && EmployeeId is not null && (FromDate is null || FromTime is null))
                 return "Для следующего ответственного укажите дату и время начала.";
             if (Mode == EquipmentResponsibleDialogMode.Withdraw && EmployeeId is not null && EmployeeId == CurrentEmployeeId)
                 return "Следующий ответственный должен отличаться от действующего.";
-            if (RequireLocation && (LocationId is null || LocationId == (int)Clayzor.Lib.Entities.Расположения.На_руках))
-                return "Выберите новое расположение, отличное от «На руках».";
         }
+        else if (EmployeeId is null || FromDate is null || FromTime is null)
+            return "Укажите сотрудника, дату и время выдачи.";
+        if (RequireLocation && (LocationId is null || LocationId == (int)Clayzor.Lib.Entities.Расположения.На_руках))
+            return "Выберите новое расположение, отличное от «На руках».";
         if (from > now || to > now)
             return "Дата и время не могут быть в будущем.";
         var periodStart = Mode == EquipmentResponsibleDialogMode.Withdraw

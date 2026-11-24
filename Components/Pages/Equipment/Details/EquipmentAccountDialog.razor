@@ -1,7 +1,6 @@
 @inherits EquipmentEditorDialogBase<EquipmentAccountDialogResult>
 @using Clayzor.Lib.Web.Controls.Components.Form
 @inject Kesco.App.Web.Inventory.Services.EquipmentFormService Service
-@inject Clayzor.Lib.Web.Controls.Services.ClayDraftService Drafts
 
 <MudDialog>
     <TitleContent>@(IsEdit ? "Изменение учётной записи" : "Новая учётная запись")</TitleContent>
@@ -29,18 +28,24 @@
     </DialogContent>
     <DialogActions>
         <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
+        @if (_readFailed)
+        {
+            <ClayToolbarButton Options="_retryButtonOptions" OnClick="LoadSecretsAndRawAsync" Disabled="@_loading" />
+        }
         <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || _readFailed || _saving || _saveBlocked)" />
     </DialogActions>
 </MudDialog>
 
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
+    private readonly ClayToolbarButtonOptions _retryButtonOptions = new() { Text = "Повторить" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
     private readonly ClayTextBoxOptions _loginOptions = new() { Required = true, MaxLength = 50, DraftKey = "account.login" };
-    private readonly ClayTextBoxOptions _passwordOptions = new() { MaxLength = 128, InputType = InputType.Password, DraftKey = "account.password", ReadOnly = true };
+    private readonly ClayTextBoxOptions _passwordOptions = new() { MaxLength = 128, InputType = InputType.Password, DraftKey = "account.password", ReadOnly = true, Disabled = true };
     private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300, DraftKey = "account.notes" };
     private bool _loading = true;
     private bool _readFailed;
+    private int _secretReadVersion;
 
     /// <summary>Идентификатор оборудования.</summary>
     [Parameter] public int EquipmentId { get; set; }
@@ -68,37 +73,82 @@
     /// <inheritdoc />
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender)
-            return;
+        await base.OnAfterRenderAsync(firstRender);
+        if (firstRender)
+            await LoadSecretsAndRawAsync();
+    }
+
+    private async Task LoadSecretsAndRawAsync()
+    {
+        var version = ++_secretReadVersion;
+        var equipmentId = EquipmentId;
+        var originalLogin = OriginalLogin;
+        _loading = true;
+        _readFailed = false;
+        _error = null;
+        Password = string.Empty;
+        _passwordOptions.Disabled = true;
+        _passwordOptions.ReadOnly = true;
+        if (EditorContext is not null)
+            await EditorContext.ReportReadinessAsync(EquipmentEditorReadiness.Pending);
         if (IsEdit)
         {
             try
             {
-                Password = await Service.GetAccountPasswordAsync(EquipmentId, OriginalLogin!);
+                var password = await Service.GetAccountPasswordAsync(equipmentId, originalLogin!);
+                if (!IsSecretReadCurrent(version, equipmentId, originalLogin))
+                    return;
+                Password = password;
             }
             catch (Exception ex) when (ex is UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
             {
+                if (!IsSecretReadCurrent(version, equipmentId, originalLogin))
+                    return;
+                Password = string.Empty;
                 _readFailed = true;
                 _error = ex is UnauthorizedAccessException or InvalidOperationException
                     ? ex.Message
-                    : "Не удалось прочитать пароль. Повторите открытие диалога; сохранение заблокировано.";
+                    : "Не удалось прочитать пароль. Повторите чтение; сохранение заблокировано.";
             }
         }
+        if (!IsSecretReadCurrent(version, equipmentId, originalLogin))
+            return;
         _loading = false;
+        _passwordOptions.Disabled = _readFailed;
         _passwordOptions.ReadOnly = _readFailed;
         await InvokeAsync(StateHasChanged);
-        if (Drafts.HasActiveRegistration)
+        if (_readFailed)
         {
-            try
-            {
-                await Drafts.ApplyRawAsync();
-            }
-            catch (Exception ex) when (ex is Microsoft.JSInterop.JSException or Microsoft.JSInterop.JSDisconnectedException or InvalidOperationException or OperationCanceledException)
-            {
-                _error = $"Не удалось восстановить введённый пароль. {ex.Message}";
-            }
+            if (EditorContext is not null)
+                await EditorContext.ReportReadinessAsync(EquipmentEditorReadiness.Failed);
+            return;
+        }
+        try
+        {
+            if (EditorContext is not null)
+                await EditorContext.ApplyRawAsync();
+            if (!IsSecretReadCurrent(version, equipmentId, originalLogin))
+                return;
+            if (EditorContext is not null)
+                await EditorContext.ReportReadinessAsync(EquipmentEditorReadiness.Ready);
+        }
+        catch (Exception ex) when (ex is Microsoft.JSInterop.JSException or Microsoft.JSInterop.JSDisconnectedException or InvalidOperationException or OperationCanceledException)
+        {
+            if (!IsSecretReadCurrent(version, equipmentId, originalLogin))
+                return;
+            Password = string.Empty;
+            _readFailed = true;
+            _passwordOptions.Disabled = true;
+            _passwordOptions.ReadOnly = true;
+            _error = $"Не удалось восстановить введённый пароль. {ex.Message}";
+            if (EditorContext is not null)
+                await EditorContext.ReportReadinessAsync(EquipmentEditorReadiness.Failed);
+            await InvokeAsync(StateHasChanged);
         }
     }
+
+    private bool IsSecretReadCurrent(int version, int equipmentId, string? originalLogin) =>
+        IsEditorCurrent() && version == _secretReadVersion && equipmentId == EquipmentId && originalLogin == OriginalLogin;
 
     private void OnLoginChanged(string? value)
     {
@@ -109,6 +159,11 @@
 
     private Task Apply()
     {
+        if (!IsEditorCurrent())
+        {
+            _error = "Контекст оборудования изменился. Откройте форму повторно.";
+            return Task.CompletedTask;
+        }
         if (_loading || _readFailed)
             return Task.CompletedTask;
         Login = Login.Trim();

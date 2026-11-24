@@ -305,20 +305,36 @@ public class PhoneFormService
         await _db.ExecuteAsync(sql, new { Id = id }, commandType: CommandType.Text);
     }
 
-    /// <summary>Выполняет процедуры АТС и возвращает независимый результат каждой операции.</summary>
+    /// <summary>Выполняет процедуры АТС и возвращает совместимый результат каждой операции.</summary>
     public virtual async Task<IReadOnlyList<PhoneSyncResult>> SynchronizeAsync(int phoneId, IEnumerable<PhoneSyncOperation> operations)
     {
-        var results = new List<PhoneSyncResult>();
+        var results = await SynchronizePhasedAsync(Guid.NewGuid().ToString("N"), phoneId, operations);
+        return results.Select(item => new PhoneSyncResult(item.Operation, item.Error,
+            item.Phase == PhoneSyncPhase.Unknown ? PhoneSyncOutcome.Unknown :
+            item.Phase == PhoneSyncPhase.Succeeded ? PhoneSyncOutcome.Succeeded : PhoneSyncOutcome.Failed)).ToList();
+    }
+
+    /// <summary>Различает catalog/preflight до dispatch и неизвестный ответ после фактического Execute.</summary>
+    public virtual async Task<IReadOnlyList<PhoneSyncOperationResult>> SynchronizePhasedAsync(
+        string attemptId,
+        int phoneId,
+        IEnumerable<PhoneSyncOperation> operations)
+    {
+        var results = new List<PhoneSyncOperationResult>();
         foreach (var operation in operations.Distinct())
         {
-            string? error = null;
-            PhoneSyncOutcome? outcome = null;
+            var dispatched = false;
             try
             {
+                async Task ExecuteDispatchedAsync(
+                    string procedure,
+                    DynamicParameters parameters,
+                    Action<DynamicParameters> fill) =>
+                    await ExecuteReturnCodeAsync(procedure, parameters, fill, () => dispatched = true);
                 switch (operation.Kind)
                 {
                     case PhoneSyncKind.Meridian:
-                        await ExecuteReturnCodeAsync(SQLQueries.SP_ТелефонСинхронизацияMeridian, new DynamicParameters(),
+                        await ExecuteDispatchedAsync(SQLQueries.SP_ТелефонСинхронизацияMeridian, new DynamicParameters(),
                             parameters =>
                             {
                                 parameters.Add("@ПортАТС", operation.Key);
@@ -328,43 +344,45 @@ public class PhoneFormService
                             });
                         break;
                     case PhoneSyncKind.Xorcom:
-                        var hasDelete = await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_ПроцедураИмеетПараметр,
-                            new { ProcedureName = SQLQueries.SP_PhoneSync_Xorcom, ParameterName = "@Удаление" },
-                            commandType: CommandType.Text) > 0;
-                        await ExecuteReturnCodeAsync(SQLQueries.SP_PhoneSync_Xorcom, new DynamicParameters(), parameters =>
+                        var hasDelete = (await _db.QueryRequiredAsync<int>(SQLQueries.SELECT_ПроцедураИмеетПараметр,
+                            new { ProcedureName = SQLQueries.SP_PhoneSync_Xorcom, ParameterName = "@Удаление" }))
+                            .SingleOrDefault() > 0;
+                        await ExecuteDispatchedAsync(SQLQueries.SP_PhoneSync_Xorcom, new DynamicParameters(), parameters =>
                         {
                             parameters.Add("@КодТелефонногоНомера", phoneId);
                             if (hasDelete) parameters.Add("@Удаление", operation.Deleting);
                         });
                         break;
                     case PhoneSyncKind.Ccm:
-                        await ExecuteReturnCodeAsync(SQLQueries.SP_PhoneSync_Ccm, new DynamicParameters(),
+                        await ExecuteDispatchedAsync(SQLQueries.SP_PhoneSync_Ccm, new DynamicParameters(),
                             parameters => parameters.Add("@КодОборудования", int.Parse(operation.Key)));
                         break;
                 }
+                results.Add(new PhoneSyncOperationResult(attemptId, operation, PhoneSyncPhase.Succeeded));
             }
-            catch (Microsoft.Data.SqlClient.SqlException ex) when (IsUnknownExternalException(ex))
+            catch (Microsoft.Data.SqlClient.SqlException ex)
             {
-                error = ex.Message;
-                outcome = PhoneSyncOutcome.Unknown;
+                results.Add(new PhoneSyncOperationResult(attemptId, operation,
+                    dispatched ? PhoneSyncPhase.Unknown : PhoneSyncPhase.NotSent, ex.Message));
             }
-            catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
+            catch (InvalidOperationException ex)
             {
-                error = ex.Message;
-                outcome = PhoneSyncOutcome.Failed;
+                results.Add(new PhoneSyncOperationResult(attemptId, operation,
+                    dispatched ? PhoneSyncPhase.Failed : PhoneSyncPhase.Rejected, ex.Message));
             }
-            results.Add(new PhoneSyncResult(operation, error, outcome));
         }
         return results;
     }
 
-    private static bool IsUnknownExternalException(Microsoft.Data.SqlClient.SqlException exception) =>
-        exception.Number is -2 or -1 or 2 or 53 or 64 or 121 or 1231 or 10054 or 10060 or 40143 or 40501 or 40613;
-
-    private async Task ExecuteReturnCodeAsync(string procedure, DynamicParameters parameters, Action<DynamicParameters> fill)
+    private async Task ExecuteReturnCodeAsync(
+        string procedure,
+        DynamicParameters parameters,
+        Action<DynamicParameters> fill,
+        Action dispatch)
     {
         fill(parameters);
         parameters.Add("@RETURN_VALUE", dbType: DbType.Int32, direction: ParameterDirection.ReturnValue);
+        dispatch();
         await _db.ExecuteAsync(procedure, parameters, commandType: CommandType.StoredProcedure);
         var code = parameters.Get<int>("@RETURN_VALUE");
         if (code != 0) throw new InvalidOperationException($"Процедура вернула код {code}.");

@@ -24,4 +24,8 @@ public sealed record EquipmentResponsibleDialogResult(
     DateTime? ToLocal,
     DateTime? ReturnDate,
     string Notes,
-    int? LocationId);
+    int? LocationId)
+{
+    /// <summary>Immutable original V1 для CAS и проверки открытого периода.</summary>
+    public EquipmentPeriodOriginal? Original { get; init; }
+}

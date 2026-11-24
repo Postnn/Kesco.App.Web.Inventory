@@ -119,6 +119,16 @@
     /// <summary>Примечания.</summary>
     [Parameter] public string Notes { get; set; } = string.Empty;
 
+    /// <summary>Исходный baseline, восстанавливаемый независимо от fresh read.</summary>
+    [Parameter] public EquipmentPeriodOriginal? Original { get; set; }
+
+    /// <summary>Свежая строка для сверки; не заменяет <see cref="Original"/>.</summary>
+    [Parameter] public EquipmentLocationPeriod? FreshOriginal { get; set; }
+
+    /// <summary>Признак активности свежей исходной строки.</summary>
+    [Parameter] public bool FreshOriginalActive { get; set; }
+
+    private bool _originalInitialized;
     private bool ResponsibleRequired => RequireResponsible && LocationId == (int)Clayzor.Lib.Entities.Расположения.На_руках;
 
     private Func<Employee, Task>? EmployeeViewItem =>
@@ -141,16 +151,17 @@
         try
         {
             var items = await Service.GetWorkplaceAdvisoryAsync(EquipmentId, locationId);
-            if (version != _advisoryVersion || LocationId != locationId)
+            if (!IsEditorCurrent() || version != _advisoryVersion || LocationId != locationId)
                 return;
             _advisories = items;
         }
         catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or UnauthorizedAccessException)
         {
-            if (version == _advisoryVersion && LocationId == locationId)
+            if (IsEditorCurrent() && version == _advisoryVersion && LocationId == locationId)
                 _advisoryError = "Не удалось проверить другое оборудование на рабочем месте. Операция расположения остаётся доступной.";
         }
-        await InvokeAsync(StateHasChanged);
+        if (IsEditorCurrent() && version == _advisoryVersion && LocationId == locationId)
+            await InvokeAsync(StateHasChanged);
     }
 
     /// <inheritdoc />
@@ -161,20 +172,36 @@
         _fromDateOptions.Disabled = IsEdit;
         _fromTimeOptions.ReadOnly = IsEdit;
         _fromTimeOptions.Disabled = IsEdit;
+        if (!_originalInitialized && (Original is not null || FreshOriginal is not null))
+        {
+            Original ??= EquipmentPeriodOriginal.FromLocation(FreshOriginal!, FreshOriginalActive);
+            _originalInitialized = true;
+        }
     }
 
     private async Task Apply()
     {
         var now = GetNow is null ? Now : await GetNow();
+        if (!IsEditorCurrent())
+            return;
         var from = (FromDate ?? now.Date).Date.Add(FromTime ?? TimeSpan.Zero);
         var draft = new EquipmentLocationDialogResult(
-            LocationId ?? 0, from, ReturnDate, Notes ?? string.Empty, ResponsibleRequired ? EmployeeId : null);
+            LocationId ?? 0, from, ReturnDate, Notes ?? string.Empty, ResponsibleRequired ? EmployeeId : null)
+        {
+            Original = Original,
+        };
         await ApplyAsync(draft, () => Validate(from, now));
     }
 
     private string? Validate(DateTime from, DateTime now)
     {
-        if (!IsEdit && (LocationId is null || FromDate is null || FromTime is null))
+        if (IsEdit)
+        {
+            if (Original is null)
+                return "Исходный период расположения не подтверждён. Черновик сохранён; запись не отправлена.";
+            return Original.ValidateFresh(FreshOriginal, FreshOriginalActive);
+        }
+        if (LocationId is null || FromDate is null || FromTime is null)
             return "Укажите расположение, дату и время начала.";
         if (ResponsibleRequired && EmployeeId is null)
             return "Для расположения «На руках» укажите ответственного сотрудника.";

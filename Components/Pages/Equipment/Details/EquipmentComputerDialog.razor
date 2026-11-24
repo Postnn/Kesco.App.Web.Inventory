@@ -16,44 +16,62 @@
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">RAM, Мб:</span>
             <div class="equipment-computer-components">
-                @for (var i = 0; i < Ram.Count; i++)
+                @foreach (var row in ComponentRows(RamSlots, DeletedRamSlots))
                 {
-                    var index = i;
-                    <div class="equipment-computer-number d-flex gap-1">
-                        <ClayNumber Value="Ram[index]" ValueChanged="value => Ram[index] = value" Options="_ramOptions" />
-                        @if (index >= MemoryBanks)
-                        {
-                            <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить лишний компонент RAM" OnClick="() => Ram.RemoveAt(index)" />
-                        }
-                    </div>
+                    if (row.Index is int index)
+                    {
+                        <div class="equipment-computer-number d-flex gap-1">
+                            <ClayNumber Value="Ram[index]" ValueChanged="value => Ram[index] = value" Options="_ramOptions" />
+                            @if (index >= MemoryBanks)
+                            {
+                                <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить лишний компонент RAM" OnClick="() => RemoveComponent(Ram, RamSlots, DeletedRamSlots, index)" />
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div hidden><ClayNumber Value="(decimal?)null" Options="_ramTombstoneOptions" /></div>
+                    }
                 }
             </div>
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">HD, Гб:</span>
             <div class="equipment-computer-components">
-                <ClayButton Icon="@Icons.Material.Filled.Add" Text="Добавить HD" Class="equipment-add-hd" OnClick="() => Hd.Add(0)" />
-                @for (var i = 0; i < Hd.Count; i++)
+                <ClayButton Icon="@Icons.Material.Filled.Add" Text="Добавить HD" Class="equipment-add-hd" OnClick="AddHd" />
+                @foreach (var row in ComponentRows(HdSlots, DeletedHdSlots))
                 {
-                    var index = i;
-                    <div class="equipment-computer-number d-flex gap-1">
-                        <ClayNumber Value="Hd[index]" ValueChanged="value => Hd[index] = value" Options="_diskOptions" />
-                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить компонент HD" OnClick="() => Hd.RemoveAt(index)" />
-                    </div>
+                    if (row.Index is int index)
+                    {
+                        <div class="equipment-computer-number d-flex gap-1">
+                            <ClayNumber Value="Hd[index]" ValueChanged="value => Hd[index] = value" Options="_diskOptions" />
+                            <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить компонент HD" OnClick="() => RemoveComponent(Hd, HdSlots, DeletedHdSlots, index)" />
+                        </div>
+                    }
+                    else
+                    {
+                        <div hidden><ClayNumber Value="(decimal?)null" Options="_diskTombstoneOptions" /></div>
+                    }
                 }
             </div>
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">SSD, Гб:</span>
             <div class="equipment-computer-components">
-                <ClayButton Icon="@Icons.Material.Filled.Add" Text="Добавить SSD" Class="equipment-add-ssd" OnClick="() => Ssd.Add(0)" />
-                @for (var i = 0; i < Ssd.Count; i++)
+                <ClayButton Icon="@Icons.Material.Filled.Add" Text="Добавить SSD" Class="equipment-add-ssd" OnClick="AddSsd" />
+                @foreach (var row in ComponentRows(SsdSlots, DeletedSsdSlots))
                 {
-                    var index = i;
-                    <div class="equipment-computer-number d-flex gap-1">
-                        <ClayNumber Value="Ssd[index]" ValueChanged="value => Ssd[index] = value" Options="_ssdOptions" />
-                        <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить компонент SSD" OnClick="() => Ssd.RemoveAt(index)" />
-                    </div>
+                    if (row.Index is int index)
+                    {
+                        <div class="equipment-computer-number d-flex gap-1">
+                            <ClayNumber Value="Ssd[index]" ValueChanged="value => Ssd[index] = value" Options="_ssdOptions" />
+                            <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить компонент SSD" OnClick="() => RemoveComponent(Ssd, SsdSlots, DeletedSsdSlots, index)" />
+                        </div>
+                    }
+                    else
+                    {
+                        <div hidden><ClayNumber Value="(decimal?)null" Options="_ssdTombstoneOptions" /></div>
+                    }
                 }
             </div>
         </div>
@@ -100,6 +118,9 @@
     private readonly ClayNumberOptions _ramOptions = new() { Min = 0, Precision = 0, DraftKey = "computer.ram" };
     private readonly ClayNumberOptions _ssdOptions = new() { Min = 0, Precision = 0, DraftKey = "computer.ssd" };
     private readonly ClayNumberOptions _diskOptions = new() { Min = 0, Precision = 2, Step = 0.5m, DraftKey = "computer.hd" };
+    private readonly ClayNumberOptions _ramTombstoneOptions = new() { Disabled = true, DraftKey = "computer.ram" };
+    private readonly ClayNumberOptions _ssdTombstoneOptions = new() { Disabled = true, DraftKey = "computer.ssd" };
+    private readonly ClayNumberOptions _diskTombstoneOptions = new() { Disabled = true, DraftKey = "computer.hd" };
     private readonly ClayTextBoxOptions _licenseOptions = new() { MaxLength = 50, DraftKey = "computer.license" };
     private readonly ClayTextAreaOptions _notesOptions = new() { MaxLength = 300, Lines = 3, DraftKey = "computer.notes" };
     private bool _initialized;
@@ -162,6 +183,16 @@
     /// <summary>Клиентская календарная дата для проверки конфигураций.</summary>
     [Parameter] public DateTime Today { get; set; } = DateTime.Today;
 
+    /// <summary>Возвращает актуальную business date перед проверкой конфигурации.</summary>
+    [Parameter] public Func<Task<DateTime>>? GetToday { get; set; }
+
+    internal List<int> RamSlots { get; } = [];
+    internal List<int> HdSlots { get; } = [];
+    internal List<int> SsdSlots { get; } = [];
+    internal HashSet<int> DeletedRamSlots { get; } = [];
+    internal HashSet<int> DeletedHdSlots { get; } = [];
+    internal HashSet<int> DeletedSsdSlots { get; } = [];
+
     /// <inheritdoc />
     protected override void OnParametersSet()
     {
@@ -176,6 +207,9 @@
                 Ram.Add(0);
             Hd.AddRange(EquipmentComputerDetail.Parse(HdDetail).Select(value => (decimal?)value));
             Ssd.AddRange(EquipmentComputerDetail.Parse(SsdDetail).Select(value => (decimal?)value));
+            InitializeSlots(RamSlots, Ram.Count);
+            InitializeSlots(HdSlots, Hd.Count);
+            InitializeSlots(SsdSlots, Ssd.Count);
         }
         catch (FormatException ex)
         {
@@ -186,6 +220,9 @@
     private async Task Apply()
     {
         if (_loadError is not null)
+            return;
+        var today = GetToday is null ? Today : (await GetToday()).Date;
+        if (!IsEditorCurrent())
             return;
         try
         {
@@ -208,7 +245,7 @@
             snapshot.RamDetail = EquipmentComputerDetail.Serialize(snapshot.RamComponents, false);
             snapshot.HdDetail = EquipmentComputerDetail.Serialize(snapshot.HdComponents, true);
             snapshot.SsdDetail = EquipmentComputerDetail.Serialize(snapshot.SsdComponents, false);
-            await ApplyAsync(snapshot, () => ValidateSnapshot(snapshot));
+            await ApplyAsync(snapshot, () => snapshot.ValidateConfiguration(today, MemoryBanks));
         }
         catch (Exception ex) when (ex is FormatException or OverflowException)
         {
@@ -216,9 +253,36 @@
         }
     }
 
-    private string? ValidateSnapshot(EquipmentComputerSnapshot snapshot) =>
-        snapshot.ValidateConfiguration(Today, MemoryBanks);
+    private void AddHd() => AddComponent(Hd, HdSlots, DeletedHdSlots);
+
+    private void AddSsd() => AddComponent(Ssd, SsdSlots, DeletedSsdSlots);
+
+    private static void InitializeSlots(ICollection<int> slots, int count)
+    {
+        for (var slot = 0; slot < count; slot++)
+            slots.Add(slot);
+    }
+
+    private static void AddComponent(ICollection<decimal?> values, ICollection<int> slots, ISet<int> deleted)
+    {
+        values.Add(0);
+        var next = slots.Concat(deleted).Select(slot => (int?)slot).Max() + 1 ?? 0;
+        slots.Add(next);
+    }
+
+    private static void RemoveComponent(IList<decimal?> values, IList<int> slots, ISet<int> deleted, int index)
+    {
+        deleted.Add(slots[index]);
+        values.RemoveAt(index);
+        slots.RemoveAt(index);
+    }
+
+    private static IEnumerable<ComponentRow> ComponentRows(IList<int> slots, ISet<int> deleted) =>
+        slots.Concat(deleted).OrderBy(slot => slot).Select(slot =>
+            new ComponentRow(slots.IndexOf(slot) is var index && index >= 0 ? index : null));
 
     private static IReadOnlyList<decimal> Values(IEnumerable<decimal?> values) =>
         values.Where(value => value is not null).Select(value => value!.Value).ToList();
+
+    private sealed record ComponentRow(int? Index);
 }

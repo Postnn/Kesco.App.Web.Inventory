@@ -6,7 +6,6 @@
 @inject MobileContractSelectDataSource ContractSource
 @inject PersonalDataPersonSelectDataSource PersonalDataSource
 @inject Kesco.App.Web.Inventory.Services.EquipmentFormService Service
-@inject Clayzor.Lib.Web.Controls.Services.ClayDraftService Drafts
 @inject IConfiguration Configuration
 
 <MudDialog>
@@ -76,12 +75,17 @@
     </DialogContent>
     <DialogActions>
         <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || _loadError is not null || _saving || _saveBlocked)" />
+        @if (_loadError is not null)
+        {
+            <ClayToolbarButton Options="_retryButtonOptions" OnClick="InitializeReadinessAsync" Disabled="@_loading" />
+        }
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || !_ready || _loadError is not null || _saving || _saveBlocked)" />
     </DialogActions>
 </MudDialog>
 
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
+    private readonly ClayToolbarButtonOptions _retryButtonOptions = new() { Text = "Повторить" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
     private readonly ClayToolbarButtonOptions _fillButtonOptions = new() { Text = "Заполнить" };
     private readonly ClayToolbarButtonOptions _nowButtonOptions = new() { Text = "Сейчас" };
@@ -95,12 +99,18 @@
     private readonly ClayTextBoxOptions _pukOptions = new() { MaxLength = 8, InputType = InputType.Password, Disabled = true, DraftKey = "sim.puk" };
     private bool _loading = true;
     private bool _ready;
+    private bool _secretReady;
+    private bool _restoreContractPending;
+    private bool _contractReadFailed;
+    private int _readinessVersion;
+    private int _contractVersion;
     private int _personVersion;
     private int _personSelectionRevision;
     private int _advisoryVersion;
     private string? _personalDataAdvisory;
     private string? _personalDataAdvisoryError;
     private int? _resolvedContractId;
+    private int? _resolvedPersonalDataPersonId;
     private string? _loadError;
 
     /// <summary>Идентификатор оборудования.</summary>
@@ -140,52 +150,158 @@
         PersonalDataSource.ContractId = ContractId;
         PersonalDataSource.TechnicalTariffs = Configuration["technicalTariffs"] ?? string.Empty;
         if (!_ready)
+        {
             _resolvedContractId = ContractId;
+            _resolvedPersonalDataPersonId = PersonalDataPersonId;
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void OnDraftStateRestored()
+    {
+        _resolvedContractId = ContractId;
+        _resolvedPersonalDataPersonId = PersonalDataPersonId;
+        _restoreContractPending = ContractId is not null;
+        PersonalDataSource.ContractId = ContractId;
     }
 
     /// <inheritdoc />
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender)
+        await base.OnAfterRenderAsync(firstRender);
+        if (firstRender)
+            await InitializeReadinessAsync();
+    }
+
+    private async Task InitializeReadinessAsync()
+    {
+        var retry = _loadError is not null;
+        var version = ++_readinessVersion;
+        var equipmentId = EquipmentId;
+        _loading = true;
+        _ready = false;
+        _secretReady = false;
+        _contractReadFailed = false;
+        _loadError = null;
+        ClearSecrets();
+        SetSecretInputsDisabled(true);
+        if (retry && ContractId is not null)
+            _restoreContractPending = true;
+        if (EditorContext is not null)
+            await EditorContext.ReportReadinessAsync(EquipmentEditorReadiness.Pending);
+        var secretsTask = LoadSecretsAsync(version, equipmentId);
+        var contractTask = ResolveRestoredContractAsync(version, equipmentId);
+        await Task.WhenAll(secretsTask, contractTask);
+        if (!IsReadinessCurrent(version, equipmentId))
             return;
-        if (HasExisting)
-        {
-            try
-            {
-                var secrets = await Service.GetSimSecretsAsync(EquipmentId);
-                Secrets.Pin = secrets.Pin;
-                Secrets.Pin2 = secrets.Pin2;
-                Secrets.Puk = secrets.Puk;
-                Secrets.Puk2 = secrets.Puk2;
-            }
-            catch (Exception ex) when (ex is UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
-            {
-                _loadError = ex is UnauthorizedAccessException or InvalidOperationException
-                    ? ex.Message
-                    : "Не удалось прочитать коды SIM. Повторите открытие диалога; сохранение заблокировано.";
-            }
-        }
         _loading = false;
-        _ready = true;
+        _ready = _secretReady && !_contractReadFailed;
         _contractOptions.ReadOnly = _personOptions.ReadOnly = false;
-        _pinOptions.Disabled = _pin2Options.Disabled = _pukOptions.Disabled = _loadError is not null;
+        SetSecretInputsDisabled(!_secretReady);
         await InvokeAsync(StateHasChanged);
-        if (Drafts.HasActiveRegistration)
+        if (!_ready)
         {
-            try
-            {
-                await Drafts.ApplyRawAsync();
-            }
-            catch (Exception ex) when (ex is Microsoft.JSInterop.JSException or Microsoft.JSInterop.JSDisconnectedException or InvalidOperationException or OperationCanceledException)
-            {
-                _loadError = $"Не удалось восстановить коды SIM. {ex.Message}";
-            }
+            if (EditorContext is not null)
+                await EditorContext.ReportReadinessAsync(EquipmentEditorReadiness.Failed);
+            return;
+        }
+        try
+        {
+            if (EditorContext is not null)
+                await EditorContext.ApplyRawAsync();
+            if (!IsReadinessCurrent(version, equipmentId))
+                return;
+            if (EditorContext is not null)
+                await EditorContext.ReportReadinessAsync(EquipmentEditorReadiness.Ready);
+        }
+        catch (Exception ex) when (ex is Microsoft.JSInterop.JSException or Microsoft.JSInterop.JSDisconnectedException or InvalidOperationException or OperationCanceledException)
+        {
+            if (!IsReadinessCurrent(version, equipmentId))
+                return;
+            ClearSecrets();
+            _ready = false;
+            _secretReady = false;
+            SetSecretInputsDisabled(true);
+            _loadError = $"Не удалось восстановить коды SIM. {ex.Message}";
+            if (EditorContext is not null)
+                await EditorContext.ReportReadinessAsync(EquipmentEditorReadiness.Failed);
+            await InvokeAsync(StateHasChanged);
+            return;
         }
         await RefreshPersonalDataAdvisoryAsync();
     }
 
+    private async Task LoadSecretsAsync(int version, int equipmentId)
+    {
+        if (!HasExisting)
+        {
+            _secretReady = true;
+            return;
+        }
+        try
+        {
+            var secrets = await Service.GetSimSecretsAsync(equipmentId);
+            if (!IsReadinessCurrent(version, equipmentId))
+                return;
+            Secrets.Pin = secrets.Pin;
+            Secrets.Pin2 = secrets.Pin2;
+            Secrets.Puk = secrets.Puk;
+            Secrets.Puk2 = secrets.Puk2;
+            _secretReady = true;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
+        {
+            if (!IsReadinessCurrent(version, equipmentId))
+                return;
+            ClearSecrets();
+            _secretReady = false;
+            _loadError = ex is UnauthorizedAccessException or InvalidOperationException
+                ? ex.Message
+                : "Не удалось прочитать коды SIM. Повторите чтение; сохранение заблокировано.";
+        }
+    }
+
+    private async Task ResolveRestoredContractAsync(int version, int equipmentId)
+    {
+        if (!_restoreContractPending)
+            return;
+        _restoreContractPending = false;
+        var contractId = ContractId;
+        var contractVersion = _contractVersion;
+        if (contractId is null)
+            return;
+        try
+        {
+            var contract = await ContractSource.GetByIdAsync(contractId);
+            if (!IsReadinessCurrent(version, equipmentId) || contractVersion != _contractVersion || contractId != ContractId)
+                return;
+            PersonalDataSource.CustomerType = contract?.CustomerType ?? 0;
+            PersonalDataSource.ContractId = contractId;
+            _resolvedContractId = contractId;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
+        {
+            if (!IsReadinessCurrent(version, equipmentId) || contractVersion != _contractVersion || contractId != ContractId)
+                return;
+            _contractReadFailed = true;
+            _loadError = ex is Microsoft.Data.SqlClient.SqlException
+                ? "Не удалось загрузить восстановленный договор. Выбор и лицо ПДн сохранены; повторите чтение."
+                : ex.Message;
+        }
+    }
+
+    private bool IsReadinessCurrent(int version, int equipmentId) =>
+        IsEditorCurrent() && version == _readinessVersion && equipmentId == EquipmentId;
+
+    private void SetSecretInputsDisabled(bool disabled) =>
+        _pinOptions.Disabled = _pin2Options.Disabled = _pukOptions.Disabled = disabled;
+
+    private void ClearSecrets() => Secrets.Pin = Secrets.Pin2 = Secrets.Puk = Secrets.Puk2 = string.Empty;
+
     private async Task OnContractChanged(MobileContractLookup? contract)
     {
+        _contractVersion++;
+        _restoreContractPending = false;
         PersonalDataSource.CustomerType = contract?.CustomerType ?? 0;
         PersonalDataSource.ContractId = ContractId;
         if (_ready && _resolvedContractId != ContractId)
@@ -193,6 +309,7 @@
             _personVersion++;
             _personSelectionRevision++;
             PersonalDataPersonId = null;
+            _resolvedPersonalDataPersonId = null;
         }
         _resolvedContractId = ContractId;
         await RefreshPersonalDataAdvisoryAsync();
@@ -200,8 +317,11 @@
 
     private async Task OnPersonalDataChanged(PersonLookup? person)
     {
+        if (_ready && _resolvedPersonalDataPersonId == PersonalDataPersonId)
+            return;
         if (_ready)
             _personSelectionRevision++;
+        _resolvedPersonalDataPersonId = PersonalDataPersonId;
         await RefreshPersonalDataAdvisoryAsync();
     }
 
@@ -216,25 +336,33 @@
         try
         {
             var personId = await Service.GetEmployeePersonIdAsync(CurrentEmployeeId.Value);
-            if (version != _personVersion || selectionRevision != _personSelectionRevision ||
+            if (!IsEditorCurrent() || version != _personVersion || selectionRevision != _personSelectionRevision ||
                 equipmentId != EquipmentId || contractId != ContractId || personId is null)
                 return;
             PersonalDataPersonId = personId;
+            _resolvedPersonalDataPersonId = personId;
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
         {
-            if (version == _personVersion && equipmentId == EquipmentId && contractId == ContractId)
-                _error = ex is Microsoft.Data.SqlClient.SqlException
-                    ? "Не удалось определить лицо персональных данных. Повторите попытку."
-                    : ex.Message;
+            if (!IsEditorCurrent() || version != _personVersion || selectionRevision != _personSelectionRevision ||
+                equipmentId != EquipmentId || contractId != ContractId)
+                return;
+            _error = ex is Microsoft.Data.SqlClient.SqlException
+                ? "Не удалось определить лицо персональных данных. Повторите попытку."
+                : ex.Message;
         }
+        if (!IsEditorCurrent() || version != _personVersion || selectionRevision != _personSelectionRevision ||
+            equipmentId != EquipmentId || contractId != ContractId)
+            return;
         await RefreshPersonalDataAdvisoryAsync();
-        await InvokeAsync(StateHasChanged);
+        if (IsEditorCurrent())
+            await InvokeAsync(StateHasChanged);
     }
 
     private async Task RefreshPersonalDataAdvisoryAsync()
     {
         var version = ++_advisoryVersion;
+        var selectionRevision = _personSelectionRevision;
         var equipmentId = EquipmentId;
         var contractId = ContractId;
         var personId = PersonalDataPersonId;
@@ -244,21 +372,28 @@
             return;
         try
         {
+            var businessToday = GetNow is null ? Now.Date : (await GetNow()).Date;
+            if (!IsAdvisoryCurrent(version, selectionRevision, equipmentId, contractId, personId))
+                return;
             var result = await Service.GetPersonalDataAdvisoryAsync(
-                equipmentId, contractId, personId, Configuration["technicalTariffs"] ?? string.Empty);
-            if (version != _advisoryVersion || equipmentId != EquipmentId ||
-                contractId != ContractId || personId != PersonalDataPersonId)
+                equipmentId, contractId, personId, Configuration["technicalTariffs"] ?? string.Empty, businessToday);
+            if (!IsAdvisoryCurrent(version, selectionRevision, equipmentId, contractId, personId))
                 return;
             _personalDataAdvisory = result.Message;
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
         {
-            if (version != _advisoryVersion || equipmentId != EquipmentId ||
-                contractId != ContractId || personId != PersonalDataPersonId)
+            if (!IsAdvisoryCurrent(version, selectionRevision, equipmentId, contractId, personId))
                 return;
             _personalDataAdvisoryError = "Не удалось проверить соответствие лица ПДн. Выбор сохранён; это не отрицательный результат проверки. " + ex.Message;
         }
+        if (IsAdvisoryCurrent(version, selectionRevision, equipmentId, contractId, personId))
+            await InvokeAsync(StateHasChanged);
     }
+
+    private bool IsAdvisoryCurrent(int version, int selectionRevision, int equipmentId, int? contractId, int? personId) =>
+        IsEditorCurrent() && version == _advisoryVersion && selectionRevision == _personSelectionRevision &&
+        equipmentId == EquipmentId && contractId == ContractId && personId == PersonalDataPersonId;
 
     /// <summary>Возвращает актуальное локальное время браузера для команды «Сейчас».</summary>
     [Parameter] public Func<Task<DateTime>>? GetNow { get; set; }
@@ -266,6 +401,8 @@
     private async Task SetActivationNow()
     {
         var now = GetNow is null ? Now : await GetNow();
+        if (!IsEditorCurrent())
+            return;
         ActivatedDate = now.Date;
         ActivatedTime = now.TimeOfDay;
         await InvokeAsync(StateHasChanged);
@@ -273,7 +410,7 @@
 
     private Task Apply()
     {
-        if (_loading || _loadError is not null)
+        if (_loading || !_ready || _loadError is not null)
             return Task.CompletedTask;
         var localActivation = ActivatedDate?.Date.Add(ActivatedTime ?? TimeSpan.Zero) ?? default;
         var candidate = new EquipmentSimCard

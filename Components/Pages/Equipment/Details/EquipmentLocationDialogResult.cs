@@ -11,4 +11,8 @@ public sealed record EquipmentLocationDialogResult(
     DateTime FromLocal,
     DateTime? ReturnDate,
     string Notes,
-    int? EmployeeId);
+    int? EmployeeId)
+{
+    /// <summary>Immutable original V1 для CAS; fresh closure не заменяет это значение.</summary>
+    public EquipmentPeriodOriginal? Original { get; init; }
+}

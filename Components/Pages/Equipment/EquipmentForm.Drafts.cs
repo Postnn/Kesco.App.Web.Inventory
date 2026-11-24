@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Web.Controls.Services;
 using Kesco.App.Web.Inventory.Components.Pages.Equipment.Details;
@@ -15,14 +16,18 @@ public partial class EquipmentForm
 
     [Inject] private ClayDraftService Drafts { get; set; } = null!;
 
+    private readonly string _draftOwner = Guid.NewGuid().ToString("N");
     private ClayDraftRegistration? _draftRegistration;
     private bool _draftRegistered => _draftRegistration is not null;
+    private string DraftRootSelector => $"[data-draft-owner='{_draftOwner}'], .equipment-draft-dialog-{_draftOwner}";
     private bool _draftRestoring;
     private bool _draftPersisting;
+    private bool _draftPersistPending;
     private string? _lastPersistedDraft;
     private string? _draftStorageError;
     private bool _draftOperationUnresolved;
     private string? _draftOperationScope;
+    private ClayDraftOperation? _draftOperation;
     private EquipmentDraftEditor? _activeEditor;
     private EquipmentEditorContext? _activeEditorContext;
     private string? _restoredEditorState;
@@ -33,6 +38,8 @@ public partial class EquipmentForm
     private TaskCompletionSource _restoredEditorOpened = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private sealed record EquipmentDraftEditor(string Kind, string? Key, int? NestedTestId = null);
+
+    private sealed record EquipmentMainDraftIntent(string ExpectedSnapshot, string AfterSnapshot);
 
     private sealed class EquipmentDraftState
     {
@@ -60,22 +67,25 @@ public partial class EquipmentForm
         try
         {
             _draftRegistration = await Drafts.RegisterHandleAsync(
-                "equipment-form", _model.Id.ToString(), $"inventory:{CurrentUser.Id}", DraftSchemaVersion, _pageCts.Token);
+                "equipment-form", _model.Id.ToString(), $"inventory:{CurrentUser.Id}", DraftSchemaVersion,
+                DraftRootSelector, _pageCts.Token);
             var restore = _draftRegistration.Restore;
-            if (restore.HasDraft && !string.IsNullOrWhiteSpace(restore.TypedState))
+            if (restore.HasDraft)
             {
                 _draftRestoring = true;
                 _restoredEditorOpened = new(TaskCreationOptions.RunContinuationsAsynchronously);
-                await RestoreDraftAsync(restore.TypedState);
                 if (restore.OperationSnapshot is not null)
                 {
                     _draftOperationUnresolved = true;
+                    _draftOperation = restore.OperationSnapshot;
                     _draftOperationScope = restore.OperationSnapshot.Scopes.FirstOrDefault()?.Name;
                     _warningMessage = "Предыдущая команда могла быть отправлена, но её результат неизвестен. Сверьте данные; автоматический повтор не выполняется.";
                 }
+                if (!string.IsNullOrWhiteSpace(restore.TypedState))
+                    await RestoreDraftAsync(restore.TypedState);
                 var editorTask = RestoreActiveEditorAsync();
                 await Task.WhenAny(_restoredEditorOpened.Task, editorTask);
-                await _draftRegistration.ApplyRawWithResultAsync(_pageCts.Token);
+                await _draftRegistration.ApplyRawWithResultAsync("main", _pageCts.Token);
                 _draftRestoring = false;
                 _lastPersistedDraft = null;
                 await PersistDraftAsync();
@@ -100,12 +110,14 @@ public partial class EquipmentForm
         if (state.Model is null || state.Model.Id != Id || _model is null)
             throw new InvalidOperationException("Черновик принадлежит другому оборудованию и не был применён.");
         var freshBaseline = _originalSnapshot;
-        _model = state.Model;
-        _writeOffDate = state.WriteOffDate;
-        _writeOffTime = state.WriteOffTime;
-        _phones = state.Phones;
+        var baselineJson = string.IsNullOrWhiteSpace(state.OriginalSnapshot) ? freshBaseline : state.OriginalSnapshot;
+        var original = JsonNode.Parse(baselineJson)?["Equipment"]?.Deserialize<EquipmentEntity>() ?? _model;
+        if (original.Id != _model.Id)
+            throw new InvalidOperationException("Исходная версия черновика принадлежит другому оборудованию.");
         _originalPhones = state.OriginalPhones;
-        _originalSnapshot = string.IsNullOrWhiteSpace(state.OriginalSnapshot) ? freshBaseline : state.OriginalSnapshot;
+        var merge = await MergeMainStateAsync(original, state.Model, _model, state.WriteOffDate, state.WriteOffTime);
+        ApplyMainMergeResult(merge);
+        _phones = state.Phones;
         _pendingPhoneSync = state.PendingPhoneSync;
         _activeEditor = state.ActiveEditor;
         _restoredEditorState = state.ActiveEditorState;
@@ -120,29 +132,42 @@ public partial class EquipmentForm
         ModelSource.Filter.EquipmentTypeId = _model.EquipmentTypeId;
         SetDocumentOwner(_model.OwnerId);
         UpdatePhoneSourceFilters();
-        _statusMessage = "Восстановлен несохранённый черновик.";
-        if (freshBaseline != _originalSnapshot)
-            _warningMessage = "Запись изменилась в другой сессии. Черновик восстановлен поверх свежих данных без автоматического сохранения; проверьте конфликт.";
+        _statusMessage = _mainConflictMessage is null && freshBaseline != baselineJson
+            ? "Черновик восстановлен; независимые изменения из БД объединены."
+            : "Восстановлен несохранённый черновик.";
         StateHasChanged();
     }
 
     private async Task PersistDraftAsync()
     {
-        if (!_draftRegistered || _draftRestoring || _draftPersisting || _model is null)
+        if (!_draftRegistered || _draftRestoring || _model is null)
             return;
-        var json = SerializeDraftState();
-        if (json == _lastPersistedDraft)
+        if (_draftPersisting)
+        {
+            _draftPersistPending = true;
             return;
+        }
         _draftPersisting = true;
         try
         {
-            await _draftRegistration!.SaveTypedAsync(json, _pageCts.Token);
-            _lastPersistedDraft = json;
-            _draftStorageError = null;
-        }
-        catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or OperationCanceledException)
-        {
-            _draftStorageError = "Черновик не сохранён. Не закрывайте страницу; бизнес-команды временно заблокированы.";
+            do
+            {
+                _draftPersistPending = false;
+                var json = SerializeDraftState();
+                if (json == _lastPersistedDraft)
+                    continue;
+                try
+                {
+                    await _draftRegistration!.SaveTypedAsync(json, _pageCts.Token);
+                    _lastPersistedDraft = json;
+                    _draftStorageError = null;
+                }
+                catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or OperationCanceledException)
+                {
+                    _draftStorageError = "Черновик не сохранён. Не закрывайте страницу; бизнес-команды временно заблокированы.";
+                    return;
+                }
+            } while (_draftPersistPending && _draftRegistered && !_draftRestoring);
         }
         finally
         {
@@ -162,18 +187,19 @@ public partial class EquipmentForm
             OriginalSnapshot = _originalSnapshot,
             PendingPhoneSync = _pendingPhoneSync,
             ActiveEditor = _activeEditor,
-            ActiveEditorState = _activeEditorContext?.CaptureDraftState(),
+            ActiveEditorState = _activeEditorContext?.CaptureDraftState() ?? _restoredEditorState,
             ActiveUpsServers = _activeUpsServers,
             ActiveUpsTests = _activeUpsTests,
         };
         return JsonSerializer.Serialize(state);
     }
 
-    private async Task<long?> BeginDraftOperationAsync(string operationName)
+    private async Task<long?> BeginDraftOperationAsync(string operationName, object? intent = null)
     {
         var registration = _draftRegistration ??
                            throw new InvalidOperationException(_draftStorageError ??
                                "Черновик ещё не зарегистрирован; бизнес-команда заблокирована.");
+        await PersistDraftAsync();
         await registration.EnsureCommandAllowedAsync(_pageCts.Token);
         var mainOperation = operationName is "equipment-save" or "equipment-phone-save";
         var scope = mainOperation ? "main" : ActiveDraftScope;
@@ -184,9 +210,12 @@ public partial class EquipmentForm
                 Kind = operationName,
                 EquipmentId = _model?.Id,
                 Editor = _activeEditor?.Kind,
+                Origin = mainOperation ? "main" : operationName == "configure-phone-equipment" ? "configure" : "child",
+                Intent = intent,
             }),
             scope is null ? [] : [scope],
             AcceptLegacyTyped: mainOperation), _pageCts.Token);
+        _draftOperation = operation;
         _draftOperationScope = scope;
         return operation.Revision;
     }
@@ -200,6 +229,7 @@ public partial class EquipmentForm
                 await _draftRegistration!.RejectOperationAsync(revision.Value, _pageCts.Token);
                 _draftOperationUnresolved = false;
                 _draftOperationScope = null;
+                _draftOperation = null;
             }
             catch (Exception ex) when (ex is JSException or JSDisconnectedException)
             {
@@ -234,7 +264,62 @@ public partial class EquipmentForm
         await _draftRegistration!.CommitOperationAsync(revision.Value, json, _pageCts.Token);
         _draftOperationUnresolved = false;
         _draftOperationScope = null;
+        _draftOperation = null;
         _lastPersistedDraft = json;
+    }
+
+    private static string ComparableBusinessSnapshot(string snapshot)
+    {
+        var root = JsonNode.Parse(snapshot)!.AsObject();
+        var equipment = root["Equipment"]!.AsObject();
+        equipment.Remove(nameof(EquipmentEntity.ChangedAtUtc));
+        equipment.Remove(nameof(EquipmentEntity.ChangedById));
+        equipment.Remove(nameof(EquipmentEntity.ChangedByName));
+        return root.ToJsonString();
+    }
+
+    private async Task ReconcileDraftOperationAsync()
+    {
+        if (_draftOperation is null || _model is null)
+            return;
+        try
+        {
+            using var data = JsonDocument.Parse(_draftOperation.Data);
+            var kind = data.RootElement.GetProperty("Kind").GetString();
+            var equipmentId = data.RootElement.GetProperty("EquipmentId").GetInt32();
+            if (equipmentId != _model.Id || kind is not ("equipment-save" or "equipment-phone-save") ||
+                !data.RootElement.TryGetProperty("Intent", out var intentElement))
+            {
+                _warningMessage = "Результат предыдущей операции нельзя доказать доступным чтением. Состояние Unknown сохранено; повторная команда заблокирована.";
+                StateHasChanged();
+                return;
+            }
+            var intent = intentElement.Deserialize<EquipmentMainDraftIntent>();
+            if (intent is null)
+                throw new InvalidOperationException("Контекст незавершённой операции повреждён.");
+            var actual = await Service.GetAsync(equipmentId);
+            if (actual is null)
+                throw new InvalidOperationException("Оборудование не найдено при read-only сверке.");
+            var actualPhones = await Service.GetPhonesAsync(equipmentId);
+            var actualWriteOff = actual.WriteOffAtUtc is null
+                ? (DateTime?)null
+                : await ConvertUtcToLocalAsync(actual.WriteOffAtUtc.Value);
+            var actualSnapshot = Snapshot(actual, actualWriteOff?.Date, actualWriteOff?.TimeOfDay, actualPhones.ToList());
+            if (ComparableBusinessSnapshot(intent.AfterSnapshot) != ComparableBusinessSnapshot(actualSnapshot))
+            {
+                _warningMessage = "Read-only сверка не подтвердила результат предыдущей записи. Состояние Unknown сохранено; повторная команда заблокирована.";
+                StateHasChanged();
+                return;
+            }
+            await CommitDraftOperationAsync(_draftOperation.Revision);
+            _warningMessage = null;
+            _statusMessage = "Read-only сверка подтвердила сохранение записи. Повторная бизнес-команда не выполнялась.";
+        }
+        catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            _warningMessage = $"Не удалось завершить read-only сверку. Состояние Unknown сохранено. {ex.Message}";
+        }
+        StateHasChanged();
     }
 
     private async Task OpenDraftScopeAsync(string? scope)
@@ -329,10 +414,16 @@ public partial class EquipmentForm
     {
         if (_draftRegistration is null)
             return;
+        if (_draftOperationUnresolved)
+        {
+            await PersistDraftAsync();
+            return;
+        }
         await _draftRegistration.DiscardAsync(_pageCts.Token);
         _draftRegistration = null;
         _draftOperationUnresolved = false;
         _draftOperationScope = null;
+        _draftOperation = null;
         _lastPersistedDraft = null;
         _activeEditor = null;
     }
