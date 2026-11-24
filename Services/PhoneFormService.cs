@@ -312,6 +312,7 @@ public class PhoneFormService
         foreach (var operation in operations.Distinct())
         {
             string? error = null;
+            PhoneSyncOutcome? outcome = null;
             try
             {
                 switch (operation.Kind)
@@ -342,14 +343,23 @@ public class PhoneFormService
                         break;
                 }
             }
+            catch (Microsoft.Data.SqlClient.SqlException ex) when (IsUnknownExternalException(ex))
+            {
+                error = ex.Message;
+                outcome = PhoneSyncOutcome.Unknown;
+            }
             catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
             {
                 error = ex.Message;
+                outcome = PhoneSyncOutcome.Failed;
             }
-            results.Add(new PhoneSyncResult(operation, error));
+            results.Add(new PhoneSyncResult(operation, error, outcome));
         }
         return results;
     }
+
+    private static bool IsUnknownExternalException(Microsoft.Data.SqlClient.SqlException exception) =>
+        exception.Number is -2 or -1 or 2 or 53 or 64 or 121 or 1231 or 10054 or 10060 or 40143 or 40501 or 40613;
 
     private async Task ExecuteReturnCodeAsync(string procedure, DynamicParameters parameters, Action<DynamicParameters> fill)
     {

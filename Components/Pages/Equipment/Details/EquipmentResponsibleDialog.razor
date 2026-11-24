@@ -94,8 +94,11 @@
     /// <summary>Действующий сотрудник при изъятии.</summary>
     [Parameter] public int? CurrentEmployeeId { get; set; }
 
-    /// <summary>Текущее локальное время браузера.</summary>
+    /// <summary>Локальное время браузера на момент открытия; используется без <see cref="GetNow"/>.</summary>
     [Parameter] public DateTime Now { get; set; } = DateTime.Now;
+
+    /// <summary>Возвращает актуальное локальное время браузера при применении редактора.</summary>
+    [Parameter] public Func<Task<DateTime>>? GetNow { get; set; }
 
     /// <summary>Ответственный сотрудник.</summary>
     [Parameter] public int? EmployeeId { get; set; }
@@ -137,16 +140,17 @@
     private async Task OpenEmployeeViewAsync(Employee employee) =>
         await JS.InvokeVoidAsync("clayOpen", EquipmentIns.BuildEditUrl(Configuration["URI_user_form"]!, employee.Id), "_blank");
 
-    private Task Apply()
+    private async Task Apply()
     {
+        var now = GetNow is null ? Now : await GetNow();
         var from = FromDate?.Date.Add(FromTime ?? TimeSpan.Zero);
         var to = ToDate?.Date.Add(ToTime ?? TimeSpan.Zero);
         var draft = new EquipmentResponsibleDialogResult(
             EmployeeId, from, to, ReturnDate, Notes ?? string.Empty, LocationId);
-        return ApplyAsync(draft, () => Validate(from, to));
+        await ApplyAsync(draft, () => Validate(from, to, now));
     }
 
-    private string? Validate(DateTime? from, DateTime? to)
+    private string? Validate(DateTime? from, DateTime? to, DateTime now)
     {
         if (Mode != EquipmentResponsibleDialogMode.Edit)
         {
@@ -161,13 +165,13 @@
             if (RequireLocation && (LocationId is null || LocationId == (int)Clayzor.Lib.Entities.Расположения.На_руках))
                 return "Выберите новое расположение, отличное от «На руках».";
         }
-        if (from > Now || to > Now)
+        if (from > now || to > now)
             return "Дата и время не могут быть в будущем.";
         var periodStart = Mode == EquipmentResponsibleDialogMode.Withdraw
             ? EmployeeId is not null ? from : to ?? from
             : from;
         if (ReturnDate is not null && periodStart is not null &&
-            (ReturnDate.Value.Date < periodStart.Value.Date || ReturnDate.Value.Date > Now.Date.AddMonths(3)))
+            (ReturnDate.Value.Date < periodStart.Value.Date || ReturnDate.Value.Date > now.Date.AddMonths(3)))
             return "Срок возврата должен быть не раньше начала периода и не позднее трёх месяцев.";
         return null;
     }

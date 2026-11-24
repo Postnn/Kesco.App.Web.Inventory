@@ -95,8 +95,11 @@
     /// <summary>Требуется одновременно назначить ответственного.</summary>
     [Parameter] public bool RequireResponsible { get; set; }
 
-    /// <summary>Текущее локальное время браузера.</summary>
+    /// <summary>Текущее локальное время браузера на момент открытия.</summary>
     [Parameter] public DateTime Now { get; set; } = DateTime.Now;
+
+    /// <summary>Получает актуальное локальное время браузера при Apply.</summary>
+    [Parameter] public Func<Task<DateTime>>? GetNow { get; set; }
 
     /// <summary>Идентификатор расположения.</summary>
     [Parameter] public int? LocationId { get; set; }
@@ -160,23 +163,24 @@
         _fromTimeOptions.Disabled = IsEdit;
     }
 
-    private Task Apply()
+    private async Task Apply()
     {
-        var from = (FromDate ?? Now.Date).Date.Add(FromTime ?? TimeSpan.Zero);
+        var now = GetNow is null ? Now : await GetNow();
+        var from = (FromDate ?? now.Date).Date.Add(FromTime ?? TimeSpan.Zero);
         var draft = new EquipmentLocationDialogResult(
             LocationId ?? 0, from, ReturnDate, Notes ?? string.Empty, ResponsibleRequired ? EmployeeId : null);
-        return ApplyAsync(draft, () => Validate(from));
+        await ApplyAsync(draft, () => Validate(from, now));
     }
 
-    private string? Validate(DateTime from)
+    private string? Validate(DateTime from, DateTime now)
     {
         if (!IsEdit && (LocationId is null || FromDate is null || FromTime is null))
             return "Укажите расположение, дату и время начала.";
         if (ResponsibleRequired && EmployeeId is null)
             return "Для расположения «На руках» укажите ответственного сотрудника.";
-        if (from > Now)
+        if (from > now)
             return "Дата и время начала не могут быть в будущем.";
-        if (ReturnDate is not null && (ReturnDate.Value.Date < from.Date || ReturnDate.Value.Date > Now.Date.AddMonths(3)))
+        if (ReturnDate is not null && (ReturnDate.Value.Date < from.Date || ReturnDate.Value.Date > now.Date.AddMonths(3)))
             return "Срок возврата должен быть не раньше даты начала и не позднее трёх месяцев.";
         return null;
     }

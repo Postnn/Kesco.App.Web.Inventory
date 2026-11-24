@@ -1,3 +1,4 @@
+@inherits EquipmentEditorDialogBase<EquipmentPhoneReturnResult>
 @using Clayzor.Lib.Web.Controls.Components.Form
 
 <MudDialog>
@@ -24,14 +25,11 @@
     private readonly ClayDatePickerOptions _dateOptions = new() { DraftKey = "phone.return-date" };
     private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300, DraftKey = "phone.notes" };
 
-    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
-
     /// <summary>Выбранный срок возврата.</summary>
     [Parameter] public DateTime? ReturnDate { get; set; }
 
     /// <summary>Примечание к сроку возврата.</summary>
     [Parameter] public string Notes { get; set; } = string.Empty;
 
-    private void Cancel() => Dialog.Cancel();
-    private void Apply() => Dialog.Close(DialogResult.Ok(new EquipmentPhoneReturnResult(ReturnDate, Notes ?? string.Empty)));
+    private Task Apply() => ApplyAsync(new EquipmentPhoneReturnResult(ReturnDate, Notes ?? string.Empty), () => null);
 }

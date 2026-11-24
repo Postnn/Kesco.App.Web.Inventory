@@ -6,6 +6,7 @@
 @inject MobileContractSelectDataSource ContractSource
 @inject PersonalDataPersonSelectDataSource PersonalDataSource
 @inject Kesco.App.Web.Inventory.Services.EquipmentFormService Service
+@inject Clayzor.Lib.Web.Controls.Services.ClayDraftService Drafts
 @inject IConfiguration Configuration
 
 <MudDialog>
@@ -52,6 +53,14 @@
                         Options="_personOptions" />
             <ClayToolbarButton Options="_fillButtonOptions" OnClick="FillPersonalDataAsync" Disabled="@(CurrentEmployeeId is null)" />
         </div>
+        @if (!string.IsNullOrWhiteSpace(_personalDataAdvisoryError))
+        {
+            <MudAlert Severity="Severity.Error">@_personalDataAdvisoryError</MudAlert>
+        }
+        @if (!string.IsNullOrWhiteSpace(_personalDataAdvisory))
+        {
+            <MudAlert Severity="Severity.Warning">@_personalDataAdvisory</MudAlert>
+        }
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">PIN:</span>
             <ClayTextBox @bind-Value="Secrets.Pin" Options="_pinOptions" />
@@ -79,8 +88,8 @@
     private readonly ClayTextBoxOptions _phoneOptions = new() { Required = true, MaxLength = 50, DraftKey = "sim.phone" };
     private readonly ClayDatePickerOptions _activationDateOptions = new() { Required = true, DraftKey = "sim.activation-date" };
     private readonly ClayTimeOptions _activationTimeOptions = new() { Required = true, DraftKey = "sim.activation-time" };
-    private readonly ClaySelectOptions _contractOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите договор", DraftKey = "sim.contract" };
-    private readonly ClaySelectOptions _personOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите лицо персональных данных", DraftKey = "sim.person" };
+    private readonly ClaySelectOptions _contractOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите договор", DraftKey = "sim.contract", ReadOnly = true };
+    private readonly ClaySelectOptions _personOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите лицо персональных данных", DraftKey = "sim.person", ReadOnly = true };
     private readonly ClayTextBoxOptions _pinOptions = new() { MaxLength = 4, InputType = InputType.Password, Disabled = true, DraftKey = "sim.pin" };
     private readonly ClayTextBoxOptions _pin2Options = new() { MaxLength = 8, InputType = InputType.Password, Disabled = true, DraftKey = "sim.pin2" };
     private readonly ClayTextBoxOptions _pukOptions = new() { MaxLength = 8, InputType = InputType.Password, Disabled = true, DraftKey = "sim.puk" };
@@ -88,6 +97,9 @@
     private bool _ready;
     private int _personVersion;
     private int _personSelectionRevision;
+    private int _advisoryVersion;
+    private string? _personalDataAdvisory;
+    private string? _personalDataAdvisoryError;
     private int? _resolvedContractId;
     private string? _loadError;
 
@@ -155,11 +167,24 @@
         }
         _loading = false;
         _ready = true;
+        _contractOptions.ReadOnly = _personOptions.ReadOnly = false;
         _pinOptions.Disabled = _pin2Options.Disabled = _pukOptions.Disabled = _loadError is not null;
-        StateHasChanged();
+        await InvokeAsync(StateHasChanged);
+        if (Drafts.HasActiveRegistration)
+        {
+            try
+            {
+                await Drafts.ApplyRawAsync();
+            }
+            catch (Exception ex) when (ex is Microsoft.JSInterop.JSException or Microsoft.JSInterop.JSDisconnectedException or InvalidOperationException or OperationCanceledException)
+            {
+                _loadError = $"Не удалось восстановить коды SIM. {ex.Message}";
+            }
+        }
+        await RefreshPersonalDataAdvisoryAsync();
     }
 
-    private void OnContractChanged(MobileContractLookup? contract)
+    private async Task OnContractChanged(MobileContractLookup? contract)
     {
         PersonalDataSource.CustomerType = contract?.CustomerType ?? 0;
         PersonalDataSource.ContractId = ContractId;
@@ -170,12 +195,14 @@
             PersonalDataPersonId = null;
         }
         _resolvedContractId = ContractId;
+        await RefreshPersonalDataAdvisoryAsync();
     }
 
-    private void OnPersonalDataChanged(PersonLookup? person)
+    private async Task OnPersonalDataChanged(PersonLookup? person)
     {
         if (_ready)
             _personSelectionRevision++;
+        await RefreshPersonalDataAdvisoryAsync();
     }
 
     private async Task FillPersonalDataAsync()
@@ -201,7 +228,36 @@
                     ? "Не удалось определить лицо персональных данных. Повторите попытку."
                     : ex.Message;
         }
+        await RefreshPersonalDataAdvisoryAsync();
         await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task RefreshPersonalDataAdvisoryAsync()
+    {
+        var version = ++_advisoryVersion;
+        var equipmentId = EquipmentId;
+        var contractId = ContractId;
+        var personId = PersonalDataPersonId;
+        _personalDataAdvisory = null;
+        _personalDataAdvisoryError = null;
+        if (!_ready || personId is null)
+            return;
+        try
+        {
+            var result = await Service.GetPersonalDataAdvisoryAsync(
+                equipmentId, contractId, personId, Configuration["technicalTariffs"] ?? string.Empty);
+            if (version != _advisoryVersion || equipmentId != EquipmentId ||
+                contractId != ContractId || personId != PersonalDataPersonId)
+                return;
+            _personalDataAdvisory = result.Message;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
+        {
+            if (version != _advisoryVersion || equipmentId != EquipmentId ||
+                contractId != ContractId || personId != PersonalDataPersonId)
+                return;
+            _personalDataAdvisoryError = "Не удалось проверить соответствие лица ПДн. Выбор сохранён; это не отрицательный результат проверки. " + ex.Message;
+        }
     }
 
     /// <summary>Возвращает актуальное локальное время браузера для команды «Сейчас».</summary>

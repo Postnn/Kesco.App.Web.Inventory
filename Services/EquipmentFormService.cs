@@ -12,6 +12,7 @@ public class EquipmentFormService
 {
     private readonly DbManager _db;
     private readonly ICurrentUserPrincipalProvider? _principalProvider;
+    private readonly Dictionary<int, (string Original, string Current)> _confirmedPhoneDiffs = new();
 
     /// <summary>Создаёт сервис без UI-авторизации для тестов и небезопасных для ролей вызовов.</summary>
     public EquipmentFormService(DbManager db) : this(db, (ICurrentUserPrincipalProvider?)null) { }
@@ -206,10 +207,18 @@ public class EquipmentFormService
     }
 
     /// <summary>Проверяет роль 43 и атомарно сохраняет изъятие и связанные записи.</summary>
+    public virtual Task WithdrawResponsibleAsync(
+        EquipmentResponsiblePeriod current,
+        EquipmentResponsiblePeriod? next,
+        EquipmentLocationPeriod? location) =>
+        WithdrawResponsibleAsync(current, next, location, null);
+
+    /// <summary>Проверяет срок возврата по локальному календарному дню начала следующего периода.</summary>
     public virtual async Task WithdrawResponsibleAsync(
         EquipmentResponsiblePeriod current,
         EquipmentResponsiblePeriod? next,
-        EquipmentLocationPeriod? location)
+        EquipmentLocationPeriod? location,
+        DateTime? nextFromLocalDate)
     {
         await EnsureInventoryEditAsync();
         var responsibles = await GetResponsiblesAsync(current.EquipmentId);
@@ -219,8 +228,14 @@ public class EquipmentFormService
                 "Действующий ответственный изменился. Обновите данные и повторите операцию.");
         if (next is not null && next.EmployeeId == active[0].EmployeeId)
             throw new InvalidOperationException("Следующий ответственный должен отличаться от действующего.");
-        if (next?.ReturnDate is not null && next.ReturnDate.Value.Date < next.FromUtc.Date)
-            throw new InvalidOperationException("Срок возврата следующего ответственного не может быть раньше его выдачи.");
+        if (next?.ReturnDate is not null)
+        {
+            if (nextFromLocalDate is null)
+                throw new InvalidOperationException(
+                    "Локальная календарная дата начала следующего периода не задана. Запись отменена.");
+            if (next.ReturnDate.Value.Date < nextFromLocalDate.Value.Date)
+                throw new InvalidOperationException("Срок возврата следующего ответственного не может быть раньше его выдачи.");
+        }
         await current.WithdrawAsync(_db, next, location);
     }
 
@@ -362,6 +377,26 @@ public class EquipmentFormService
         await ExecuteRequiredScalarAsync<int?>(SQLQueries.SELECT_ЛицоСотрудника,
             new { EmployeeId = employeeId }, commandType: CommandType.Text);
 
+    /// <summary>Проверяет выбранное лицо ПДн без изменения выбора и без блокировки сохранения.</summary>
+    public virtual async Task<(bool IsEligible, string Message)> GetPersonalDataAdvisoryAsync(
+        int equipmentId, int? contractId, int? personId, string technicalTariffs)
+    {
+        if (personId is null)
+            return (true, string.Empty);
+        if (contractId is null)
+            return (false, "Сначала выберите договор связи; соответствие лица ПДн не проверено.");
+        var eligibility = await ExecuteRequiredScalarAsync<int>(
+            SQLQueries.SELECT_ЛицоПерсональныхДанныхСоответствие,
+            new { EquipmentId = equipmentId, ContractId = contractId, PersonId = personId, TechnicalTariffs = technicalTariffs },
+            commandType: CommandType.Text);
+        return eligibility switch
+        {
+            1 => (true, string.Empty),
+            -1 => (false, "Договор связи не найден. Сохранённое лицо ПДн не удалено; проверьте выбор."),
+            _ => (false, "Лицо ПДн не соответствует договору, заказчику или активному техническому тарифу."),
+        };
+    }
+
     /// <summary>Загружает дополнительные услуги текущей SIM.</summary>
     public virtual async Task<IReadOnlyList<EquipmentSimService>> GetSimServicesAsync(
         int equipmentId, bool showHistory, bool showRequired) =>
@@ -372,14 +407,20 @@ public class EquipmentFormService
     public virtual async Task<IReadOnlyList<SimServiceType>> GetSimServiceTypesAsync() =>
         (await _db.QueryRequiredAsync<SimServiceType>(SQLQueries.SELECT_ТипыДопУслугСотОператора)).ToList();
 
-    /// <summary>Проверяет роль 42 и фактический тип, валидацию и сохраняет дополнительную услугу SIM.</summary>
-    public virtual async Task SaveSimServiceAsync(EquipmentSimService service)
+    /// <summary>Сохраняет услугу только после передачи календарной даты через согласованный контракт.</summary>
+    public virtual Task SaveSimServiceAsync(EquipmentSimService service) =>
+        SaveSimServiceAsync(service, null);
+
+    /// <summary>Проверяет роль 42, фактический тип и даты услуги по календарному дню клиента.</summary>
+    public virtual async Task SaveSimServiceAsync(EquipmentSimService service, DateTime? businessToday)
     {
         if (!await HasRoleAsync(Роли.Администратор_тарифов_связи))
             throw new UnauthorizedAccessException("Недостаточно прав для изменения дополнительной услуги SIM.");
         if ((await GetRequiredChildWriteTypeAsync(service.EquipmentId)).HasSimCharacteristics == 0)
             throw new InvalidOperationException("Дополнительные услуги SIM недоступны для фактического типа оборудования.");
-        var validation = service.Validate(DateTime.Today);
+        if (businessToday is null)
+            throw new InvalidOperationException("Календарная дата клиента не задана. Сохранение дополнительной услуги SIM отменено.");
+        var validation = service.Validate(businessToday.Value);
         if (validation is not null)
             throw new InvalidOperationException(validation);
         await service.SaveAsync(_db);
@@ -603,14 +644,16 @@ public class EquipmentFormService
         await EnsureInventoryEditAsync();
         await ValidateEquipmentForSaveAsync(equipment);
         await equipment.UpdateWithPhonesAsync(_db, original, current);
+        _confirmedPhoneDiffs[equipment.Id] = (PhoneSyncFingerprint(original), PhoneSyncFingerprint(current));
     }
 
     /// <summary>Настраивает сохранённый IP-телефон по актуальным связям без повторного SQL UPDATE.</summary>
     public virtual async Task<IReadOnlyList<PhoneSyncResult>> ConfigurePhoneEquipmentAsync(int equipmentId)
     {
-        await EnsureInventoryEditAsync();
         var equipment = await GetAsync(equipmentId) ??
                         throw new InvalidOperationException("Оборудование не найдено.");
+        if (!await HasRoleForPersonAsync(Роли.Специалист_по_инвентаризации_оборудования, equipment.OwnerId))
+            throw new UnauthorizedAccessException("Недостаточно прав для настройки оборудования владельца.");
         if (equipment.EquipmentTypeId != (int)ТипыОборудования.IP_телефон)
             throw new InvalidOperationException("Команда доступна только для сохранённого IP-телефона.");
         var current = await GetPhonesAsync(equipmentId);
@@ -634,6 +677,8 @@ public class EquipmentFormService
         IReadOnlyCollection<EquipmentPhoneLink> current)
     {
         await EnsureInventoryEditAsync();
+        await EnsurePhoneSyncContextCurrentAsync(equipmentId, original, current);
+        EnsureConfirmedDeletionContext(equipmentId, original, current);
         var results = new List<PhoneSyncResult>();
         var currentIds = current.Select(item => item.PhoneId).ToHashSet();
         var originalIds = original.Select(item => item.PhoneId).ToHashSet();
@@ -678,6 +723,7 @@ public class EquipmentFormService
         }
         if (needsCcm && !hasXorcom)
             operations.AddRange(equipmentIds.Select(id => new PhoneSyncOperation(PhoneSyncKind.Ccm, id.ToString())));
+        EnsureOperationsBelongToDiff(equipmentId, original, current, operations);
         results.AddRange(await ExecutePhoneSyncOperationsCoreAsync(operations));
         return results;
     }
@@ -691,6 +737,7 @@ public class EquipmentFormService
     {
         await EnsureInventoryEditAsync();
         await EnsurePhoneSyncContextCurrentAsync(equipmentId, original, current);
+        EnsureConfirmedDeletionContext(equipmentId, original, current);
         EnsureOperationsBelongToDiff(equipmentId, original, current, operations);
         return await ExecutePhoneSyncOperationsCoreAsync(operations);
     }
@@ -706,6 +753,13 @@ public class EquipmentFormService
         var currentIds = current.Select(item => item.PhoneId).ToHashSet();
         if (original.Any(item => !currentIds.Contains(item.PhoneId) && actual.ContainsKey(item.PhoneId)))
             throw new InvalidOperationException("Удалённая телефонная связь была создана повторно. Повтор синхронизации отменён.");
+        foreach (var deleted in original.Where(item => !currentIds.Contains(item.PhoneId) && !actual.ContainsKey(item.PhoneId)))
+        {
+            var assignments = await _db.QueryRequiredAsync<int>(
+                SQLQueries.SELECT_ТелефонныйНомерАктуальныеПривязки, new { PhoneId = deleted.PhoneId });
+            if (assignments.Any())
+                throw new InvalidOperationException("Удалённый номер уже привязан к другому оборудованию. Повтор синхронизации отменён.");
+        }
         foreach (var expected in current)
         {
             if (!actual.TryGetValue(expected.PhoneId, out var persisted) || HasSyncChanges(expected, persisted))
@@ -748,6 +802,24 @@ public class EquipmentFormService
         source.AutoDialNumber != target.AutoDialNumber ||
         source.AutoDialDelay != target.AutoDialDelay ||
         source.IsDefault != target.IsDefault;
+
+    private static string PhoneSyncFingerprint(IEnumerable<EquipmentPhoneLink> links) =>
+        string.Join(";", links.OrderBy(item => item.PhoneId).Select(item =>
+            $"{item.PhoneId}:{item.ConnectionEquipmentId}:{item.AutoDialNumber}:{item.AutoDialDelay}:{item.IsDefault}"));
+
+    private void EnsureConfirmedDeletionContext(
+        int equipmentId,
+        IReadOnlyCollection<EquipmentPhoneLink> original,
+        IReadOnlyCollection<EquipmentPhoneLink> current)
+    {
+        var currentIds = current.Select(item => item.PhoneId).ToHashSet();
+        if (!original.Any(item => !currentIds.Contains(item.PhoneId)))
+            return;
+        if (!_confirmedPhoneDiffs.TryGetValue(equipmentId, out var confirmed) ||
+            confirmed.Original != PhoneSyncFingerprint(original) || confirmed.Current != PhoneSyncFingerprint(current))
+            throw new UnauthorizedAccessException(
+                "Удаление номера допускается только для diff, подтверждённого сохранением в текущем серверном контексте.");
+    }
 
     private async Task<IReadOnlyList<PhoneSyncResult>> ExecutePhoneSyncOperationsCoreAsync(
         IEnumerable<PhoneSyncOperation> operations)

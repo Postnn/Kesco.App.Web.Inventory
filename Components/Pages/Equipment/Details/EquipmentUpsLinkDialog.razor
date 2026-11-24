@@ -1,3 +1,4 @@
+@inherits EquipmentEditorDialogBase<int?>
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
 @using Clayzor.Lib.Web.Controls.Components.Select
@@ -28,13 +29,10 @@
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "Подключить", Color = Color.Primary, Variant = Variant.Filled };
     private readonly ClaySelectOptions _upsOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите UPS" };
 
-    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
-
     /// <summary>Выбранный идентификатор UPS.</summary>
     [Parameter] public int? Value { get; set; }
 
     private UpsEquipmentSelectDataSource UpsSource => Services.GetRequiredKeyedService<UpsEquipmentSelectDataSource>("ups");
 
-    private void Cancel() => Dialog.Cancel();
-    private void Apply() => Dialog.Close(DialogResult.Ok(Value));
+    private Task Apply() => ApplyAsync(Value, () => Value is null ? "Выберите UPS." : null);
 }

@@ -15,6 +15,10 @@ public abstract class EquipmentEditorDialogBase<TDraft> : ComponentBase
     [Parameter]
     public Func<TDraft, Task<EquipmentEditorSaveResult>>? Save { get; set; }
 
+    /// <summary>Контекст карточки и поколения, в котором открыт редактор.</summary>
+    [Parameter]
+    public EquipmentEditorContext? EditorContext { get; set; }
+
     /// <summary>Признак выполняющейся команды.</summary>
     protected bool _saving;
 
@@ -26,6 +30,22 @@ public abstract class EquipmentEditorDialogBase<TDraft> : ComponentBase
 
     /// <summary>Явно отменяет редактирование без бизнес-команды.</summary>
     protected void Cancel() => Dialog.Cancel();
+
+    private bool _draftStateRestored;
+
+    /// <inheritdoc />
+    public override async Task SetParametersAsync(ParameterView parameters)
+    {
+        await base.SetParametersAsync(parameters);
+        if (EditorContext is null)
+            return;
+        EditorContext.Component = this;
+        if (!_draftStateRestored && EditorContext.DraftState is not null)
+        {
+            _draftStateRestored = true;
+            EditorContext.RestoreDraftState(EditorContext.DraftState);
+        }
+    }
 
     /// <summary>Валидирует и сохраняет черновик, закрывая диалог только после подтверждённого commit.</summary>
     protected async Task ApplyAsync(TDraft draft, Func<string?> validate)
@@ -43,6 +63,7 @@ public abstract class EquipmentEditorDialogBase<TDraft> : ComponentBase
         _saving = true;
         try
         {
+            EditorContext?.EnsureCurrent();
             var result = await Save(draft);
             if (result.CanClose)
             {
@@ -51,6 +72,10 @@ public abstract class EquipmentEditorDialogBase<TDraft> : ComponentBase
             }
             _saveBlocked = !result.CanRetry;
             _error = result.Message;
+        }
+        catch (InvalidOperationException ex)
+        {
+            _error = ex.Message;
         }
         finally
         {

@@ -80,3 +80,21 @@
 | Оставшиеся UX | Show/hide password без43, activation Now, license description, overdue returns, workplace advisory, multiline notes, явная деинсталляция | bUnit/DOM, query contracts, SQL error vs empty |
 | DR-01 | Общий зашифрованный IndexedDB draft с raw input, user/tab isolation, revisions, operation snapshots и schema backup. Reconnect reload блокируется при ошибке сохранности. Восстановление не выполняет бизнес-команды | C# API/reconnect 7 tests; Chrome last-char reload, process restart, schema 1→2 deployment и child restore |
 | Осознанно открыто | R01/R04, физические АТС/UPS/ICMP/WOL, внешний биллинг, SQL2008R2/triggers/multiuser Windows и полная DST/mobile beta-матрица | Не выдаются за локальный PASS |
+
+
+## Итоговое уточнение EQ9
+
+| Область | Актуальное состояние Clayzor | Локальная проверка |
+|---|---|---|
+| Actual write/editor context | Computer callback ожидает именно Task записи. Каждый дочерний Save привязан к equipmentId/generation и запрещает запись старого редактора в новую карточку | Deferred/faulted/success Task, настоящий OK старого AccountDialog |
+| Main concurrency | `RefreshMainAfterChildWriteAsync` выполняет base/draft/fresh merge по каждому полю; конфликт сохраняет старый token и блокирует main Save | Одно поле A→B/C/V2 и независимые изменения |
+| Child concurrency | Location/Responsible/Computer/License/Software/SIM service используют исходный timestamp/expected existence и atomic cardinality. Software не перемещает чужую установку, SIM service привязан к актуальной SIM | `Eq9ChildConcurrencyTests`, affected0, .500, rollback SQL |
+| Location55/Responsible | Проверки active responsible, нового расположения и открытого периода находятся внутри атомарных SQL transactions | `EquipmentLocationSaveBuilder`/`EquipmentResponsibleSaveBuilder` |
+| АТС | Planner и retry проверяют свежие identity/target/diff. Deleted sync допускается только после подтверждённого серверного Save; reassigned/forged original запрещён. Configure использует owner/global scope | `Eq9PhoneSyncTrustTests`, `Eq8PhoneSyncRetryTests` |
+| Outcomes | Подтверждённые Failed и Unknown внешней процедуры различаются. Unknown и running сохраняются в durable store и запрещают replay. Post-commit storage/read ошибка не отменяет запись | `Eq9PhoneSyncTrustTests`, Cancel→Refresh→reopen, browser unknown round-trip |
+| DR-01 protocol | Versioned JSON, atomic user key, независимые handles, ожидаемое освобождение Web Lock, scoped typed/raw revisions, fail-closed health и migration recovery | `Eq9DraftProtocolTests`; production browser probe 6/6 |
+| Child restore | Typed IDs, original baseline/version, dynamic RAM/HD/SSD, Phone/UpsLink, raw invalid/unblurred input и секреты после readiness | `Eq9EditorStateTests`, `Eq9DraftStoreProbe.html`, Account/SIM tests |
+| Mandatory reads | Owner/document/phone/type/SIM filters получают error/stale guards; Account/SIM secrets не затирают ввод. ClaySelect имеет совместимый error/retry channel | Owner A→B late fault, `Eq9ClaySelectReadErrorTests`, dialog read failures |
+| Календарь/UPS | `now` вычисляется при Apply; Responsible использует local start date, SIM — business Today. Нетронутый UPS test сохраняет raw UTC с дробной частью | `Eq9Calendar*`, offsets 0/±180, 5 минут, UPS .500 |
+| ПДн | Read-only advisory для existing/change/Fill/restore по договору/заказчику/техническому тарифу; read failure отдельно и без очистки | `EquipmentSimDialogTests`, SQL `SELECT_ЛицоПерсональныхДанныхСоответствие` |
+| Открытые границы | R01/R04, Ping/WOL, физические эффекты, реальные SQL2008R2/multiuser/IIS/DST, H03/H09/H23/H26 и U04–U06 | Не выдаются за локальный PASS |

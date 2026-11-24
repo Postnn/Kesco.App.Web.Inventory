@@ -15,12 +15,17 @@ public partial class EquipmentForm
 
     [Inject] private ClayDraftService Drafts { get; set; } = null!;
 
-    private bool _draftRegistered;
+    private ClayDraftRegistration? _draftRegistration;
+    private bool _draftRegistered => _draftRegistration is not null;
     private bool _draftRestoring;
     private bool _draftPersisting;
     private string? _lastPersistedDraft;
     private string? _draftStorageError;
+    private bool _draftOperationUnresolved;
+    private string? _draftOperationScope;
     private EquipmentDraftEditor? _activeEditor;
+    private EquipmentEditorContext? _activeEditorContext;
+    private string? _restoredEditorState;
     private List<UpsServerLink>? _activeUpsServers;
     private List<UpsTest>? _activeUpsTests;
     private List<UpsServerLink>? _restoredUpsServers;
@@ -39,9 +44,14 @@ public partial class EquipmentForm
         public string OriginalSnapshot { get; set; } = string.Empty;
         public PendingPhoneSync? PendingPhoneSync { get; set; }
         public EquipmentDraftEditor? ActiveEditor { get; set; }
+        public string? ActiveEditorState { get; set; }
         public List<UpsServerLink>? ActiveUpsServers { get; set; }
         public List<UpsTest>? ActiveUpsTests { get; set; }
     }
+
+    private string? ActiveDraftScope => _activeEditor is null
+        ? null
+        : $"child:{_activeEditor.Kind}:{_activeEditor.Key ?? "new"}:{_activeEditor.NestedTestId?.ToString() ?? "root"}";
 
     private async Task InitializeDraftAsync()
     {
@@ -49,21 +59,23 @@ public partial class EquipmentForm
             return;
         try
         {
-            var restore = await Drafts.RegisterAsync(
+            _draftRegistration = await Drafts.RegisterHandleAsync(
                 "equipment-form", _model.Id.ToString(), $"inventory:{CurrentUser.Id}", DraftSchemaVersion, _pageCts.Token);
-            if (restore is null)
-                return;
-            _draftRegistered = true;
+            var restore = _draftRegistration.Restore;
             if (restore.HasDraft && !string.IsNullOrWhiteSpace(restore.TypedState))
             {
                 _draftRestoring = true;
                 _restoredEditorOpened = new(TaskCreationOptions.RunContinuationsAsynchronously);
                 await RestoreDraftAsync(restore.TypedState);
-                if (restore.Operation is not null)
+                if (restore.OperationSnapshot is not null)
+                {
+                    _draftOperationUnresolved = true;
+                    _draftOperationScope = restore.OperationSnapshot.Scopes.FirstOrDefault()?.Name;
                     _warningMessage = "Предыдущая команда могла быть отправлена, но её результат неизвестен. Сверьте данные; автоматический повтор не выполняется.";
+                }
                 var editorTask = RestoreActiveEditorAsync();
                 await Task.WhenAny(_restoredEditorOpened.Task, editorTask);
-                await Drafts.ApplyRawAsync(_pageCts.Token);
+                await _draftRegistration.ApplyRawWithResultAsync(_pageCts.Token);
                 _draftRestoring = false;
                 _lastPersistedDraft = null;
                 await PersistDraftAsync();
@@ -96,6 +108,7 @@ public partial class EquipmentForm
         _originalSnapshot = string.IsNullOrWhiteSpace(state.OriginalSnapshot) ? freshBaseline : state.OriginalSnapshot;
         _pendingPhoneSync = state.PendingPhoneSync;
         _activeEditor = state.ActiveEditor;
+        _restoredEditorState = state.ActiveEditorState;
         _restoredUpsServers = state.ActiveUpsServers;
         _restoredUpsTests = state.ActiveUpsTests;
         _selectedType = _model.EquipmentTypeId is > 0
@@ -123,7 +136,7 @@ public partial class EquipmentForm
         _draftPersisting = true;
         try
         {
-            await Drafts.SaveTypedAsync(json, _pageCts.Token);
+            await _draftRegistration!.SaveTypedAsync(json, _pageCts.Token);
             _lastPersistedDraft = json;
             _draftStorageError = null;
         }
@@ -149,6 +162,7 @@ public partial class EquipmentForm
             OriginalSnapshot = _originalSnapshot,
             PendingPhoneSync = _pendingPhoneSync,
             ActiveEditor = _activeEditor,
+            ActiveEditorState = _activeEditorContext?.CaptureDraftState(),
             ActiveUpsServers = _activeUpsServers,
             ActiveUpsTests = _activeUpsTests,
         };
@@ -157,31 +171,59 @@ public partial class EquipmentForm
 
     private async Task<long?> BeginDraftOperationAsync(string operationName)
     {
-        if (!_draftRegistered)
-        {
-            if (_draftStorageError is not null)
-                throw new InvalidOperationException(_draftStorageError);
-            return null;
-        }
-        var operation = JsonSerializer.Serialize(new
-        {
-            Kind = operationName,
-            EquipmentId = _model?.Id,
-            Editor = _activeEditor?.Kind,
-        });
-        return await Drafts.BeginOperationAsync(operation, _pageCts.Token);
+        var registration = _draftRegistration ??
+                           throw new InvalidOperationException(_draftStorageError ??
+                               "Черновик ещё не зарегистрирован; бизнес-команда заблокирована.");
+        await registration.EnsureCommandAllowedAsync(_pageCts.Token);
+        var mainOperation = operationName is "equipment-save" or "equipment-phone-save";
+        var scope = mainOperation ? "main" : ActiveDraftScope;
+        var operation = await registration.BeginOperationAsync(new ClayDraftOperationIntent(
+            operationName,
+            JsonSerializer.Serialize(new
+            {
+                Kind = operationName,
+                EquipmentId = _model?.Id,
+                Editor = _activeEditor?.Kind,
+            }),
+            scope is null ? [] : [scope],
+            AcceptLegacyTyped: mainOperation), _pageCts.Token);
+        _draftOperationScope = scope;
+        return operation.Revision;
     }
 
     private async Task RejectDraftOperationAsync(long? revision)
     {
         if (revision is not null && _draftRegistered)
-            await Drafts.RejectOperationAsync(revision.Value, _pageCts.Token);
+        {
+            try
+            {
+                await _draftRegistration!.RejectOperationAsync(revision.Value, _pageCts.Token);
+                _draftOperationUnresolved = false;
+                _draftOperationScope = null;
+            }
+            catch (Exception ex) when (ex is JSException or JSDisconnectedException)
+            {
+                _draftOperationUnresolved = true;
+                _draftStorageError = "Не удалось зафиксировать отказ команды. Повтор заблокирован до восстановления хранилища.";
+            }
+        }
     }
 
     private async Task UnknownDraftOperationAsync(long? revision)
     {
         if (revision is not null && _draftRegistered)
-            await Drafts.UnknownOperationAsync(revision.Value, _pageCts.Token);
+        {
+            try
+            {
+                await _draftRegistration!.UnknownOperationAsync(revision.Value, _pageCts.Token);
+                _draftOperationUnresolved = true;
+            }
+            catch (Exception ex) when (ex is JSException or JSDisconnectedException)
+            {
+                _draftOperationUnresolved = true;
+                _draftStorageError = "Не удалось зафиксировать неизвестный исход. Повтор заблокирован до восстановления хранилища.";
+            }
+        }
     }
 
     private async Task CommitDraftOperationAsync(long? revision)
@@ -189,8 +231,33 @@ public partial class EquipmentForm
         if (revision is null || !_draftRegistered)
             return;
         var json = SerializeDraftState();
-        await Drafts.CommitOperationAsync(revision.Value, json, _pageCts.Token);
+        await _draftRegistration!.CommitOperationAsync(revision.Value, json, _pageCts.Token);
+        _draftOperationUnresolved = false;
+        _draftOperationScope = null;
         _lastPersistedDraft = json;
+    }
+
+    private async Task OpenDraftScopeAsync(string? scope)
+    {
+        if (_draftRegistered && scope is not null)
+            await _draftRegistration!.OpenScopeAsync(scope, _pageCts.Token);
+    }
+
+    private async Task DiscardDraftScopeAsync(string? scope)
+    {
+        if (_draftRegistered && scope is not null && !(_draftOperationUnresolved && scope == _draftOperationScope))
+            await _draftRegistration!.DiscardScopeAsync(scope, _pageCts.Token);
+        await OpenDraftScopeAsync("main");
+    }
+
+    private async Task ReleaseDraftRegistrationAsync()
+    {
+        if (_draftRegistration is null)
+            return;
+        await PersistDraftAsync();
+        await _draftRegistration.ReleaseAsync(_pageCts.Token);
+        _draftRegistration = null;
+        _lastPersistedDraft = null;
     }
 
     private async Task RestoreActiveEditorAsync()
@@ -239,6 +306,14 @@ public partial class EquipmentForm
                     if (upsLink is not null)
                         await OpenUpsDialogAsync(upsLink);
                     break;
+                case nameof(EquipmentUpsLinkDialog):
+                    await OpenUpsLinkDialogAsync();
+                    break;
+                case nameof(EquipmentPhoneDialog):
+                    var phone = _phones.FirstOrDefault(item => item.PhoneId.ToString() == editor.Key);
+                    if (phone is not null)
+                        await EditPhoneReturnAsync(phone);
+                    break;
                 default:
                     _restoredEditorOpened.TrySetResult();
                     break;
@@ -252,10 +327,12 @@ public partial class EquipmentForm
 
     private async Task DiscardDraftAsync()
     {
-        if (!_draftRegistered)
+        if (_draftRegistration is null)
             return;
-        await Drafts.DiscardAsync(_pageCts.Token);
-        _draftRegistered = false;
+        await _draftRegistration.DiscardAsync(_pageCts.Token);
+        _draftRegistration = null;
+        _draftOperationUnresolved = false;
+        _draftOperationScope = null;
         _lastPersistedDraft = null;
         _activeEditor = null;
     }

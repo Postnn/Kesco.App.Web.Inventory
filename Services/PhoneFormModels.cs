@@ -132,10 +132,33 @@ public sealed record PhoneSyncOperation(PhoneSyncKind Kind, string Key, bool Del
 /// <summary>Результат отдельной операции синхронизации АТС.</summary>
 /// <param name="Operation">Выполненная операция.</param>
 /// <param name="Error">Текст ошибки либо NULL при успехе.</param>
-public sealed record PhoneSyncResult(PhoneSyncOperation Operation, string? Error)
+/// <param name="Outcome">Подтверждённый исход; NULL сохраняет прежний вывод по Error.</param>
+public sealed record PhoneSyncResult(PhoneSyncOperation Operation, string? Error, PhoneSyncOutcome? Outcome = null)
 {
+    /// <summary>Фактический исход операции.</summary>
+    public PhoneSyncOutcome Status => Outcome ?? (Error is null ? PhoneSyncOutcome.Succeeded : PhoneSyncOutcome.Failed);
+
     /// <summary>Операция завершилась успешно.</summary>
-    public bool Success => Error is null;
+    public bool Success => Status == PhoneSyncOutcome.Succeeded;
+
+    /// <summary>Исход неизвестен и автоматический повтор запрещён.</summary>
+    public bool IsUnknown => Status == PhoneSyncOutcome.Unknown;
+
+    /// <summary>Повтор допустим только после подтверждённого отказа.</summary>
+    public bool CanRetry => Status == PhoneSyncOutcome.Failed;
+}
+
+/// <summary>Подтверждённый исход внешней операции АТС.</summary>
+public enum PhoneSyncOutcome
+{
+    /// <summary>Успех подтверждён.</summary>
+    Succeeded,
+
+    /// <summary>Операция отклонена или завершилась подтверждённой ошибкой.</summary>
+    Failed,
+
+    /// <summary>Ответ потерян после возможного внешнего эффекта.</summary>
+    Unknown,
 }
 
 /// <summary>Тип синхронизации АТС.</summary>

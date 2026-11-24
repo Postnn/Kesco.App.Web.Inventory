@@ -807,7 +807,7 @@
                             <CellTemplate>
                                 <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
                                     <span>@context.Item.ServiceName</span>
-                                    @if (context.Item.GetWarning(DateTime.Today) is string warning)
+                                    @if (context.Item.GetWarning(_clientToday) is string warning)
                                     {
                                         <MudTooltip Text="@warning">
                                             <MudIcon Icon="@Icons.Material.Filled.Warning" Color="Color.Error" Size="Size.Small" />

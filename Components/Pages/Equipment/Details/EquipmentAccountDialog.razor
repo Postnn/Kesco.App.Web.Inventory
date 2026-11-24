@@ -1,6 +1,7 @@
 @inherits EquipmentEditorDialogBase<EquipmentAccountDialogResult>
 @using Clayzor.Lib.Web.Controls.Components.Form
 @inject Kesco.App.Web.Inventory.Services.EquipmentFormService Service
+@inject Clayzor.Lib.Web.Controls.Services.ClayDraftService Drafts
 
 <MudDialog>
     <TitleContent>@(IsEdit ? "Изменение учётной записи" : "Новая учётная запись")</TitleContent>
@@ -36,7 +37,7 @@
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
     private readonly ClayTextBoxOptions _loginOptions = new() { Required = true, MaxLength = 50, DraftKey = "account.login" };
-    private readonly ClayTextBoxOptions _passwordOptions = new() { MaxLength = 128, InputType = InputType.Password, DraftKey = "account.password" };
+    private readonly ClayTextBoxOptions _passwordOptions = new() { MaxLength = 128, InputType = InputType.Password, DraftKey = "account.password", ReadOnly = true };
     private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300, DraftKey = "account.notes" };
     private bool _loading = true;
     private bool _readFailed;
@@ -84,7 +85,19 @@
             }
         }
         _loading = false;
-        StateHasChanged();
+        _passwordOptions.ReadOnly = _readFailed;
+        await InvokeAsync(StateHasChanged);
+        if (Drafts.HasActiveRegistration)
+        {
+            try
+            {
+                await Drafts.ApplyRawAsync();
+            }
+            catch (Exception ex) when (ex is Microsoft.JSInterop.JSException or Microsoft.JSInterop.JSDisconnectedException or InvalidOperationException or OperationCanceledException)
+            {
+                _error = $"Не удалось восстановить введённый пароль. {ex.Message}";
+            }
+        }
     }
 
     private void OnLoginChanged(string? value)

@@ -60,6 +60,9 @@
     /// <summary>Доступные типы услуг.</summary>
     [Parameter] public IReadOnlyList<SimServiceType> Types { get; set; } = [];
 
+    /// <summary>Календарная дата клиента для проверки фактических дат услуги.</summary>
+    [Parameter] public DateTime? Today { get; set; }
+
     private bool IsEdit => Value.Id > 0;
 
     /// <inheritdoc />
@@ -82,5 +85,7 @@
         Value.MonthlyCost = type.MonthlyCost;
     }
 
-    private Task Apply() => ApplyAsync(Value, () => Value.Validate(DateTime.Today));
+    private Task Apply() => ApplyAsync(Value, () => Today is null
+        ? "Календарная дата клиента не задана. Сохранение дополнительной услуги SIM отменено."
+        : Value.Validate(Today.Value));
 }

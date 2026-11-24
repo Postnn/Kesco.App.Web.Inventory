@@ -111,6 +111,12 @@
     /// <summary>Дата дневного снимка.</summary>
     [Parameter] public DateTime Date { get; set; }
 
+    /// <summary>Признак существования дневного снимка при открытии.</summary>
+    [Parameter] public bool ExpectedExisting { get; set; }
+
+    /// <summary>Исходное время изменения дневного снимка.</summary>
+    [Parameter] public DateTime ChangedAt { get; set; }
+
     /// <summary>Максимальное число банков RAM.</summary>
     [Parameter] public int MemoryBanks { get; set; }
 
@@ -187,6 +193,8 @@
             {
                 EquipmentId = EquipmentId,
                 Date = Date,
+                ExpectedExisting = ExpectedExisting,
+                ChangedAt = ChangedAt,
                 RamComponents = Values(Ram),
                 HdComponents = Values(Hd),
                 SsdComponents = Values(Ssd),
