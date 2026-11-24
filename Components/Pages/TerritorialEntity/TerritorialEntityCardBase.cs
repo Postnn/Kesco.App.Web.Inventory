@@ -28,6 +28,9 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     /// <summary>CSS-селектор корня этой карточки и её draft-области.</summary>
     protected string DraftRootSelector => $".territory-draft-{_draftOwner}";
 
+    /// <summary>Уникальный CSS-класс корня карточки.</summary>
+    protected string DraftRootClass => FormOptions.Class!;
+
     /// <summary>Назначает уникальный CSS-корень для изоляции draft-ввода.</summary>
     protected TerritorialEntityCardBase() => FormOptions.Class = $"territory-draft-{_draftOwner}";
     private ClayDraftRegistration? _registration;
@@ -61,6 +64,13 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected abstract string RouteKey { get; }
     protected abstract bool Editable { get; }
     protected virtual bool CanRegisterDraft => Editable;
+
+    /// <summary>Загружает разрешения карточки после подтверждения сотрудника.</summary>
+    protected virtual async Task LoadAccessAsync(Employee user) => Access = await TerritorialEntityData.ReadAccessAsync(Db, user, Lifetime);
+
+    /// <summary>Определяет ожидаемый доменный отказ без повтора.</summary>
+    protected virtual bool IsDomainRejection(Exception exception) => exception is TerritorialEntityRuleException;
+
     protected abstract Task<TState?> LoadCardAsync();
 
     protected static ClayToolbarButtonOptions OkButton { get; } = new() { Text = "ОК", Icon = Icons.Material.Filled.Check, Color = Color.Primary, Variant = Variant.Filled };
@@ -191,7 +201,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
                 Message = "База подтвердила операцию. Не удалось завершить обработку черновика. Повтор записи заблокирован.";
                 return true;
             }
-            var rejected = exception is UnauthorizedAccessException or TerritorialEntityRuleException ||
+            var rejected = exception is UnauthorizedAccessException || IsDomainRejection(exception) ||
                 exception is SqlException sql && !DbManager.IsConnectivityError(sql) && sql.Number != -2;
             if (attempt is null) StorageBlocked = true;
             else
@@ -234,7 +244,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
                 Message = "Не удалось подтвердить текущего сотрудника.";
                 return;
             }
-            Access = await TerritorialEntityData.ReadAccessAsync(Db, CurrentUser, Lifetime);
+            await LoadAccessAsync(CurrentUser);
             Clean = Draft = await LoadCardAsync();
             if (Draft is not null && CanRegisterDraft) await RegisterDraftAsync();
         }

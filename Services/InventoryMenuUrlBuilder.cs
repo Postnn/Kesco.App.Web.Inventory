@@ -52,6 +52,16 @@ public static class InventoryMenuUrlBuilder
         return new InventoryMenuLink { Href = resolved, Error = error };
     }
 
+    /// <summary>Разрешает конфигурационный адрес карточки и кодирует ключ записи.</summary>
+    public static InventoryMenuLink BuildCardLink(string? reference, string id, IConfiguration configuration, string currentUri)
+    {
+        if (reference?.Trim() is not { } form || !form.StartsWith("@URI_", StringComparison.OrdinalIgnoreCase))
+            return new InventoryMenuLink { Error = "В разделе не указан ключ адреса карточки." };
+        var url = ResolveForm(form, configuration, currentUri, out var error);
+        return url is null ? new InventoryMenuLink { Error = error }
+            : new InventoryMenuLink { Href = AddQueryParameter(url, "id", id) };
+    }
+
     /// <summary>Добавляет к настройкам Inventory выбранный _idQuery с суффиксом E.</summary>
     public static InventoryMenuLink BuildSettingsLink(IConfiguration configuration, int? currentQueryId, string currentUri)
     {

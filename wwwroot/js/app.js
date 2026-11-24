@@ -48,3 +48,13 @@ window.clayModelEquipmentForm = {
         document.getElementById(elementId)?.click();
     }
 };
+
+window.claySimFmtn = {
+    focusPrefix(fields) {
+        fields?.querySelector("input")?.focus();
+    },
+
+    replaceUrl(url) {
+        window.history.replaceState(window.history.state, "", url);
+    }
+};
