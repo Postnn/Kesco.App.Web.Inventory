@@ -1,0 +1,88 @@
+@page "/Reports/Modifications"
+@page "/Reports/Modifications.aspx"
+@using Clayzor.Lib.Entities.Inventory
+@using Kesco.App.Web.Inventory.Components
+@using ReportRow = System.Collections.Generic.IReadOnlyDictionary<string, object?>
+
+<PageTitle>Изменения в БД</PageTitle>
+<InventoryMainMenu />
+<MudText Typo="Typo.h5" HtmlTag="h1" Class="mb-2">Изменения в БД</MudText>
+<div class="d-flex flex-column gap-2">
+    <ClayPeriodPicker @bind-Value="_period" />
+    <ClayCheckList TKey="int" Label="Таблицы" Items="_options" @bind-Selected="_selected" />
+    <ClaySelect TItem="Employee" TValue="int?" DataSource="Employees" Options="EmployeeOptions" ValueSelector="@(item => item.Id)"
+                TextSelector="@(item => item.Name)" @bind-Value="_employeeId" />
+    <div><MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!_ready || _busy)" OnClick="GenerateAsync">Сформировать</MudButton></div>
+</div>
+@if (_busy || _loading) { <MudProgressLinear Class="my-2" Indeterminate="true" /> }
+@if (_message is not null) { <MudAlert Severity="Severity.Info" Class="my-2">@_message</MudAlert> }
+@if (_ready && _options.Count == 0)
+{
+    <MudText Class="mt-2">Нет доступных разделов отчёта.</MudText>
+}
+@if (FiltersChanged)
+{
+    <MudAlert Severity="Severity.Info" Class="my-2">Отчёт показан для предыдущих параметров.</MudAlert>
+}
+@if (_sections.Any(section => section.Error is not null))
+{
+    <MudAlert Severity="Severity.Warning" Class="my-2">Отчёт сформирован частично.</MudAlert>
+}
+
+@foreach (var section in _sections)
+{
+    <section @key="section" class="mt-3">
+        <MudText Typo="Typo.h6" HtmlTag="h2">@section.Definition.Name</MudText>
+        @if (section.Error is not null)
+        {
+            <MudAlert Severity="Severity.Warning">@section.Error</MudAlert>
+        }
+        @if (section.Result is { } result)
+        {
+            @if (section.LinkError is not null && result.Total > 0)
+            {
+                <MudText Typo="Typo.body2">@section.LinkError</MudText>
+            }
+            var visibleColumns = result.Columns.Where(IsVisible).ToArray();
+            <ClayGrid @key="result.Columns" TEntity="ReportRow" Options="section.Options" Items="result.Rows">
+                <ColumnDefs>
+                    @for (var index = 0; index < visibleColumns.Length; index++)
+                    {
+                        <ClayColumnDef ColumnId="@(index + 1)" SqlName="@visibleColumns[index]" DisplayName="@visibleColumns[index]" />
+                    }
+                </ColumnDefs>
+                <Columns>
+                    @for (var index = 0; index < visibleColumns.Length; index++)
+                    {
+                        var column = visibleColumns[index];
+                        <ClayColumn @key="column" TEntity="ReportRow" ColumnId="@(index + 1)">
+                            <CellTemplate>
+                                @if (EntryLink(section, result.Columns[0], column, context.Item) is { } link)
+                                {
+                                    <a href="@link" @onclick:preventDefault @onclick="@(() => OpenAsync(link))">@CellText(context.Item, column)</a>
+                                }
+                                else if (IsChangedDate(column) && context.Item[column] is DateTime date)
+                                {
+                                    <ClayLocalTime Value="date" />
+                                }
+                                else if (IsChangedDate(column) && context.Item[column] is DateTimeOffset offset)
+                                {
+                                    <ClayLocalTime Value="offset.UtcDateTime" />
+                                }
+                                else { @CellText(context.Item, column) }
+                            </CellTemplate>
+                        </ClayColumn>
+                    }
+                </Columns>
+            </ClayGrid>
+            @if (result.Total > PageSize || section.Page > 1)
+            {
+                <div class="d-flex align-center flex-wrap gap-2">
+                    <MudButton OnClick="@(() => PageAsync(section, -1))" Disabled="@(_busy || section.Page <= 1)">Назад</MudButton>
+                    <MudText Typo="Typo.body2">Стр. @section.Page из @((result.Total + PageSize - 1) / PageSize)</MudText>
+                    <MudButton OnClick="@(() => PageAsync(section, 1))" Disabled="@(_busy || (long)section.Page * PageSize >= result.Total)">Далее</MudButton>
+                </div>
+            }
+        }
+    </section>
+}
