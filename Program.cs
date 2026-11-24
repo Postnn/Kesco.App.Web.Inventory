@@ -27,6 +27,7 @@ builder.Configuration["URI_net_form"] = WebConfigExtensions.ReadAppSettingFromWe
 builder.Configuration["URI_area_search_tree"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_area_search_tree");
 builder.Configuration["URI_area_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_area_form");
 builder.Configuration["URI_telcode_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_telcode_form");
+builder.Configuration["URI_sim_fmtn"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_sim_fmtn");
 builder.Configuration["URI_styles"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_styles");
 builder.Configuration["URI_user_search"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_user_search");
 builder.Configuration["URI_resource_form"] = WebConfigExtensions.ReadAppSettingFromWebConfig("URI_resource_form");

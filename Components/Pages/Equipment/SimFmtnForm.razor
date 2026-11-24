@@ -1,0 +1,48 @@
+@page "/Equipment/SIM_FMTN"
+@page "/Equipment/SIM_FMTN.aspx"
+@layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
+@using Clayzor.Lib.Entities.Inventory
+@using Kesco.App.Web.Inventory.Components.Pages.TerritorialEntity
+@inherits TerritorialEntityCardBase<SimFmtnFields>
+
+<PageTitle>Информация о FMTN</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@(Dirty || Busy)" OnBeforeInternalNavigation="BeforeNavigationAsync" />
+
+<ClayEntityForm Options="@(new ClayEntityFormOptions { Class = DraftRootClass })">
+    <Toolbar>
+        <ClayToolbar>
+            <ClayToolbarButton Options="OkButton" Disabled="@(Busy || Loading || Draft is null || (Dirty && !CanCommit))" OnClick="SaveAsync" />
+            <ClayToolbarButton Options="ReloadButton" Disabled="@(Busy || Loading || StorageBlocked)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="CancelButton" Disabled="@Busy" OnClick="CancelAsync" />
+            @if (CanDelete)
+            {
+                <ClayToolbarButton Options="DeleteButton" Disabled="@(!CanCommit)" OnClick="DeleteAsync" />
+            }
+        </ClayToolbar>
+    </Toolbar>
+    <ChildContent>
+        <MudText Typo="Typo.h6" HtmlTag="h1" Class="mb-2">Информация о FMTN</MudText>
+        @if (Loading) { <MudProgressLinear Indeterminate="true" /> }
+        @if (Message is not null) { <MudAlert Severity="Severity.Warning" Class="mb-2">@Message</MudAlert> }
+        @if (Validation.Count > 0)
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-2">
+                <ul>@foreach (var error in Validation) { <li>@error</li> }</ul>
+            </MudAlert>
+        }
+        @if (Draft is { } draft)
+        {
+            <div @ref="_fields" class="d-flex flex-column gap-2" data-draft-scope="main" inert="@Busy">
+                <ClayTextBox Options="_prefix" Value="@draft.Prefix" ValueChanged="@(value => UpdateDraftAsync(Draft! with { Prefix = value ?? "" }))" />
+                <ClayTextBox Options="_shortNumber" Value="@draft.ShortNumber" ValueChanged="@(value => UpdateDraftAsync(Draft! with { ShortNumber = value ?? "" }))" />
+                <ClayTextBox Options="_description" Value="@draft.Description" ValueChanged="@(value => UpdateDraftAsync(Draft! with { Description = value ?? "" }))" />
+            </div>
+        }
+    </ChildContent>
+    <Footer>
+        @if (_original is { } original)
+        {
+            <ClayChanged ChangedById="@original.ChangedBy" ChangedByName="@original.ChangedByName" ChangedAt="@original.ChangedAt" />
+        }
+    </Footer>
+</ClayEntityForm>
