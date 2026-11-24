@@ -1,7 +1,6 @@
 using Kesco.App.Web.Inventory.Components;
 using Kesco.App.Web.Inventory.Components.Pages.Equipment;
 using Clayzor.Lib.DALC;
-using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Web.Controls;
 using Clayzor.Lib.Web.Controls.Components.Tree;
 using Clayzor.Lib.Web.Controls.Components.Tree.State;
@@ -152,10 +151,8 @@ builder.Services.AddAuthorization(options =>
     options.FallbackPolicy = options.DefaultPolicy;
 });
 builder.Services.AddCascadingAuthenticationState();
-builder.Services.AddScoped<ClayThemeState>();
-builder.Services.AddScoped<IClayThemePreferenceStore>(sp => new InventoryThemePreferenceStore(
-    async () => (await sp.GetRequiredService<AuthenticationStateProvider>().GetAuthenticationStateAsync()).User,
-    claySettings, ClayThemeSettingsData.InventoryParameter));
+builder.Services.AddInventoryThemePreferences(async sp =>
+    (await sp.GetRequiredService<AuthenticationStateProvider>().GetAuthenticationStateAsync()).User);
 
 // Blazor Server
 builder.Services.AddRazorComponents()
