@@ -19,7 +19,17 @@ namespace Kesco.App.Web.Inventory.Components.Pages.TerritorialEntity;
 public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncDisposable where TState : class
 {
     private const string DraftScope = "main";
+    private readonly string _draftOwner = Guid.NewGuid().ToString("N");
     private readonly CancellationTokenSource _lifetime = new();
+
+    /// <summary>Настройки каркаса с уникальным CSS-корнем draft-регистрации.</summary>
+    protected ClayEntityFormOptions FormOptions { get; } = new() { MaxWidth = "100%" };
+
+    /// <summary>CSS-селектор корня этой карточки и её draft-области.</summary>
+    protected string DraftRootSelector => $".territory-draft-{_draftOwner}";
+
+    /// <summary>Назначает уникальный CSS-корень для изоляции draft-ввода.</summary>
+    protected TerritorialEntityCardBase() => FormOptions.Class = $"territory-draft-{_draftOwner}";
     private ClayDraftRegistration? _registration;
     private bool _restoreRaw;
     private bool _disposed;
@@ -245,7 +255,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     {
         if (CurrentUser is null) return;
         _registration = await DraftStore.RegisterHandleAsync(FormKey, EntityKey,
-            CurrentUser.Id.ToString(CultureInfo.InvariantCulture), 1, Lifetime);
+            CurrentUser.Id.ToString(CultureInfo.InvariantCulture), 1, DraftRootSelector, Lifetime);
         var restore = _registration.Restore;
         if (restore.TypedScopes?.TryGetValue(DraftScope, out var json) == true &&
             JsonSerializer.Deserialize<DraftSnapshot>(json) is { } existing)

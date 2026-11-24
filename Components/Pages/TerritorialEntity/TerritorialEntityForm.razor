@@ -7,7 +7,7 @@
 <PageTitle>Территория</PageTitle>
 <NavigationLock ConfirmExternalNavigation="@(Dirty || Busy)" OnBeforeInternalNavigation="BeforeNavigationAsync" />
 
-<ClayEntityForm Options="_formOptions">
+<ClayEntityForm Options="FormOptions">
     <Toolbar>
         <ClayToolbar>
             <ClayToolbarButton Options="OkButton" Disabled="@(Busy || Loading || Draft is null || (Dirty && !CanCommit))" OnClick="@(() => SaveAsync(true))" />
