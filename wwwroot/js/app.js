@@ -58,3 +58,16 @@ window.claySimFmtn = {
         window.history.replaceState(window.history.state, "", url);
     }
 };
+
+window.clayLocationFact = {
+    focusNotes(version) {
+        const selector = `.location-fact-dialog [data-location-fact-dialog="${Number(version)}"] textarea`;
+        let frames = 8;
+        const focus = () => {
+            const input = document.querySelector(selector);
+            if (input) input.focus();
+            else if (--frames > 0) requestAnimationFrame(focus);
+        };
+        requestAnimationFrame(focus);
+    }
+};
