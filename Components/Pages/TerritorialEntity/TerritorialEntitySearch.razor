@@ -1,0 +1,60 @@
+@page "/TerritorialEntity/TerritorialEntity_search"
+@page "/TerritorialEntity/TerritorialEntity_search.aspx"
+@using Clayzor.Lib.Entities.TerritorialEntity
+@using Kesco.App.Web.Inventory.Components.Layout
+
+<PageTitle>Территории и телефонные коды</PageTitle>
+
+@if (ReturnMode is null)
+{
+    <InventoryMainMenu />
+}
+<MudText Typo="Typo.h5" Class="mb-2">Территории и телефонные коды</MudText>
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" />
+}
+@if (_message is not null)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-2">@_message</MudAlert>
+}
+@if (_treeOptions is not null && _source is not null)
+{
+    <MudGrid Spacing="2">
+        <MudItem xs="12" md="4">
+            <MudPaper Class="pa-2" Elevation="0">
+                <div class="d-flex align-center justify-space-between">
+                    <MudButton Variant="Variant.Text" OnClick="ResetNode" FullWidth="false">Территории</MudButton>
+                    <ClayButton Icon="@Icons.Material.Filled.Refresh" Text="Обновить дерево" OnClick="ReloadTreeAsync" />
+                </div>
+                @if (_total is int count)
+                {
+                    <MudText Typo="Typo.body2">@(count == 0 ? "Не найдено" : $"Найдено: {count}. Показано до 100 совпадений.")</MudText>
+                }
+                <ClayTreeView @ref="_tree" Options="_treeOptions" DataSource="_source" OnNodeClick="SelectNodeAsync" />
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" md="8">
+            @if (_active is { } node)
+            {
+                @if (IsCity(node))
+                {
+                    <MudText Typo="Typo.subtitle2">Телефонные коды в @node.Text</MudText>
+                }
+                else
+                {
+                    <MudMenu Label="@(_phoneCodes ? $"Телефонные коды в {node.Text}" : $"Территории в {node.Text}")">
+                        <MudMenuItem OnClick="@(() => ShowPhoneCodes(false))">Территории в @node.Text</MudMenuItem>
+                        <MudMenuItem OnClick="@(() => ShowPhoneCodes(true))">Телефонные коды в @node.Text</MudMenuItem>
+                    </MudMenu>
+                }
+                <iframe @key="_gridUrl" title="@(_phoneCodes ? "Телефонные коды" : "Территории")" class="border-0"
+                        style="width:100%;min-height:460px" src="@_gridUrl"></iframe>
+            }
+        </MudItem>
+    </MudGrid>
+}
+@if (ReturnMode is "1" or "2")
+{
+    <MudButton OnClick="CloseAsync">Отмена</MudButton>
+}
