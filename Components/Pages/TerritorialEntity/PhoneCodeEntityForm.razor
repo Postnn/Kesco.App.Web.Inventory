@@ -7,7 +7,7 @@
 <PageTitle>Телефонный код</PageTitle>
 <NavigationLock ConfirmExternalNavigation="@(Dirty || Busy)" OnBeforeInternalNavigation="BeforeNavigationAsync" />
 
-<ClayEntityForm>
+<ClayEntityForm Options="FormOptions">
     <Toolbar>
         <ClayToolbar>
             <ClayToolbarButton Options="OkButton" Disabled="@(Busy || Loading || Draft is null || (Dirty && !CanCommit))" OnClick="@(() => SaveAsync(true))" />

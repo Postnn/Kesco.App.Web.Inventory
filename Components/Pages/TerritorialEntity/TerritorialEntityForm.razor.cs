@@ -21,7 +21,6 @@ public partial class TerritorialEntityForm
 
     [Inject] private ClayFormWindowService WindowService { get; set; } = null!;
 
-    private readonly ClayEntityFormOptions _formOptions = new() { MaxWidth = "100%" };
     private readonly ClayDropDownListOptions _typeOptions = new() { Label = "Тип", Required = true, DraftKey = "territory.type" };
     private readonly ClayTextBoxOptions _classificationOptions = new() { Label = "Код ОКСМ", DraftKey = "territory.oksm" };
     private readonly ClayTextBoxOptions _nameOptions = new() { Label = "Название территории на русском языке", Required = true, MaxLength = 80, DraftKey = "territory.name" };
