@@ -88,27 +88,45 @@ public partial class PhoneCodeEntityForm
         await UpdateDraftAsync(Draft with { TerritoryId = value });
     }
 
+    private CancellationTokenSource? _activeSearch;
+    private string? _searchRoute;
+
+    protected override void OnParametersSet()
+    {
+        if (_searchRoute != RouteKey)
+        {
+            _activeSearch?.Cancel();
+            _searchRoute = RouteKey;
+        }
+        base.OnParametersSet();
+    }
+
     private async Task<ClaySelectExternalResult<TerritorialEntityLookup, int?>?> FindTerritoryAsync(ClaySelectAdvancedSearchContext context)
     {
         if (!Editable || Busy || Loading || Draft is null) return null;
+        using var request = CancellationTokenSource.CreateLinkedTokenSource(Lifetime);
+        _activeSearch?.Cancel();
+        _activeSearch = request;
+        var ct = request.Token;
         var route = RouteKey;
         var source = _territorySource;
         var previous = Draft.TerritoryId;
-        bool Current() => !Lifetime.IsCancellationRequested && Editable && !Busy && !Loading && route == RouteKey &&
+        bool Current() => !ct.IsCancellationRequested && Editable && !Busy && !Loading && route == RouteKey &&
             ReferenceEquals(source, _territorySource) && Draft?.TerritoryId == previous;
         try
         {
             var result = await TerritorySearch.OpenAsync<TerritorialEntityLookup, int?>(
-                Navigation.ToAbsoluteUri(TerritorialEntityRoutes.Search).AbsoluteUri, Lifetime);
+                Navigation.ToAbsoluteUri(TerritorialEntityRoutes.Search).AbsoluteUri, ct);
             if (result?.Value is not int id || !Current()) return null;
-            var item = id > 0 ? await source.GetByIdAsync(id, Lifetime) : null;
+            var item = id > 0 ? await source.GetByIdAsync(id, ct) : null;
             if (!Current()) return null;
             if (item?.IsPhoneCodeTerritory == true) return ClaySelectExternalResult<TerritorialEntityLookup, int?>.FromItem(item);
             Message = "Выбранная территория недоступна или не подходит для телефонного кода.";
             StateHasChanged();
         }
         catch (OperationCanceledException) { }
-        catch (Exception) when (!Lifetime.IsCancellationRequested) { Message = "Не удалось завершить поиск территории."; StateHasChanged(); }
+        catch (Exception) when (!ct.IsCancellationRequested) { Message = "Не удалось завершить поиск территории."; StateHasChanged(); }
+        finally { if (ReferenceEquals(_activeSearch, request)) _activeSearch = null; }
         return null;
     }
 
