@@ -1420,10 +1420,18 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             { dialog => dialog.Notes, latest?.Notes ?? string.Empty },
             { dialog => dialog.Configurations, _standardConfigurations },
             { dialog => dialog.Save, (Func<EquipmentComputerSnapshot, Task<EquipmentEditorSaveResult>>)(snapshot => SaveComputerDraftAsync(snapshot, opening)) },
+            { dialog => dialog.RejectUnknownOperation, RejectUnknownComputerOperationAsync },
         };
         await ShowDialogAsync<EquipmentComputerDialog>(
             "Компьютер", parameters, new DialogOptionsEx { MaxWidth = MaxWidth.Medium, FullWidth = true },
             openingContext: opening);
+    }
+
+    private async Task RejectUnknownComputerOperationAsync()
+    {
+        if (_draftOperation?.Kind != "Сохранение конфигурации компьютера" || !_draftOperationUnresolved)
+            return;
+        await RejectDraftOperationAsync(_draftOperation.Revision);
     }
 
     private async Task<EquipmentEditorSaveResult> SaveComputerDraftAsync(
@@ -1917,6 +1925,11 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             {
                 await RejectDraftOperationAsync(draftRevision);
                 return EquipmentEditorSaveResult.Reject($"Команда «{operationName}» не выполнена. Подробности — в сообщении базы данных.");
+            }
+            catch (System.Data.SqlTypes.SqlTypeException ex)
+            {
+                await RejectDraftOperationAsync(draftRevision);
+                return EquipmentEditorSaveResult.Reject(ex.Message);
             }
             catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
             {
