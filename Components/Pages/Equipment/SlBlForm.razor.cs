@@ -329,10 +329,25 @@ public partial class SlBlForm : IAsyncDisposable
 
     private async Task CloseAsync()
     {
-        if (!await CanDiscardAsync()) return;
-        await DiscardAsync();
-        _text = _original;
-        await JS.InvokeVoidAsync("clayModelEquipmentForm.close", _lifetime.Token);
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            if (!_uncertain)
+            {
+                if (!await CanDiscardAsync()) return;
+                await DiscardAsync();
+                _text = _original;
+                // В обычной вкладке браузер может оставить редактор открытым.
+                if (_address is not null && _kind is { } kind) await SetKindAsync(kind);
+            }
+            await JS.InvokeVoidAsync("clayModelEquipmentForm.close", _lifetime.Token);
+        }
+        catch (Exception e) when (e is JSException or InvalidOperationException)
+        {
+            _error = "Не удалось завершить закрытие формы. Проверьте состояние черновика.";
+        }
+        finally { _busy = false; }
     }
 
     private async Task BeforeNavigationAsync(LocationChangingContext context)
