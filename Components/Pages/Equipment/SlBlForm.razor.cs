@@ -261,7 +261,7 @@ public partial class SlBlForm : IAsyncDisposable
                 }
                 await registration.RejectOperationAsync(attempt.Revision, _lifetime.Token);
                 _uncertain = false;
-                _error = result.Outcome == SlBlOutcome.Partial ? "Список сохранён частично. Сверьте различия." : "Изменились права или исходный список.";
+                _error = result.Outcome == SlBlOutcome.Partial ? "Список сохранён частично. Сверьте различия." : result.Message ?? "Изменились права или исходный список.";
                 return;
             }
             await registration.CommitOperationAsync(attempt.Revision, cancellationToken: _lifetime.Token);
