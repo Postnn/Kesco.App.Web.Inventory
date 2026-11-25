@@ -1,0 +1,55 @@
+@page "/Equipment/PhonePoolAtribute_form"
+@page "/Equipment/PhonePoolAtribute_form.aspx"
+@layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
+@using Kesco.App.Web.Inventory.Components.Pages.TerritorialEntity
+@inherits TerritorialEntityCardBase<PhonePoolAttributeForm.FormState>
+
+<PageTitle>Значение атрибута пула</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@(Dirty || Busy || ConfirmedCleanupPending)" OnBeforeInternalNavigation="BeforeLocationAsync" />
+
+<ClayEntityForm Options="FormOptions">
+    <Toolbar>
+        <ClayToolbar>
+            <ClayToolbarButton Options="Ok" Disabled="@(!CanCloseOrSave)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="ApplyButton" Disabled="@(!CanApply)" OnClick="@(() => SaveAsync(false))" />
+            <ClayToolbarButton Options="ReloadButton" Disabled="@(!CanRefresh || _confirmingDelete)" OnClick="RefreshAsync" />
+            @if (_card?.Attribute is not null && !_deleted)
+            {
+                <ClayToolbarButton Options="Delete" Disabled="@(!CanCommit || !CanDeleteAttribute || _confirmingDelete)" OnClick="DeleteAsync" />
+            }
+            <ClayToolbarButton Options="CancelButton" Disabled="@(Busy || _confirmingDelete)" OnClick="CancelAsync" />
+        </ClayToolbar>
+    </Toolbar>
+    <ChildContent>
+        <MudText Typo="Typo.h6" HtmlTag="h1" Class="mb-2">Значение атрибута пула</MudText>
+        @if (Loading)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        @if (Message is not null)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-2">@Message</MudAlert>
+        }
+        @foreach (var error in Validation)
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-2">@error</MudAlert>
+        }
+        @if (_card is { } card && Draft is { } draft)
+        {
+            <div class="d-flex flex-column gap-2" data-draft-scope="main" inert="@(DraftInputSuppressed || _confirmingDelete)">
+                <ClayTextBox Options="_poolOptions" Value="@card.PoolName" />
+                <ClayTextBox Options="_typeOptions" Value="@card.Key.Type" />
+                <ClayTextArea Options="_descriptionOptions" Value="@card.Description" />
+                <ClayTextBox Options="_valueOptions" Value="@draft.Value" ValueChanged="ChangeValueAsync" />
+            </div>
+        }
+    </ChildContent>
+    <Footer>
+        @if (_card?.Attribute is { } audit)
+        {
+            <ClayChanged ChangedById="@audit.ChangedBy" ChangedByName="@audit.ChangedByName"
+                         ChangedAt="@audit.ChangedAt" ChangedByUrl="@AuthorUrl(audit.ChangedBy)" />
+        }
+    </Footer>
+</ClayEntityForm>
+
