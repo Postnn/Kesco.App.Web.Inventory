@@ -57,6 +57,7 @@ public partial class SlBlForm : IAsyncDisposable
     private string? _error;
     private bool _busy = true;
     private bool _disposed;
+    private bool _initialRead = true;
     private bool _allowNavigation;
     private bool _restoreRaw;
     private SlBlDifferences? _differences;
@@ -88,7 +89,9 @@ public partial class SlBlForm : IAsyncDisposable
         try
         {
             var identity = (await Authentication.GetAuthenticationStateAsync()).User.Identity;
+            if (_disposed) return;
             CurrentUser = await Employee.GetCurrentAsync(Db, identity?.IsAuthenticated == true ? identity.Name : null, _lifetime.Token);
+            if (_disposed) return;
             if (CurrentUser is null) { _error = "Не удалось подтвердить текущего сотрудника."; return; }
             _source = new(Db);
             _sync = new(Db, identity?.IsAuthenticated == true ? identity.Name : null, Services.GetService<ISlBlMailboxWritePolicy>());
@@ -96,7 +99,7 @@ public partial class SlBlForm : IAsyncDisposable
             if (key is not null) await LoadAddressAsync(key.Address, key.Kind);
         }
         catch (Exception e) when (e is not OperationCanceledException) { _error = "Не удалось загрузить почтовые списки."; }
-        finally { _busy = false; if (!_disposed) StateHasChanged(); }
+        finally { _initialRead = false; _busy = false; if (!_disposed) StateHasChanged(); }
     }
 
     private async Task ChangeAddressAsync(string? value)
@@ -111,8 +114,10 @@ public partial class SlBlForm : IAsyncDisposable
     private async Task LoadAddressAsync(string? address, SlBlKind? preferredKind)
     {
         var key = address is not null ? await SlBlData.FindAddressAsync(Db, address, _lifetime.Token) : null;
+        if (_disposed) return;
         if (address is not null && key is null) { _error = "Почтовый адрес не найден или недоступен."; return; }
         var lists = key is not null ? await SlBlData.ReadAsync(Db, key, _lifetime.Token) : null;
+        if (_disposed) return;
         await DiscardAsync();
         _address = key;
         _lists = lists;
@@ -144,8 +149,10 @@ public partial class SlBlForm : IAsyncDisposable
         if (_address is null || kind is null || CurrentUser is null) return;
         try
         {
-            _draft = await Drafts.RegisterHandleAsync("slbl", $"{_address}:{(byte)kind}",
+            var registration = await Drafts.RegisterHandleAsync("slbl", $"{_address}:{(byte)kind}",
                 CurrentUser.Id.ToString(CultureInfo.InvariantCulture), 1, DraftRootSelector, _lifetime.Token);
+            if (_disposed) { await registration.DisposeAsync(); return; }
+            _draft = registration;
             _uncertain = _draft.Restore.Operation is not null;
             if (_draft.Restore.OperationSnapshot is { } marker)
             {
@@ -179,6 +186,7 @@ public partial class SlBlForm : IAsyncDisposable
             _available = !_needsReview && _sync is not null && await _sync.CanWriteAsync(_address, kind.Value, _lifetime.Token);
             if (!_uncertain) await PersistListDraftAsync();
             else _error = "Требуется сверка незавершённой синхронизации. Нажмите Обновить.";
+            if (_disposed) return;
             var url = Navigation.GetUriWithQueryParameter("id", $"{_address}:{(byte)kind}");
             await JS.InvokeVoidAsync("claySlBl.rememberUrl", _lifetime.Token, url);
             _restoreRaw = _draft.Restore.HasDraft;
@@ -330,7 +338,7 @@ public partial class SlBlForm : IAsyncDisposable
     private async Task BeforeNavigationAsync(LocationChangingContext context)
     {
         if (_allowNavigation) { _allowNavigation = false; return; }
-        if (_busy) { context.PreventNavigation(); return; }
+        if (_busy && !_initialRead) { context.PreventNavigation(); return; }
         if (!Dirty) return;
         context.PreventNavigation();
         if (!await CanDiscardAsync()) return;

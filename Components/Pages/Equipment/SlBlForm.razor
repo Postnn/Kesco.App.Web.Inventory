@@ -22,12 +22,12 @@
             <div class="d-flex flex-column gap-2" inert="@(_busy || _uncertain)" data-draft-scope="main">
                 <ClaySelect TItem="SlBlAddress" TValue="string" DataSource="_source" Options="AddressOptions"
                             ValueSelector="@(x => x.Address)" TextSelector="@(x => x.Address)"
-                            Value="_address" ValueChanged="ChangeAddressAsync" />
+                            Value="@_address" ValueChanged="ChangeAddressAsync" />
                 <ClayRadioGroup TValue="SlBlKind?" Items="Kinds" Value="_kind" ValueChanged="ChangeKindAsync" />
                 @if (_kind is not null && _address is not null)
                 {
                     <MudText Typo="Typo.body2">Могут быть использованы следующие форматы: user@@domain.com, server.domain.com, domain.com</MudText>
-                    <ClayTextArea Options="TextOptions" Value="_text" ValueChanged="ChangeTextAsync" />
+                    <ClayTextArea Options="TextOptions" Value="@_text" ValueChanged="ChangeTextAsync" />
                     @if (Dirty && SlBlData.Validate(_text) is { } validation)
                     {
                         <MudAlert Severity="Severity.Error">@validation</MudAlert>
