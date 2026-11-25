@@ -1,0 +1,9 @@
+@page "/Equipment/SlBl_form"
+@page "/Equipment/SlBl_form.aspx"
+@layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
+<SlBlForm @key="Id" Id="@Id" />
+
+@code {
+    /// <summary>Необязательный составной ключ ящика и списка.</summary>
+    [SupplyParameterFromQuery(Name = "id")] public string? Id { get; set; }
+}

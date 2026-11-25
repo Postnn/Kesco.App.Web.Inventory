@@ -1,6 +1,3 @@
-@page "/Equipment/SlBl_form"
-@page "/Equipment/SlBl_form.aspx"
-@layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.DBSelect.Equipment
 
@@ -10,7 +7,7 @@
 <ClayEntityForm Options="_formOptions">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="SaveButton" Disabled="true" />
+            <ClayToolbarButton Options="SaveButton" Disabled="@(_busy || _uncertain || !_available || !Dirty)" OnClick="SaveAsync" />
             <ClayToolbarButton Options="RefreshButton" OnClick="RefreshAsync" Disabled="@_busy" />
             <ClayToolbarButton Options="CloseButton" OnClick="CloseAsync" Disabled="@_busy" />
         </ClayToolbar>
@@ -21,8 +18,8 @@
         @if (_error is not null) { <MudAlert Class="mb-2" Severity="Severity.Warning">@_error</MudAlert> }
         @if (CurrentUser is not null && _source is not null)
         {
-            <MudAlert Class="mb-2" Severity="Severity.Info">Синхронизация недоступна на этом стенде. Можно прочитать списки и подготовить черновик.</MudAlert>
-            <div class="d-flex flex-column gap-2" inert="@_busy" data-draft-scope="main">
+            @if (_kind.HasValue && !_available) { <MudAlert Class="mb-2" Severity="Severity.Info">Для выбранного списка доступна подготовка черновика. Право синхронизации не подтверждено.</MudAlert> }
+            <div class="d-flex flex-column gap-2" inert="@(_busy || _uncertain)" data-draft-scope="main">
                 <ClaySelect TItem="SlBlAddress" TValue="string" DataSource="_source" Options="AddressOptions"
                             ValueSelector="@(x => x.Address)" TextSelector="@(x => x.Address)"
                             Value="_address" ValueChanged="ChangeAddressAsync" />

@@ -37,7 +37,7 @@ public partial class SlBlForm : IAsyncDisposable
     public SlBlForm() => _formOptions.Class = $"slbl-draft-{_draftOwner}";
 
     /// <summary>Необязательный составной ключ ящика и списка.</summary>
-    [SupplyParameterFromQuery(Name = "id")] public string? Id { get; set; }
+    [Parameter] public string? Id { get; set; }
 
     [Inject] private DbManager Db { get; set; } = null!;
     [Inject] private AuthenticationStateProvider Authentication { get; set; } = null!;
@@ -61,6 +61,13 @@ public partial class SlBlForm : IAsyncDisposable
     private bool _restoreRaw;
     private SlBlDifferences? _differences;
     private ClayDraftRegistration? _draft;
+    [Inject] private IServiceProvider Services { get; set; } = null!;
+    private SlBlSqlSynchronization? _sync;
+    private bool _available;
+    private bool _needsReview;
+    private bool _uncertain;
+    private SlBlIntent? _pendingIntent;
+    private long _pendingRevision;
     private bool Dirty => !string.Equals(_text, _original, StringComparison.Ordinal);
 
     /// <inheritdoc />
@@ -84,6 +91,7 @@ public partial class SlBlForm : IAsyncDisposable
             CurrentUser = await Employee.GetCurrentAsync(Db, identity?.IsAuthenticated == true ? identity.Name : null, _lifetime.Token);
             if (CurrentUser is null) { _error = "Не удалось подтвердить текущего сотрудника."; return; }
             _source = new(Db);
+            _sync = new(Db, identity?.IsAuthenticated == true ? identity.Name : null, Services.GetService<ISlBlMailboxWritePolicy>());
             if (!SlBlKey.TryParse(Id, out var key)) { _error = "Некорректный адрес или вид списка в ссылке."; return; }
             if (key is not null) await LoadAddressAsync(key.Address, key.Kind);
         }
@@ -93,7 +101,7 @@ public partial class SlBlForm : IAsyncDisposable
 
     private async Task ChangeAddressAsync(string? value)
     {
-        if (_busy || value == _address) return;
+        if (_busy || _uncertain || value == _address) return;
         _busy = true;
         try { if (await CanDiscardAsync()) await LoadAddressAsync(value, null); }
         catch (Exception e) when (e is not OperationCanceledException) { _error = "Не удалось загрузить списки выбранного адреса."; }
@@ -114,7 +122,7 @@ public partial class SlBlForm : IAsyncDisposable
 
     private async Task ChangeKindAsync(SlBlKind? value)
     {
-        if (_busy || value == _kind) return;
+        if (_busy || _uncertain || value == _kind) return;
         _busy = true;
         try
         {
@@ -128,6 +136,8 @@ public partial class SlBlForm : IAsyncDisposable
     private async Task SetKindAsync(SlBlKind? kind)
     {
         _kind = kind;
+        _available = false;
+        _needsReview = false;
         _original = _text = kind is { } selected ? _lists?.GetText(selected) ?? "" : "";
         _differences = null;
         _restoreRaw = false;
@@ -136,12 +146,46 @@ public partial class SlBlForm : IAsyncDisposable
         {
             _draft = await Drafts.RegisterHandleAsync("slbl", $"{_address}:{(byte)kind}",
                 CurrentUser.Id.ToString(CultureInfo.InvariantCulture), 1, DraftRootSelector, _lifetime.Token);
+            _uncertain = _draft.Restore.Operation is not null;
+            if (_draft.Restore.OperationSnapshot is { } marker)
+            {
+                var pending = JsonSerializer.Deserialize<SlBlIntent>(marker.Data);
+                if (marker.Kind != "slbl.sync" || pending is null || pending.OperationId == Guid.Empty ||
+                    pending.Address != _address || pending.Kind != kind || pending.Desired is null ||
+                    SlBlData.Validate(pending.Desired) is not null) throw new JsonException();
+                _pendingIntent = pending;
+                _pendingRevision = marker.Revision;
+            }
             if (_draft.Restore.TypedScopes?.TryGetValue(DraftScope, out var json) == true)
-                _text = JsonSerializer.Deserialize<string>(json) ?? _original;
+            {
+                using var payload = JsonDocument.Parse(json);
+                if (payload.RootElement.ValueKind == JsonValueKind.String)
+                {
+                    _text = payload.RootElement.GetString() ?? _original;
+                    _needsReview = true;
+                    _error = "Черновик прежней версии. Перед записью требуется сверка исходного списка.";
+                }
+                else
+                {
+                    var restored = JsonSerializer.Deserialize<ListDraft>(json) ?? throw new JsonException();
+                    if (restored.Address != _address || restored.Kind != kind) throw new JsonException();
+                    _needsReview = restored.NeedsReview || _original != restored.Original;
+                    if (_needsReview) _error = "Список в базе изменился. Сверьте его с черновиком.";
+                    _original = restored.Original;
+                    _text = restored.Current;
+                }
+            }
+            _uncertain = _draft.Restore.Operation is not null;
+            _available = !_needsReview && _sync is not null && await _sync.CanWriteAsync(_address, kind.Value, _lifetime.Token);
+            if (!_uncertain) await PersistListDraftAsync();
+            else _error = "Требуется сверка незавершённой синхронизации. Нажмите Обновить.";
+            var url = Navigation.GetUriWithQueryParameter("id", $"{_address}:{(byte)kind}");
+            await JS.InvokeVoidAsync("claySlBl.rememberUrl", _lifetime.Token, url);
             _restoreRaw = _draft.Restore.HasDraft;
         }
         catch (Exception e) when (e is JSException or InvalidOperationException or JsonException)
         {
+            _available = false;
             _error = "Не удалось восстановить черновик в браузере.";
         }
     }
@@ -154,14 +198,93 @@ public partial class SlBlForm : IAsyncDisposable
         try
         {
             if (_draft is not null)
-                await _draft.SaveTypedScopeAsync(DraftScope, JsonSerializer.Serialize(_text), _lifetime.Token);
+                await PersistListDraftAsync();
         }
-        catch (Exception e) when (e is JSException or InvalidOperationException) { _error = "Не удалось сохранить черновик в браузере."; }
+        catch (Exception e) when (e is JSException or InvalidOperationException) { _available = false; _error = "Не удалось сохранить черновик в браузере. Скопируйте текст перед закрытием."; }
+    }
+
+    private sealed record ListDraft(string Address, SlBlKind Kind, string Original, string Current, bool NeedsReview = false);
+
+    private Task PersistListDraftAsync() => _draft!.SaveTypedScopeAsync(DraftScope,
+        JsonSerializer.Serialize(new ListDraft(_address!, _kind!.Value, _original, _text, _needsReview)), _lifetime.Token);
+
+    private async Task SaveAsync()
+    {
+        if (_busy || _uncertain || !_available || !Dirty || _draft is not { } registration ||
+            _address is null || _kind is not { } kind || _sync is null) return;
+        var intent = new SlBlIntent(Guid.NewGuid(), _address, kind, _original, _text);
+        if (SlBlData.Validate(intent.Desired) is { } invalid) { _error = invalid; return; }
+        _busy = true;
+        try
+        {
+            if (!await ConfirmAsync("Данная операция может выполняться до двух минут. Вы уверены, что хотите выполнить данную операцию?")) return;
+            await registration.EnsureCommandAllowedAsync(_lifetime.Token);
+            var attempt = await registration.BeginOperationAsync(new ClayDraftOperationIntent("slbl.sync",
+                JsonSerializer.Serialize(intent), [DraftScope]), _lifetime.Token);
+            _pendingIntent = intent;
+            _pendingRevision = attempt.Revision;
+            _uncertain = true;
+            var result = await SlBlSynchronization.ExecuteAsync(_sync, intent, _lifetime.Token);
+            _differences = result.Differences;
+            if (result.Outcome == SlBlOutcome.Unknown)
+            {
+                await registration.UnknownOperationAsync(attempt.Revision, _lifetime.Token);
+                _error = "Результат синхронизации неизвестен. Требуется сверка.";
+                return;
+            }
+            if (result.Outcome != SlBlOutcome.Verified)
+            {
+                await registration.RejectOperationAsync(attempt.Revision, _lifetime.Token);
+                _uncertain = false;
+                if (result.Outcome == SlBlOutcome.Partial)
+                {
+                    _original = await _sync.ReadOriginalAsync(intent.Address, kind, _lifetime.Token);
+                    await PersistListDraftAsync();
+                }
+                _error = result.Outcome == SlBlOutcome.Partial ? "Список сохранён частично. Сверьте различия." : "Изменились права или исходный список.";
+                return;
+            }
+            await registration.CommitOperationAsync(attempt.Revision, cancellationToken: _lifetime.Token);
+            _original = _text = intent.Desired;
+            _uncertain = false;
+            _lists = await SlBlData.ReadAsync(Db, intent.Address, _lifetime.Token);
+            _original = _text = _lists?.GetText(kind) ?? "";
+            _error = "Данные успешно сохранены!";
+            if (await ConfirmAsync("Закрыть форму?"))
+            {
+                await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _lifetime.Token);
+                await JS.InvokeVoidAsync("clayModelEquipmentForm.close", _lifetime.Token);
+            }
+        }
+        catch (Exception) when (!_disposed) { _error = "Не удалось завершить сохранение или сверку. Проверьте фактическое состояние списка."; }
+        finally { _busy = false; }
     }
 
     private async Task RefreshAsync()
     {
         if (_busy) return;
+        if (_uncertain)
+        {
+            if (_pendingIntent is not { } pending || _sync is null || _draft is null) return;
+            _busy = true;
+            try
+            {
+                var check = await SlBlSynchronization.ReconcileAsync(_sync, pending, _lifetime.Token);
+                _differences = check.Differences;
+                if (check.Outcome == SlBlOutcome.Verified)
+                {
+                    await _draft.CommitOperationAsync(_pendingRevision, cancellationToken: _lifetime.Token);
+                    _uncertain = false;
+                    _original = pending.Desired;
+                    _error = "Фактический список соответствует сохранённой команде.";
+                    await PersistListDraftAsync();
+                }
+                else _error = "Фактический список отличается от сохранённой команды. Повтор синхронизации заблокирован.";
+            }
+            catch (Exception) when (!_disposed) { _error = "Сверка не завершена. Повторите чтение."; }
+            finally { _busy = false; }
+            return;
+        }
         if (_address is null || _kind is not { } kind)
         {
             if (!Dirty) Navigation.NavigateTo(Navigation.Uri, forceLoad: true);
@@ -218,7 +341,7 @@ public partial class SlBlForm : IAsyncDisposable
 
     private async Task DiscardAsync()
     {
-        if (_draft is null) return;
+        if (_draft is null || _uncertain) return;
         await _draft.DiscardAsync(_lifetime.Token);
         await _draft.DisposeAsync();
         _draft = null;

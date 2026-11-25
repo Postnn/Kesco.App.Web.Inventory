@@ -80,3 +80,9 @@ window.clayLocationFact = {
         requestAnimationFrame(focus);
     }
 };
+
+window.claySlBl = {
+    rememberUrl(url) {
+        window.history.replaceState(window.history.state, "", url);
+    }
+};
