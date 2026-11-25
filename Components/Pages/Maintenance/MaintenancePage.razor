@@ -1,0 +1,93 @@
+@page "/Maintenance"
+@page "/Maintenance.aspx"
+@using Clayzor.Lib.Entities.Inventory
+
+<PageTitle>Регламентные работы</PageTitle>
+<InventoryMainMenu />
+
+<div class="@_draftRoot">
+    <MudText Typo="Typo.h5" HtmlTag="h1" Class="mb-2">Регламентные работы</MudText>
+    @if (_message is not null)
+    {
+        <MudAlert Severity="@_messageSeverity" Class="mb-2">@_message</MudAlert>
+    }
+    @if ((_loadFailed || _uncertain) && !_busy)
+    {
+        <MudButton OnClick="ReloadAsync">Перечитать список</MudButton>
+    }
+    @if (_pendingConfirmation is { } id && !_busy && _rows.FirstOrDefault(row => row.Id == id && CanConfirm(row)) is { } pending)
+    {
+        <MudButton OnClick="@(() => ConfirmAsync(pending.Id))">Продолжить подтверждение</MudButton>
+        <MudButton OnClick="CancelPendingAsync">Отменить вопрос</MudButton>
+    }
+    @if (_list is { } list)
+    {
+        <ClayGrid TEntity="MaintenanceWork" Options="_options" Items="@_rows" Loading="@_busy"
+                  TotalCount="@_rows.Count" @ref="_grid" OnQueryChanged="OnFilterChangedAsync"
+                  DistinctValuesLoader="LoadFilterValuesAsync">
+            <RowActions>
+                <ClayButton @key="context.Id" Icon="@Icons.Material.Filled.Check" Text="Подтвердить выполнение"
+                            Disabled="@(!CanConfirm(context))" OnClick="@(() => ConfirmAsync(context.Id))" />
+            </RowActions>
+            <ColumnDefs>
+                <ClayColumnDef Filterable="true" AllowValueFilter="true" ColumnId="1" SqlName="@MaintenanceColumns.Deadline" DisplayName="Выполнить до" />
+                <ClayColumnDef Filterable="true" AllowValueFilter="true" ColumnId="2" SqlName="@MaintenanceColumns.Name" DisplayName="Регламентная работа" />
+                <ClayColumnDef Filterable="true" AllowValueFilter="true" ColumnId="3" SqlName="@MaintenanceColumns.Responsible" DisplayName="Ответственный" />
+                <ClayColumnDef Filterable="true" AllowValueFilter="true" ColumnId="4" SqlName="@MaintenanceColumns.Instruction" DisplayName="Ссылка" />
+                <ClayColumnDef Filterable="true" AllowValueFilter="true" ColumnId="5" SqlName="@MaintenanceColumns.LastCompleted" DisplayName="Последнее выполнение" />
+                <ClayColumnDef Filterable="true" AllowValueFilter="true" ColumnId="6" SqlName="@MaintenanceColumns.EmployeeName" DisplayName="Сотрудник" />
+            </ColumnDefs>
+            <Columns>
+                <ClayColumn TEntity="MaintenanceWork" ColumnId="1">
+                    <CellTemplate>
+                        @if (context.Item.Deadline is { } deadline)
+                        {
+                            <MudText Color="@DeadlineColor(deadline, list.ServerNow)" Typo="Typo.body2">
+                                @deadline.ToString(DateFormat, System.Globalization.CultureInfo.InvariantCulture)
+                            </MudText>
+                        }
+                    </CellTemplate>
+                </ClayColumn>
+                <ClayColumn TEntity="MaintenanceWork" ColumnId="2"><CellTemplate>@context.Item.Name</CellTemplate></ClayColumn>
+                <ClayColumn TEntity="MaintenanceWork" ColumnId="3"><CellTemplate>@context.Item.Responsible</CellTemplate></ClayColumn>
+                <ClayColumn TEntity="MaintenanceWork" ColumnId="4">
+                    <CellTemplate>
+                        @{
+                            var instruction = context.Item.Instruction.Trim();
+                        }
+                        @if (MaintenancePresentation.WebInstruction(instruction) is { } uri)
+                        {
+                            <a href="@uri.AbsoluteUri" target="_blank" rel="noopener noreferrer">@instruction</a>
+                        }
+                        else if (MaintenancePresentation.IsDrivePath(instruction))
+                        {
+                            <MudText Typo="Typo.body2">@instruction</MudText>
+                            <MudText Typo="Typo.caption">Скопируйте путь и откройте его в Проводнике.</MudText>
+                        }
+                    </CellTemplate>
+                </ClayColumn>
+                <ClayColumn TEntity="MaintenanceWork" ColumnId="5">
+                    <CellTemplate>@context.Item.LastCompleted?.ToString(DateFormat, System.Globalization.CultureInfo.InvariantCulture)</CellTemplate>
+                </ClayColumn>
+                <ClayColumn TEntity="MaintenanceWork" ColumnId="6">
+                    <CellTemplate>
+                        @if (EmployeeLink(context.Item) is { } link)
+                        {
+                            <a href="@link" @onclick:preventDefault
+                               @onclick="@(() => OpenAsync(link, $"maintenance-employee-{context.Item.EmployeeId}"))">@context.Item.EmployeeName</a>
+                        }
+                        else
+                        {
+                            @context.Item.EmployeeName
+                        }
+                    </CellTemplate>
+                </ClayColumn>
+            </Columns>
+        </ClayGrid>
+    }
+    else if (_busy)
+    {
+        <MudProgressLinear Indeterminate="true" />
+    }
+</div>
+
