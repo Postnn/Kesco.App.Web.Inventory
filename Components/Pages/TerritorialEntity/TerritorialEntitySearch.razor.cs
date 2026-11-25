@@ -56,16 +56,18 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
     private TerritoryViewState? _viewState;
     private int _clid;
     private bool _persistView;
+    private string? _windowViewKey;
     private long _generation;
-    private (string? Mode, string? Roots, string? Root, string? Parent, string? Request, string? Origin, string? Selection)? _context;
+    private string? _context;
 
     /// <inheritdoc />
     protected override void OnParametersSet()
     {
-        var context = (ReturnMode, RootIds, Root, Parent, RequestId, ReturnOrigin, SelectedIdsQuery);
+        var context = Navigation.Uri;
         if (_context == context) return;
         _context = context;
         _generation++;
+        _windowViewKey = null;
         _persistView = false;
         _clid = 0;
         _viewState = null;
@@ -142,13 +144,20 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
                 if (total is not null) ResetNode();
                 StateHasChanged();
             }));
+            if (_disposed || generation != _generation) return;
             var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(new Uri(Navigation.Uri).Query);
             _persistView = ReturnMode is null && roots is null && query.Keys.All(key =>
                 string.Equals(key, "CLID", StringComparison.OrdinalIgnoreCase)) &&
                 (!query.TryGetValue("CLID", out var clid) || int.TryParse(clid, out _clid) && _clid >= 0);
-            if (_persistView)
+            if (!_persistView)
             {
-                var state = await TerritorialEntityData.LoadViewStateAsync(Db, _clid, _lifetime.Token);
+                var contextHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                    System.Text.Encoding.UTF8.GetBytes(Navigation.Uri)));
+                _windowViewKey = $"territory-view:{CurrentUser.Id}:{contextHash}";
+            }
+            {
+                var state = _windowViewKey is null ? await TerritorialEntityData.LoadViewStateAsync(Db, _clid, _lifetime.Token)
+                    : TerritoryViewState.Read(await JS.InvokeAsync<string?>("sessionStorage.getItem", _lifetime.Token, _windowViewKey));
                 if (_disposed || generation != _generation) return;
                 var ids = new[] { state?.Anchor, state?.Selected }.OfType<int>().Distinct().ToArray();
                 if (state is not null && await TerritorialEntityData.SelectionInScopeAsync(Db, ids, roots, _lifetime.Token))
@@ -174,7 +183,10 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
                 TreeId = "territorial-search", SelectSql = TerritorialEntityData.TreeSource,
                 HierarchyMode = ClayTreeHierarchyMode.ParentKey,
                 Schema = new() { IdColumn = "Id", TextColumn = "Text", ParentColumn = "ParentId", LeftColumn = "Left", RightColumn = "Right" },
-                PersistExpandedState = _persistView, OrderBy = "[Text], [Id]", ShowLines = true, CustomMenuItems = actions,
+                LoadStatePathAsync = key => TerritorialEntityRoutes.TryPositiveId(key, out var id)
+                    ? TerritorialEntityData.ReadPathAsync(Db, id, roots, _lifetime.Token)
+                    : Task.FromResult<IReadOnlyList<string>>([]),
+                PersistExpandedState = true, OrderBy = "[Text], [Id]", ShowLines = true, CustomMenuItems = actions,
                 FilterColumns =
                 [
                     new() { SqlName = "Id", DisplayName = "Код территории", ColumnType = ColumnType.Number, UrlKey = "codearea" },
@@ -280,17 +292,27 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
 
     async Task Clayzor.Lib.Web.Controls.Components.Tree.State.IClayTreeStateStore.SaveAsync(string treeId, ClayTreeState state, CancellationToken ct)
     {
-        if (!_persistView || _total.HasValue || _disposed) return;
+        if ((!_persistView && _windowViewKey is null) || _total.HasValue || _disposed) return;
         _viewState = new(int.TryParse(state.LastExpandedId, out var anchor) ? anchor : null,
             int.TryParse(state.SelectedIds.FirstOrDefault(), out var selected) ? selected : null, _phoneCodes);
-        await TerritorialEntityData.SaveViewStateAsync(Db, _clid, _viewState, _lifetime.Token);
+        await PersistViewAsync(_viewState);
     }
 
     private async Task SavePaneAsync()
     {
-        if (!_persistView || _total.HasValue || _disposed) return;
+        if ((!_persistView && _windowViewKey is null) || _total.HasValue || _disposed) return;
         _viewState = new(_viewState?.Anchor, _active?.RawId as int?, _phoneCodes);
-        await TerritorialEntityData.SaveViewStateAsync(Db, _clid, _viewState, _lifetime.Token);
+        await PersistViewAsync(_viewState);
+    }
+
+    private async Task PersistViewAsync(TerritoryViewState state)
+    {
+        try
+        {
+            if (_windowViewKey is { } key) await JS.InvokeVoidAsync("sessionStorage.setItem", _lifetime.Token, key, state.Serialize());
+            else await TerritorialEntityData.SaveViewStateAsync(Db, _clid, state, _lifetime.Token);
+        }
+        catch (Exception) when (!_disposed) { _message = "Не удалось сохранить состояние дерева."; }
     }
 
     private async Task ResetViewAsync()
