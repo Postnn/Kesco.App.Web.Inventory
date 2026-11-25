@@ -42,7 +42,11 @@
                 <ClaySelect TItem="TerritorialEntityLookup" TValue="int?" DataSource="_territorySource"
                             ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.DisplayName)"
                             Value="@draft.TerritoryId" ValueChanged="ChangeTerritoryAsync" Options="_territoryOptions"
-                            ViewItem="OpenTerritoryAsync" />
+                            ViewItem="OpenTerritoryAsync" AdvancedSearch="FindTerritoryAsync" />
+                @if (!Editable && draft.TerritoryId is > 0)
+                {
+                    <MudButton OnClick="@(() => ViewSavedTerritoryAsync(draft.TerritoryId.Value))">Открыть территорию</MudButton>
+                }
                 @if (_territoryConflict)
                 {
                     <MudAlert Severity="Severity.Warning">Сохранённая территория больше не входит в список допустимых. Выберите действующую территорию перед сохранением.</MudAlert>

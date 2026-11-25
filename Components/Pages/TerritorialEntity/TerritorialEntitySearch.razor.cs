@@ -14,7 +14,7 @@ using MudBlazor;
 namespace Kesco.App.Web.Inventory.Components.Pages.TerritorialEntity;
 
 /// <summary>Ленивая навигация по территориям с metadata-списками выбранного узла.</summary>
-public partial class TerritorialEntitySearch : IAsyncDisposable
+public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web.Controls.Components.Tree.State.IClayTreeStateStore
 {
     /// <summary>Режим вызова поиска.</summary>
     [SupplyParameterFromQuery(Name = "return")] public string? ReturnMode { get; set; }
@@ -50,16 +50,27 @@ public partial class TerritorialEntitySearch : IAsyncDisposable
     private bool _phoneCodes;
     private bool _disposed;
     private bool _loadPending;
+    [SupplyParameterFromQuery(Name = "selectedids")] public string? SelectedIdsQuery { get; set; }
+    private readonly SortedSet<int> _checked = [];
+    private string? _selectionStorageKey;
+    private TerritoryViewState? _viewState;
+    private int _clid;
+    private bool _persistView;
     private long _generation;
-    private (string? Mode, string? Roots, string? Root, string? Parent, string? Request, string? Origin)? _context;
+    private (string? Mode, string? Roots, string? Root, string? Parent, string? Request, string? Origin, string? Selection)? _context;
 
     /// <inheritdoc />
     protected override void OnParametersSet()
     {
-        var context = (ReturnMode, RootIds, Root, Parent, RequestId, ReturnOrigin);
+        var context = (ReturnMode, RootIds, Root, Parent, RequestId, ReturnOrigin, SelectedIdsQuery);
         if (_context == context) return;
         _context = context;
         _generation++;
+        _persistView = false;
+        _clid = 0;
+        _viewState = null;
+        _checked.Clear();
+        _selectionStorageKey = null;
         _loadPending = true;
         _loading = true;
         _message = null;
@@ -82,12 +93,7 @@ public partial class TerritorialEntitySearch : IAsyncDisposable
                 _message = "Некорректное ограничение корней дерева.";
                 return;
             }
-            if (ReturnMode is "2")
-            {
-                _message = "Возврат нескольких территорий пока недоступен: общий компонент дерева поддерживает одиночный выбор.";
-                return;
-            }
-            if (ReturnMode is not (null or "1"))
+            if (ReturnMode is not (null or "1" or "2"))
             {
                 _message = "Неизвестный режим выбора территории.";
                 return;
@@ -102,6 +108,26 @@ public partial class TerritorialEntitySearch : IAsyncDisposable
             }
             var access = await TerritorialEntityData.ReadAccessAsync(Db, CurrentUser, _lifetime.Token);
             if (_disposed || generation != _generation) return;
+            if (ReturnMode == "2")
+            {
+                if (!TerritorialEntityRoutes.IsLocalReturn(RequestId, ReturnOrigin, Navigation.BaseUri) ||
+                    !TerritorialEntityRoutes.TrySelectedIds(SelectedIdsQuery, out var initial))
+                {
+                    _message = "Некорректный запрос множественного выбора.";
+                    return;
+                }
+                var storageKey = $"territory-selection:{CurrentUser.Id}:{RequestId}:{string.Join(',', roots ?? [])}";
+                var stored = await JS.InvokeAsync<string?>("sessionStorage.getItem", _lifetime.Token, storageKey);
+                if (stored is not null && !TerritorialEntityRoutes.TrySelectedIds(stored, out initial) ||
+                    !await TerritorialEntityData.SelectionInScopeAsync(Db, initial, roots, _lifetime.Token))
+                {
+                    _message = "Сохранённый выбор содержит недоступную территорию.";
+                    return;
+                }
+                if (_disposed || generation != _generation) return;
+                _checked.UnionWith(initial);
+                _selectionStorageKey = storageKey;
+            }
             List<ClayTreeMenuItem> actions = [];
             if (ReturnMode is null && access.TerritoryUpdate)
                 actions.Add(new() { Label = "Редактировать", Icon = Icons.Material.Filled.Edit, OnExecute = OpenTerritoryAsync });
@@ -116,12 +142,39 @@ public partial class TerritorialEntitySearch : IAsyncDisposable
                 if (total is not null) ResetNode();
                 StateHasChanged();
             }));
+            var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(new Uri(Navigation.Uri).Query);
+            _persistView = ReturnMode is null && roots is null && query.Keys.All(key =>
+                string.Equals(key, "CLID", StringComparison.OrdinalIgnoreCase)) &&
+                (!query.TryGetValue("CLID", out var clid) || int.TryParse(clid, out _clid) && _clid >= 0);
+            if (_persistView)
+            {
+                var state = await TerritorialEntityData.LoadViewStateAsync(Db, _clid, _lifetime.Token);
+                if (_disposed || generation != _generation) return;
+                var ids = new[] { state?.Anchor, state?.Selected }.OfType<int>().Distinct().ToArray();
+                if (state is not null && await TerritorialEntityData.SelectionInScopeAsync(Db, ids, roots, _lifetime.Token))
+                {
+                    var item = state.Selected is int key ? await TerritorialEntityData.FindTerritoryAsync(Db, key, _lifetime.Token) : null;
+                    if (_disposed || generation != _generation) return;
+                    _viewState = state;
+                    if (item is not null)
+                    {
+                        _active = new ClayTreeNode { Id = item.Id.ToString(), RawId = item.Id, Text = item.Name,
+                            Raw = new Dictionary<string, object?> { ["Type"] = item.Type } };
+                        _phoneCodes = IsCity(_active) || state.PhoneCodes;
+                        UpdateGrid(item.Id);
+                    }
+                }
+            }
+            if (_disposed || generation != _generation) return;
             _treeOptions = new()
             {
+                SelectionMode = ReturnMode == "2" ? ClayTreeSelectionMode.Multiple : ClayTreeSelectionMode.Single,
+                IsChecked = node => node.RawId is int key && _checked.Contains(key),
+                ToggleCheckedAsync = ToggleCheckedAsync,
                 TreeId = "territorial-search", SelectSql = TerritorialEntityData.TreeSource,
                 HierarchyMode = ClayTreeHierarchyMode.ParentKey,
                 Schema = new() { IdColumn = "Id", TextColumn = "Text", ParentColumn = "ParentId", LeftColumn = "Left", RightColumn = "Right" },
-                PersistExpandedState = false, OrderBy = "[Text], [Id]", ShowLines = true, CustomMenuItems = actions,
+                PersistExpandedState = _persistView, OrderBy = "[Text], [Id]", ShowLines = true, CustomMenuItems = actions,
                 FilterColumns =
                 [
                     new() { SqlName = "Id", DisplayName = "Код территории", ColumnType = ColumnType.Number, UrlKey = "codearea" },
@@ -152,7 +205,7 @@ public partial class TerritorialEntitySearch : IAsyncDisposable
         _active = node;
         if (IsCity(node)) _phoneCodes = true;
         UpdateGrid(id);
-        return Task.CompletedTask;
+        return SavePaneAsync();
     }
 
     private void ResetNode()
@@ -162,10 +215,11 @@ public partial class TerritorialEntitySearch : IAsyncDisposable
         _phoneCodes = false;
     }
 
-    private void ShowPhoneCodes(bool enabled)
+    private async Task ShowPhoneCodes(bool enabled)
     {
         if (_active?.RawId is not int id) return;
         _phoneCodes = enabled;
+        await SavePaneAsync();
         UpdateGrid(id);
     }
 
@@ -182,11 +236,96 @@ public partial class TerritorialEntitySearch : IAsyncDisposable
             _message = "Браузер заблокировал окно территории.";
     }
 
+    private async Task ToggleCheckedAsync(ClayTreeNode node)
+    {
+        if (_returning || _selectionStorageKey is null || node.RawId is not int id || id <= 0) return;
+        if (!_checked.Remove(id))
+        {
+            if (_checked.Count >= 1000) { _message = "Можно выбрать до 1000 территорий."; return; }
+            _checked.Add(id);
+        }
+        try { await JS.InvokeVoidAsync("sessionStorage.setItem", _lifetime.Token, _selectionStorageKey, string.Join(',', _checked)); }
+        catch (JSException) { _message = "Выбор доступен в окне, но сохранить его в браузере не удалось."; }
+        StateHasChanged();
+    }
+
+    private async Task ReturnMultipleAsync()
+    {
+        if (_returning || _selectionStorageKey is null || ReturnMode != "2") return;
+        var ids = _checked.ToArray();
+        var generation = _generation;
+        _returning = true;
+        try
+        {
+            if (!TerritorialEntityRoutes.TryRoots(RootIds, Root, Parent, out var roots) ||
+                !await TerritorialEntityData.SelectionInScopeAsync(Db, ids, roots, _lifetime.Token))
+            {
+                _message = "Одна из выбранных территорий больше недоступна.";
+                return;
+            }
+            if (generation != _generation || _disposed) return;
+            if (!await JS.InvokeAsync<bool>("claySelectAdvancedSearch.returnValue", _lifetime.Token, RequestId, ids))
+                _message = "Не удалось вернуть выбор в вызывающее окно.";
+        }
+        catch (Exception) when (!_disposed) { _message = "Не удалось проверить или передать выбранные территории."; }
+        finally { _returning = false; }
+    }
+
+    Task<ClayTreeState?> Clayzor.Lib.Web.Controls.Components.Tree.State.IClayTreeStateStore.LoadAsync(string treeId, CancellationToken ct) =>
+        Task.FromResult(_viewState is null ? null : new ClayTreeState
+        {
+            LastExpandedId = _viewState.Anchor?.ToString(),
+            SelectedIds = _viewState.Selected is int selected ? [selected.ToString()] : [],
+        });
+
+    async Task Clayzor.Lib.Web.Controls.Components.Tree.State.IClayTreeStateStore.SaveAsync(string treeId, ClayTreeState state, CancellationToken ct)
+    {
+        if (!_persistView || _total.HasValue || _disposed) return;
+        _viewState = new(int.TryParse(state.LastExpandedId, out var anchor) ? anchor : null,
+            int.TryParse(state.SelectedIds.FirstOrDefault(), out var selected) ? selected : null, _phoneCodes);
+        await TerritorialEntityData.SaveViewStateAsync(Db, _clid, _viewState, _lifetime.Token);
+    }
+
+    private async Task SavePaneAsync()
+    {
+        if (!_persistView || _total.HasValue || _disposed) return;
+        _viewState = new(_viewState?.Anchor, _active?.RawId as int?, _phoneCodes);
+        await TerritorialEntityData.SaveViewStateAsync(Db, _clid, _viewState, _lifetime.Token);
+    }
+
+    private async Task ResetViewAsync()
+    {
+        ResetNode();
+        _viewState = null;
+        await SavePaneAsync();
+    }
+
+    private bool _returning;
+
     private async Task ReturnAsync(ClayTreeNode node)
     {
-        if (node.RawId is not int id || id <= 0 || !TerritorialEntityRoutes.IsLocalReturn(RequestId, ReturnOrigin, Navigation.BaseUri)) return;
-        if (!await JS.InvokeAsync<bool>("claySelectAdvancedSearch.returnValue", _lifetime.Token, RequestId, id))
-            _message = "Не удалось передать выбранную территорию в вызывающее окно.";
+        if (_returning || node.RawId is not int id || id <= 0 ||
+            !TerritorialEntityRoutes.IsLocalReturn(RequestId, ReturnOrigin, Navigation.BaseUri)) return;
+        var generation = _generation;
+        _returning = true;
+        try
+        {
+            if (!TerritorialEntityRoutes.TryRoots(RootIds, Root, Parent, out var roots) ||
+                !await TerritorialEntityData.SelectionInScopeAsync(Db, [id], roots, _lifetime.Token))
+            {
+                if (!_disposed && generation == _generation) _message = "Выбранная территория больше недоступна.";
+                return;
+            }
+            if (_disposed || generation != _generation) return;
+            if (!await JS.InvokeAsync<bool>("claySelectAdvancedSearch.returnValue", _lifetime.Token, RequestId, id))
+                _message = "Не удалось передать выбранную территорию в вызывающее окно.";
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception) when (!_disposed && generation == _generation)
+        {
+            _message = "Не удалось проверить или передать выбранную территорию.";
+        }
+        finally { _returning = false; }
     }
 
     private Task CloseAsync() => JS.InvokeVoidAsync("clayModelEquipmentForm.close", _lifetime.Token).AsTask();

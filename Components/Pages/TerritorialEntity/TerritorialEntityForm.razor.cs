@@ -98,6 +98,37 @@ public partial class TerritorialEntityForm
         if (close) await CloseAsync();
     }
 
+    [Inject] private IConfiguration Configuration { get; set; } = null!;
+
+    private string? ExportUrl(int id)
+    {
+        var link = Kesco.App.Web.Inventory.Services.InventoryMenuUrlBuilder.BuildCardLink("@URI_export_dir",
+            id.ToString(CultureInfo.InvariantCulture), Configuration, Navigation.Uri);
+        if (link.Href is null) return null;
+        var url = new UriBuilder(link.Href);
+        var query = System.Web.HttpUtility.ParseQueryString(url.Query);
+        query["DirOU"] = "15";
+        url.Query = query.ToString();
+        return url.Uri.AbsoluteUri;
+    }
+
+    private async Task OpenExportAsync()
+    {
+        if (Busy || Loading || Clean?.Record.Id is not int id || id <= 0 || ExportUrl(id) is not { } url) return;
+        try
+        {
+            var actor = await Clayzor.Lib.Entities.Inventory.Employee.GetCurrentAsync(Db, await ReadPrincipalAsync(), Lifetime);
+            if (actor is null || await TerritorialEntityData.ReadTerritoryAsync(Db, id, Lifetime) is null)
+            {
+                Message = "Территория недоступна для экспорта.";
+                return;
+            }
+            if (Clean?.Record.Id == id && !await WindowService.OpenAsync(url, $"territory-export-{id}", Lifetime))
+                Message = "Браузер заблокировал открытие экспорта.";
+        }
+        catch (Exception e) when (e is not OperationCanceledException) { Message = "Не удалось открыть экспорт территории."; }
+    }
+
     private async Task OpenPhoneAsync()
     {
         if (_id <= 0 || !Access.PhoneInsert) return;

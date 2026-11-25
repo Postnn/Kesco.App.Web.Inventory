@@ -48,6 +48,16 @@ public static class TerritorialEntityRoutes
         return true;
     }
 
+    /// <summary>Читает дедуплицированный отсортированный набор положительных ID территорий.</summary>
+    public static bool TrySelectedIds(string? source, out IReadOnlyList<int> ids)
+    {
+        ids = [];
+        if (string.IsNullOrEmpty(source)) return true;
+        if (!TryRoots(source, null, null, out var parsed)) return false;
+        ids = parsed!;
+        return true;
+    }
+
     /// <summary>Формирует URL редактирования с закодированным строковым ключом.</summary>
     public static string PhoneEdit(string code) => QueryHelpers.AddQueryString(Phone, "id", code);
 

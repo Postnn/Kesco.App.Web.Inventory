@@ -25,14 +25,14 @@
         <MudItem xs="12" md="4" Class="territorial-search-tree-column">
             <MudPaper Class="pa-2 territorial-search-tree-panel" Elevation="0">
                 <div class="d-flex align-center justify-space-between">
-                    <MudButton Variant="Variant.Text" OnClick="ResetNode" FullWidth="false">Территории</MudButton>
+                    <MudButton Variant="Variant.Text" OnClick="ResetViewAsync" FullWidth="false">Территории</MudButton>
                     <ClayButton Icon="@Icons.Material.Filled.Refresh" Text="Обновить дерево" OnClick="ReloadTreeAsync" />
                 </div>
                 @if (_total is int count)
                 {
                     <MudText Typo="Typo.body2">@(count == 0 ? "Не найдено" : $"Найдено: {count}. Показано до 100 совпадений.")</MudText>
                 }
-                <ClayTreeView @ref="_tree" Options="_treeOptions" DataSource="_source" OnNodeClick="SelectNodeAsync" />
+                <ClayTreeView CustomStateStore="this" @ref="_tree" Options="_treeOptions" DataSource="_source" OnNodeClick="SelectNodeAsync" />
             </MudPaper>
         </MudItem>
         <MudItem xs="12" md="8">
@@ -54,6 +54,10 @@
             }
         </MudItem>
     </MudGrid>
+}
+@if (ReturnMode == "2" && _treeOptions is not null)
+{
+    <MudButton Disabled="@_returning" OnClick="ReturnMultipleAsync">Сохранить</MudButton>
 }
 @if (ReturnMode is "1" or "2")
 {
