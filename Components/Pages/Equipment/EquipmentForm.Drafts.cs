@@ -132,9 +132,9 @@ public partial class EquipmentForm
         ModelSource.Filter.EquipmentTypeId = _model.EquipmentTypeId;
         SetDocumentOwner(_model.OwnerId);
         UpdatePhoneSourceFilters();
-        _statusMessage = _mainConflictMessage is null && freshBaseline != baselineJson
+        ShowStatus(_mainConflictMessage is null && freshBaseline != baselineJson
             ? "Черновик восстановлен; независимые изменения из БД объединены."
-            : "Восстановлен несохранённый черновик.";
+            : "Восстановлен несохранённый черновик.");
         StateHasChanged();
     }
 
@@ -313,7 +313,7 @@ public partial class EquipmentForm
             }
             await CommitDraftOperationAsync(_draftOperation.Revision);
             _warningMessage = null;
-            _statusMessage = "Read-only сверка подтвердила сохранение записи. Повторная бизнес-команда не выполнялась.";
+            ShowStatus("Read-only сверка подтвердила сохранение записи. Повторная бизнес-команда не выполнялась.");
         }
         catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or UnauthorizedAccessException)
         {

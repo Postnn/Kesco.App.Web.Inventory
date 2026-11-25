@@ -26,6 +26,9 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
 {
     private const int OnHandsLocationId = (int)Расположения.На_руках;
 
+    [Inject] private ILogger<EquipmentForm> Logger { get; set; } = default!;
+    [Inject] private ISnackbar Snackbar { get; set; } = default!;
+
     private readonly CancellationTokenSource _pageCts = new();
     private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "equipment-form", MaxWidth = "100%" };
     private readonly ClaySelectOptions _typeOptions = new() { Required = true, AutoSelectSingle = true, MaxItems = 300, Placeholder = "Выберите тип оборудования" };
@@ -118,7 +121,6 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
     private int _accountingVersion;
     private int _upsVersion;
     private string? _warningMessage;
-    private string? _statusMessage;
     private DateTime? _writeOffDate;
     private TimeSpan? _writeOffTime;
     private IReadOnlyList<DocumentLookup> _writeOffActs = [];
@@ -1424,24 +1426,38 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             openingContext: opening);
     }
 
-    private Task<EquipmentEditorSaveResult> SaveComputerDraftAsync(
+    private async Task<EquipmentEditorSaveResult> SaveComputerDraftAsync(
         EquipmentComputerSnapshot snapshot,
         EquipmentEditorOpening opening)
     {
         if (!IsCurrent(opening) || snapshot.EquipmentId is not 0 && snapshot.EquipmentId != opening.EquipmentId)
-            return Task.FromResult(EquipmentEditorSaveResult.Reject("Контекст оборудования изменился. Запись не отправлена."));
+        {
+            Logger.LogWarning("ComputerSave rejected EquipmentId={EquipmentId}: context changed", snapshot.EquipmentId);
+            return EquipmentEditorSaveResult.Reject("Контекст оборудования изменился. Запись не отправлена.");
+        }
         var version = ++_computerVersion;
         snapshot.EquipmentId = opening.EquipmentId;
-        return SaveChildDraftAsync(
-            "Сохранение конфигурации компьютера", "Конфигурация компьютера сохранена.",
-            async () =>
-            {
-                var today = (await GetClientNowAsync()).Date;
-                if (!IsCurrent(opening) || version != _computerVersion)
-                    throw new InvalidOperationException("Контекст оборудования изменился. Запись не отправлена.");
-                await Service.SaveComputerPhasedAsync(snapshot, today);
-            }, RefreshComputerAsync,
-            () => IsCurrent(opening) && version == _computerVersion);
+        try
+        {
+            var result = await SaveChildDraftAsync(
+                "Сохранение конфигурации компьютера", "Конфигурация компьютера сохранена.",
+                async () =>
+                {
+                    var today = (await GetClientNowAsync()).Date;
+                    if (!IsCurrent(opening) || version != _computerVersion)
+                        throw new InvalidOperationException("Контекст оборудования изменился. Запись не отправлена.");
+                    await Service.SaveComputerPhasedAsync(snapshot, today);
+                }, RefreshComputerAsync,
+                () => IsCurrent(opening) && version == _computerVersion);
+            Logger.LogInformation("ComputerSave result EquipmentId={EquipmentId}, CanClose={CanClose}, CanRetry={CanRetry}, Message={Message}",
+                snapshot.EquipmentId, result.CanClose, result.CanRetry, result.Message);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "ComputerSave failed EquipmentId={EquipmentId}", snapshot.EquipmentId);
+            throw;
+        }
     }
 
     private async Task RefreshComputerAsync()
@@ -1834,6 +1850,12 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             () => !_disposed && version == _accountingVersion && _model?.Id == equipmentId);
     }
 
+    private void ShowStatus(string message) => Snackbar.Add(message, Severity.Info, options =>
+    {
+        options.VisibleStateDuration = 4000;
+        options.ShowCloseIcon = true;
+    });
+
     private static bool IsUnknownWriteException(Microsoft.Data.SqlClient.SqlException exception) =>
         exception.Number is -2 or -1 or 2 or 53 or 64 or 121 or 1231 or 10054 or 10060 or 40143 or 40501 or 40613;
 
@@ -1902,7 +1924,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
                 return EquipmentEditorSaveResult.Reject(ex.Message);
             }
 
-            _statusMessage = successMessage;
+            ShowStatus(successMessage);
             EquipmentEditorSaveResult outcome;
             if (!contextIsCurrent())
             {
@@ -2063,7 +2085,6 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         _saving = true;
         _validationMessage = null;
         _warningMessage = null;
-        _statusMessage = null;
         long? draftRevision = null;
         try
         {
@@ -2087,7 +2108,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             if (errors.Count > 0)
                 _warningMessage = "Оборудование настроено не полностью. " + string.Join(" ", errors.Select(result => result.Error));
             else
-                _statusMessage = "Настройка оборудования выполнена.";
+                ShowStatus("Настройка оборудования выполнена.");
         }
         catch (Exception ex) when (ex is JSException or JSDisconnectedException)
         {
@@ -2680,7 +2701,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
                 return;
             if (writeCommitted)
             {
-                _statusMessage = "Оборудование сохранено.";
+                ShowStatus("Оборудование сохранено.");
                 _validationMessage = "Запись подтверждена, но экран или родительский грид не обновлён. Повторите только обновление данных.";
             }
             else
@@ -2870,7 +2891,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
                     await CommitDraftOperationAsync(_draftOperation.Revision);
                 _pendingPhoneSync = null;
                 _warningMessage = null;
-                _statusMessage = "Read-only сверка завершена. Повторная ATS-команда не выполнялась.";
+                ShowStatus("Read-only сверка завершена. Повторная ATS-команда не выполнялась.");
             }
         }
         catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or UnauthorizedAccessException)
@@ -3093,9 +3114,9 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         _originalSnapshot = Snapshot(_mainConflictFresh,
             _mainConflictFreshWriteOffDate, _mainConflictFreshWriteOffTime, _originalPhones);
         ClearMainConflict(previousConflict);
-        _statusMessage = keepLocal
+        ShowStatus(keepLocal
             ? "Конфликт разрешён: сохранены значения черновика."
-            : "Конфликт разрешён: конфликтные поля заменены данными из БД, остальной черновик сохранён.";
+            : "Конфликт разрешён: конфликтные поля заменены данными из БД, остальной черновик сохранён.");
         StateHasChanged();
     }
 

@@ -126,6 +126,8 @@
     private bool _initialized;
     private string? _loadError;
 
+    [Inject] private ILogger<EquipmentComputerDialog> Logger { get; set; } = default!;
+
     /// <summary>Идентификатор оборудования.</summary>
     [Parameter] public int EquipmentId { get; set; }
 
@@ -224,6 +226,8 @@
         var today = GetToday is null ? Today : (await GetToday()).Date;
         if (!IsEditorCurrent())
             return;
+        Logger.LogInformation("ComputerApply start EquipmentId={EquipmentId}, Ram={RamCount}, Hd={HdCount}, Ssd={SsdCount}",
+            EquipmentId, Ram.Count, Hd.Count, Ssd.Count);
         try
         {
             var snapshot = new EquipmentComputerSnapshot
@@ -246,10 +250,22 @@
             snapshot.HdDetail = EquipmentComputerDetail.Serialize(snapshot.HdComponents, true);
             snapshot.SsdDetail = EquipmentComputerDetail.Serialize(snapshot.SsdComponents, false);
             await ApplyAsync(snapshot, () => snapshot.ValidateConfiguration(today, MemoryBanks));
+            Logger.LogInformation("ComputerApply completed EquipmentId={EquipmentId}", EquipmentId);
         }
         catch (Exception ex) when (ex is FormatException or OverflowException)
         {
+            Logger.LogWarning(ex, "ComputerApply validation failed EquipmentId={EquipmentId}", EquipmentId);
             _error = ex.Message;
+        }
+        catch (System.Data.SqlTypes.SqlTypeException ex)
+        {
+            Logger.LogError(ex, "ComputerApply SQL type validation failed EquipmentId={EquipmentId}", EquipmentId);
+            _error = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "ComputerApply failed EquipmentId={EquipmentId}", EquipmentId);
+            throw;
         }
     }
 

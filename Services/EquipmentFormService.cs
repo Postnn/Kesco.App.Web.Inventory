@@ -12,6 +12,7 @@ public class EquipmentFormService
 {
     private readonly DbManager _db;
     private readonly ICurrentUserPrincipalProvider? _principalProvider;
+    private readonly ILogger<EquipmentFormService>? _logger;
     private readonly Dictionary<string, EquipmentPhoneSyncIntent> _confirmedPhoneIntents = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PhoneSyncAttempt> _phoneSyncAttempts = new(StringComparer.Ordinal);
 
@@ -19,14 +20,15 @@ public class EquipmentFormService
     public EquipmentFormService(DbManager db) : this(db, (ICurrentUserPrincipalProvider?)null) { }
 
     /// <summary>Создаёт сервис с подключением и серверной Windows-идентичностью текущего circuit.</summary>
-    public EquipmentFormService(DbManager db, AuthenticationStateProvider? authenticationStateProvider)
-        : this(db, authenticationStateProvider is null ? null : new CircuitCurrentUserPrincipalProvider(authenticationStateProvider)) { }
+    public EquipmentFormService(DbManager db, AuthenticationStateProvider? authenticationStateProvider, ILogger<EquipmentFormService>? logger = null)
+        : this(db, authenticationStateProvider is null ? null : new CircuitCurrentUserPrincipalProvider(authenticationStateProvider), logger) { }
 
     /// <summary>Создаёт сервис с явным источником доверенной идентичности HTTP-запроса или circuit.</summary>
-    public EquipmentFormService(DbManager db, ICurrentUserPrincipalProvider? principalProvider)
+    public EquipmentFormService(DbManager db, ICurrentUserPrincipalProvider? principalProvider, ILogger<EquipmentFormService>? logger = null)
     {
         _db = db;
         _principalProvider = principalProvider;
+        _logger = logger;
     }
 
     /// <summary>Читает секции формы; SIM требует явный business Today через перегрузку.</summary>
@@ -726,6 +728,9 @@ public class EquipmentFormService
         DateTime? businessToday,
         PhasedDispatch? dispatch = null)
     {
+        _logger?.LogInformation("ComputerSave start EquipmentId={EquipmentId}, Date={Date}, ChangedAt={ChangedAt}, Configuration1Date={Configuration1Date}, Configuration2Date={Configuration2Date}, Ram={RamCount}, Hd={HdCount}, Ssd={SsdCount}, ExpectedExisting={ExpectedExisting}",
+            snapshot.EquipmentId, snapshot.Date, snapshot.ChangedAt, snapshot.Configuration1Date, snapshot.Configuration2Date,
+            snapshot.RamComponents.Count, snapshot.HdComponents.Count, snapshot.SsdComponents.Count, snapshot.ExpectedExisting);
         await EnsureInventoryEditAsync();
         var context = (await _db.QueryRequiredAsync<ComputerModelContext>(
             SQLQueries.SELECT_КомпьютерКонтекстСохранения, new { snapshot.EquipmentId })).SingleOrDefault()
@@ -737,10 +742,12 @@ public class EquipmentFormService
         var validation = snapshot.ValidateConfiguration(businessToday.Value, context.MemoryBanks);
         if (validation is not null)
             throw new InvalidOperationException(validation);
+        _logger?.LogInformation("ComputerSave validated EquipmentId={EquipmentId}, Dispatch={Dispatch}", snapshot.EquipmentId, dispatch is not null);
         if (dispatch is null)
             await snapshot.SaveAsync(_db);
         else
             await dispatch(() => snapshot.SaveAsync(_db));
+        _logger?.LogInformation("ComputerSave completed EquipmentId={EquipmentId}", snapshot.EquipmentId);
     }
 
     /// <summary>Совместимый вход сохранения; новый phased вход — SaveWithPhonesAsync.</summary>

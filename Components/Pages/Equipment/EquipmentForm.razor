@@ -380,10 +380,6 @@
                         </div>
                     }
                 </div>
-            @if (!string.IsNullOrWhiteSpace(_statusMessage))
-            {
-                <MudAlert Severity="Severity.Info" Class="mt-3">@_statusMessage</MudAlert>
-            }
             @if (!string.IsNullOrWhiteSpace(_warningMessage))
             {
                 <MudAlert Severity="Severity.Warning" Class="mt-3">
