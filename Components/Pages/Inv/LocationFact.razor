@@ -11,7 +11,7 @@
     <div class="d-flex flex-column gap-2" inert="@(_busy || !_ready)">
         <div class="d-flex align-center flex-wrap gap-2">
             <ClaySelect @ref="_locationSelect" TItem="LocationLookup" TValue="int?" DataSource="Locations" Options="LocationOptions"
-                        ValueSelector="@(item => item.Id)" TextSelector="@(item => item.Name)" Value="_site?.Id" ValueChanged="ChangeSiteAsync" />
+                        ValueSelector="@(item => item.Id)" TextSelector="@(item => item.Name)" Value="_siteChoice" ValueChanged="ChangeSiteChoiceAsync" Cleared="@(() => ChangeSiteAsync(null))" />
             <ClayCheckbox Label="IT-оборудование" State="_itOnly" StateChanged="ChangeItAsync" />
         </div>
         <ClaySelect TItem="Employee" TValue="int?" DataSource="Employees" Options="EmployeeOptions" ValueSelector="@(item => item.Id)"
@@ -70,6 +70,21 @@
                DefaultFocus="@(_askRelocation ? DefaultFocus.Element : DefaultFocus.None)">
         <TitleContent>Подтверждение нахождения оборудования на расположении</TitleContent>
         <DialogContent>
+            @if (_blocked || _conflict)
+            {
+                <MudButton Disabled="@_busy" OnClick="CompareAsync">Сверить с базой</MudButton>
+                @if (_comparison is { } fresh)
+                {
+                    <div>Учётное расположение: @fresh.Equipment.BookedLocationName</div>
+                    <div>Последняя проверка: <ClayLocalTime Value="fresh.LastCheckedAt" /></div>
+                    <div>Сломано: @(fresh.Broken ? "Да" : "Нет"). Примечание: @fresh.Notes</div>
+                    @if (_conflict && !_blocked)
+                    {
+                        <MudButton Disabled="@_busy" OnClick="AcceptComparisonAsync">Принять актуальные данные и сохранить мой ввод</MudButton>
+                    }
+                    else { <MudText>Сверка показывает последнюю запись. Принадлежность операции требует подтверждения.</MudText> }
+                }
+            }
             @if (_restoreIncomplete)
             {
                 <MudAlert Severity="Severity.Warning">Ввод восстановлен частично. <MudButton OnClick="RestoreEditorAsync">Повторить восстановление</MudButton></MudAlert>

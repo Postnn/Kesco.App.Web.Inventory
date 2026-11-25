@@ -39,7 +39,10 @@ public partial class LocationFact : IAsyncDisposable
     private IReadOnlyList<LocationFactRow> _rows = [];
     private Employee? CurrentUser { get; set; }
     private LocationFactSite? _site;
+    private int? _siteChoice;
     private LocationFactSnapshot? _pending;
+    private LocationFactSnapshot? _comparison;
+    private bool _conflict;
     private ClayDraftRegistration? _registration;
     private int? _responsibleId;
     private int? _equipmentId;
@@ -105,6 +108,7 @@ public partial class LocationFact : IAsyncDisposable
                 {
                     _pending = draft.Snapshot;
                     _site = draft.Snapshot.Site;
+                    _siteChoice = _site.Id;
                     _notes = draft.Notes;
                     _broken = draft.Broken;
                     _scanOperation = draft.Scanner;
@@ -155,6 +159,12 @@ public partial class LocationFact : IAsyncDisposable
         var readiness = await _registration.GetRestoreReadinessAsync(Token);
         _restoreIncomplete = applied.Pending.Count > 0 || !readiness.Complete;
         if (!_disposed) StateHasChanged();
+    }
+
+    private Task ChangeSiteChoiceAsync(int? id)
+    {
+        _siteChoice = id;
+        return id is null || id == _site?.Id ? Task.CompletedTask : ChangeSiteAsync(id);
     }
 
     private async Task ChangeSiteAsync(int? id)
@@ -332,6 +342,7 @@ public partial class LocationFact : IAsyncDisposable
             if (rejected)
             {
                 await registration.RejectOperationAsync(attempt.Revision, Token);
+                _conflict = error is LocationFactConflict;
                 _dialogError = error is SqlException ? "База отклонила подтверждение или перемещение." : error.Message;
                 return;
             }
@@ -339,6 +350,33 @@ public partial class LocationFact : IAsyncDisposable
         }
         catch (Exception e) when (e is JSException or InvalidOperationException or OperationCanceledException) { }
         BlockDraft("Результат записи не подтверждён. Черновик сохранён, повтор заблокирован до сверки.");
+    }
+
+    private async Task CompareAsync()
+    {
+        if (_busy || _pending is not { } expected) return;
+        _busy = true;
+        try
+        {
+            _comparison = await LocationFactData.ReadForConfirmAsync(Db, expected.Site.Id, expected.Equipment.EquipmentId, Token);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _comparison = null;
+            _dialogError = "Не удалось перечитать данные для сверки.";
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task AcceptComparisonAsync()
+    {
+        if (_busy || _blocked || !_conflict || _comparison is null) return;
+        _pending = _comparison;
+        _comparison = null;
+        _conflict = false;
+        _askRelocation = false;
+        _dialogError = null;
+        await PersistEditAsync();
     }
 
     private Task OnDialogVisibilityAsync(bool visible) => visible || !_dialogVisible ? Task.CompletedTask : CancelAsync();
@@ -364,6 +402,8 @@ public partial class LocationFact : IAsyncDisposable
         _restoreIncomplete = false;
         _dialogVisible = false;
         _pending = null;
+        _comparison = null;
+        _conflict = false;
         _askRelocation = false;
         _dialogError = null;
         _focusNotes = false;
