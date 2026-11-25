@@ -71,6 +71,8 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
         _persistView = false;
         _clid = 0;
         _viewState = null;
+        _pendingMove = null;
+        _moveComparison = null;
         _checked.Clear();
         _selectionStorageKey = null;
         _loadPending = true;
@@ -110,6 +112,16 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
             }
             var access = await TerritorialEntityData.ReadAccessAsync(Db, CurrentUser, _lifetime.Token);
             if (_disposed || generation != _generation) return;
+            if (ReturnMode is null && roots is null && access.TerritoryUpdate)
+            {
+                var rawMove = await JS.InvokeAsync<string?>("sessionStorage.getItem", _lifetime.Token, $"territory-move:{CurrentUser.Id}");
+                if (_disposed || generation != _generation) return;
+                if (rawMove is not null)
+                {
+                    try { _pendingMove = System.Text.Json.JsonSerializer.Deserialize<PendingMove>(rawMove); }
+                    catch (System.Text.Json.JsonException) { _message = "Снимок переноса повреждён. Нужна ручная сверка."; }
+                }
+            }
             if (ReturnMode == "2")
             {
                 if (!TerritorialEntityRoutes.IsLocalReturn(RequestId, ReturnOrigin, Navigation.BaseUri) ||
@@ -180,6 +192,8 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
                 SelectionMode = ReturnMode == "2" ? ClayTreeSelectionMode.Multiple : ClayTreeSelectionMode.Single,
                 IsChecked = node => node.RawId is int key && _checked.Contains(key),
                 ToggleCheckedAsync = ToggleCheckedAsync,
+                EnableDragDrop = ReturnMode is null && roots is null && access.TerritoryUpdate,
+                ReparentNodeAsync = ReparentNodeAsync,
                 TreeId = "territorial-search", SelectSql = TerritorialEntityData.TreeSource,
                 HierarchyMode = ClayTreeHierarchyMode.ParentKey,
                 Schema = new() { IdColumn = "Id", TextColumn = "Text", ParentColumn = "ParentId", LeftColumn = "Left", RightColumn = "Right" },
@@ -246,6 +260,72 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
         if (!await WindowService.OpenAsync(Navigation.ToAbsoluteUri(TerritorialEntityRoutes.TerritoryEdit(id)).AbsoluteUri,
                 "territory-form", _lifetime.Token))
             _message = "Браузер заблокировал окно территории.";
+    }
+
+    private sealed record PendingMove(TerritorialEntityData.MoveNode From, TerritorialEntityData.MoveNode? To);
+    private PendingMove? _pendingMove;
+    private string? _moveComparison;
+    private bool _moving;
+
+    private async Task CompareMoveAsync()
+    {
+        if (_moving || _pendingMove is not { } attempt || CurrentUser is null) return;
+        _moving = true;
+        var generation = _generation;
+        try
+        {
+            var actual = await TerritorialEntityData.ReadTerritoryAsync(Db, attempt.From.Id, _lifetime.Token);
+            if (_disposed || generation != _generation) return;
+            static string ParentLabel(int? id) => id is int value ? $"#{value}" : "корень";
+            _moveComparison = actual is null ? "Территория удалена или недоступна." :
+                $"Исходный родитель: {ParentLabel(attempt.From.ParentId)}. Запрошенный: {ParentLabel(attempt.To?.Id)}. Сейчас: {ParentLabel(actual.ParentId)}.";
+        }
+        catch (Exception) when (!_disposed && generation == _generation) { _moveComparison = "Не удалось перечитать территорию."; }
+        finally { _moving = false; }
+    }
+
+    private async Task<bool> ReparentNodeAsync(ClayTreeNode source, ClayTreeNode? target)
+    {
+        if (_moving || CurrentUser is null || ReturnMode is not null || RootIds is not null || Root is not null || Parent is not null || _total.HasValue) return false;
+        _moving = true;
+        var storageKey = $"territory-move:{CurrentUser.Id}";
+        try
+        {
+            if (await JS.InvokeAsync<string?>("sessionStorage.getItem", _lifetime.Token, storageKey) is not null)
+            {
+                _message = "Исход предыдущего переноса требует сверки.";
+                return false;
+            }
+            static TerritorialEntityData.MoveNode Snapshot(ClayTreeNode node) =>
+                new((int)node.RawId!, node.Parent?.RawId as int?, checked((int)node.Left!.Value), checked((int)node.Right!.Value));
+            var from = Snapshot(source);
+            var to = target is null ? null : Snapshot(target);
+            var identity = (await Authentication.GetAuthenticationStateAsync()).User.Identity;
+            var attempt = new PendingMove(from, to);
+            await JS.InvokeVoidAsync("sessionStorage.setItem", _lifetime.Token, storageKey,
+                System.Text.Json.JsonSerializer.Serialize(attempt));
+            _pendingMove = attempt;
+            try
+            {
+                await TerritorialEntityData.ReparentAsync(Db, identity?.IsAuthenticated == true ? identity.Name : null, from, to, _lifetime.Token);
+            }
+            catch (Exception error) when (error is TerritorialEntityRuleException or UnauthorizedAccessException)
+            {
+                await JS.InvokeVoidAsync("sessionStorage.removeItem", _lifetime.Token, storageKey);
+                _pendingMove = null;
+                _message = error.Message;
+                return false;
+            }
+            await JS.InvokeVoidAsync("sessionStorage.removeItem", _lifetime.Token, storageKey);
+            _pendingMove = null;
+            return true;
+        }
+        catch (Exception) when (!_disposed)
+        {
+            _message = "Перенос не подтверждён. Обновите дерево и сверьте расположение узла.";
+            return false;
+        }
+        finally { _moving = false; if (!_disposed) await InvokeAsync(StateHasChanged); }
     }
 
     private async Task ToggleCheckedAsync(ClayTreeNode node)

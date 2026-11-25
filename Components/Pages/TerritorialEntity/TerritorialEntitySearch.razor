@@ -19,6 +19,12 @@
 {
     <MudAlert Severity="Severity.Warning" Class="mb-2">@_message</MudAlert>
 }
+@if (_pendingMove is not null)
+{
+    <MudAlert Severity="Severity.Warning">Результат переноса не подтверждён. <MudButton Disabled="@_moving" OnClick="CompareMoveAsync">Сверить родителя</MudButton>
+        @if (_moveComparison is not null) { <div>@_moveComparison</div> }
+    </MudAlert>
+}
 @if (_treeOptions is not null && _source is not null)
 {
     <MudGrid Spacing="2" Class="territorial-search-grid">
