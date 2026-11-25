@@ -61,6 +61,7 @@ public partial class SlBlForm : IAsyncDisposable
     private bool _allowNavigation;
     private bool _restoreRaw;
     private SlBlDifferences? _differences;
+    private SlBlIntent? _partialIntent;
     private ClayDraftRegistration? _draft;
     [Inject] private IServiceProvider Services { get; set; } = null!;
     private SlBlSqlSynchronization? _sync;
@@ -144,6 +145,7 @@ public partial class SlBlForm : IAsyncDisposable
         _available = false;
         _needsReview = false;
         _original = _text = kind is { } selected ? _lists?.GetText(selected) ?? "" : "";
+        _partialIntent = null;
         _differences = null;
         _restoreRaw = false;
         if (_address is null || kind is null || CurrentUser is null) return;
@@ -178,6 +180,13 @@ public partial class SlBlForm : IAsyncDisposable
                     if (restored.Address != _address || restored.Kind != kind) throw new JsonException();
                     _needsReview = restored.NeedsReview || _original != restored.Original;
                     if (_needsReview) _error = "Список в базе изменился. Сверьте его с черновиком.";
+                    if (restored.PartialIntent is { } partial && partial.Address == _address && partial.Kind == kind &&
+                        partial.Desired == restored.Current)
+                    {
+                        _partialIntent = partial;
+                        _differences = restored.Differences;
+                        if (!_needsReview) _error = "Список сохранён частично. Сверьте различия.";
+                    }
                     _original = restored.Original;
                     _text = restored.Current;
                 }
@@ -202,6 +211,7 @@ public partial class SlBlForm : IAsyncDisposable
     {
         if (_busy) return;
         _text = value ?? "";
+        _partialIntent = null;
         _differences = null;
         try
         {
@@ -211,10 +221,11 @@ public partial class SlBlForm : IAsyncDisposable
         catch (Exception e) when (e is JSException or InvalidOperationException) { _available = false; _error = "Не удалось сохранить черновик в браузере. Скопируйте текст перед закрытием."; }
     }
 
-    private sealed record ListDraft(string Address, SlBlKind Kind, string Original, string Current, bool NeedsReview = false);
+    private sealed record ListDraft(string Address, SlBlKind Kind, string Original, string Current, bool NeedsReview = false,
+        SlBlIntent? PartialIntent = null, SlBlDifferences? Differences = null);
 
     private Task PersistListDraftAsync() => _draft!.SaveTypedScopeAsync(DraftScope,
-        JsonSerializer.Serialize(new ListDraft(_address!, _kind!.Value, _original, _text, _needsReview)), _lifetime.Token);
+        JsonSerializer.Serialize(new ListDraft(_address!, _kind!.Value, _original, _text, _needsReview, _partialIntent, _differences)), _lifetime.Token);
 
     private async Task SaveAsync()
     {
@@ -242,17 +253,19 @@ public partial class SlBlForm : IAsyncDisposable
             }
             if (result.Outcome != SlBlOutcome.Verified)
             {
-                await registration.RejectOperationAsync(attempt.Revision, _lifetime.Token);
-                _uncertain = false;
                 if (result.Outcome == SlBlOutcome.Partial)
                 {
+                    _partialIntent = intent;
                     _original = await _sync.ReadOriginalAsync(intent.Address, kind, _lifetime.Token);
                     await PersistListDraftAsync();
                 }
+                await registration.RejectOperationAsync(attempt.Revision, _lifetime.Token);
+                _uncertain = false;
                 _error = result.Outcome == SlBlOutcome.Partial ? "Список сохранён частично. Сверьте различия." : "Изменились права или исходный список.";
                 return;
             }
             await registration.CommitOperationAsync(attempt.Revision, cancellationToken: _lifetime.Token);
+            _partialIntent = null;
             _original = _text = intent.Desired;
             _uncertain = false;
             _lists = await SlBlData.ReadAsync(Db, intent.Address, _lifetime.Token);
