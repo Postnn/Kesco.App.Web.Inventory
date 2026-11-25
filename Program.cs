@@ -1,4 +1,6 @@
 using Kesco.App.Web.Inventory.Components;
+using Kesco.App.Web.Inventory.Services.PingDiagnostics;
+using Microsoft.AspNetCore.Components.Server.Circuits;
 using Kesco.App.Web.Inventory.Components.Pages.Equipment;
 using Clayzor.Lib.DALC;
 using Clayzor.Lib.Web.Controls;
@@ -159,6 +161,13 @@ builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddInventoryThemePreferences(async sp =>
     (await sp.GetRequiredService<AuthenticationStateProvider>().GetAuthenticationStateAsync()).User);
 
+builder.Services.Configure<PingDiagnosticOptions>(builder.Configuration.GetSection("PingDiagnostics"));
+builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
+builder.Services.AddSingleton<INetworkPingTransport, NetworkPingTransport>();
+builder.Services.AddSingleton<PingDiagnosticService>();
+builder.Services.AddScoped<PingCircuitLifetime>();
+builder.Services.AddScoped<CircuitHandler>(services => services.GetRequiredService<PingCircuitLifetime>());
+
 // Blazor Server
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
@@ -185,6 +194,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 EquipmentPhoneConfigEndpoint.Map(app);
+NetworkPingEndpoint.Map(app);
 
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
