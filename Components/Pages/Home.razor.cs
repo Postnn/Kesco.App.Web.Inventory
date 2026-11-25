@@ -1,5 +1,4 @@
 using Clayzor.Lib.Web.Controls.Components.Grid;
-using Clayzor.Lib.Web.Controls.Themes;
 using Microsoft.AspNetCore.Components;
 
 namespace Kesco.App.Web.Inventory.Components.Pages;
@@ -7,8 +6,6 @@ namespace Kesco.App.Web.Inventory.Components.Pages;
 /// <summary>Главная страница Inventory: общее меню и один динамический ClayGrid.</summary>
 public partial class Home
 {
-    [CascadingParameter] private ClayThemeState? ThemeState { get; set; }
-
     private readonly ClayGridOptions _gridOptions = new()
     {
         Dynamic = true,

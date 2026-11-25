@@ -5,8 +5,8 @@
 <PageTitle>Регламентные работы</PageTitle>
 <InventoryMainMenu />
 
-<div class="@_draftRoot">
-    <MudText Typo="Typo.h5" HtmlTag="h1" Class="mb-2">Регламентные работы</MudText>
+<div class="inventory-list-page @_draftRoot">
+    <MudText Typo="Typo.h5" HtmlTag="h1" Class="clay-page-title mb-2">Регламентные работы</MudText>
     @if (_message is not null)
     {
         <MudAlert Severity="@_messageSeverity" Class="mb-2">@_message</MudAlert>
@@ -43,7 +43,7 @@
                         @if (context.Item.Deadline is { } deadline)
                         {
                             <MudText Color="@DeadlineColor(deadline, list.ServerNow)" Typo="Typo.body2">
-                                @deadline.ToString(DateFormat, System.Globalization.CultureInfo.InvariantCulture)
+                                <ClayLocalTime Value="deadline" />
                             </MudText>
                         }
                     </CellTemplate>
@@ -67,7 +67,7 @@
                     </CellTemplate>
                 </ClayColumn>
                 <ClayColumn TEntity="MaintenanceWork" ColumnId="5">
-                    <CellTemplate>@context.Item.LastCompleted?.ToString(DateFormat, System.Globalization.CultureInfo.InvariantCulture)</CellTemplate>
+                    <CellTemplate><ClayLocalTime Value="context.Item.LastCompleted" /></CellTemplate>
                 </ClayColumn>
                 <ClayColumn TEntity="MaintenanceWork" ColumnId="6">
                     <CellTemplate>

@@ -5,7 +5,8 @@
 <PageTitle>Типы оборудования</PageTitle>
 
 <InventoryMainMenu CurrentQueryId="@((int)Запросы.Модели_оборудования)" />
-<MudText Typo="Typo.h5" HtmlTag="h1" Class="mt-2 mb-3">Типы оборудования</MudText>
+<div class="inventory-list-page type-equipment-page">
+<MudText Typo="Typo.h5" HtmlTag="h1" Class="clay-page-title mt-2 mb-3">Типы оборудования</MudText>
 
 @if (_loading)
 {
@@ -18,14 +19,14 @@ else if (_error is not null)
 }
 else
 {
-    <MudGrid Spacing="2">
+    <MudGrid Spacing="2" Class="type-equipment-layout">
         <MudItem xs="12" md="4" lg="3" Style="min-width:0">
             <section class="type-equipment-types" aria-label="Типы оборудования">
                 <ClayGrid TEntity="EquipmentType" Options="_typesOptions" Items="_types" TotalCount="_types.Length"
-                          RowClass="GetTypeRowClass" OnRowActivate="SelectType">
+                          RowClass="GetTypeRowClass" OnRowActivate="SelectType" OnQueryChanged="OnTypesQueryChangedAsync">
                     <ColumnDefs>
-                        <ClayColumnDef ColumnId="1" SqlName="Id" DisplayName="Код" />
-                        <ClayColumnDef ColumnId="2" SqlName="Name" DisplayName="Тип оборудования" />
+                        <ClayColumnDef ColumnId="1" SqlName="@EquipmentType.IdColumnName" DisplayName="Код" Filterable="true" />
+                        <ClayColumnDef ColumnId="2" SqlName="@EquipmentType.NameColumnName" DisplayName="Тип оборудования" Filterable="true" AllowValueFilter="true" />
                     </ColumnDefs>
                     <Columns>
                         <ClayColumn TEntity="EquipmentType" ColumnId="1">
@@ -48,7 +49,7 @@ else
         <MudItem xs="12" md="8" lg="9" Style="min-width:0">
             @if (_selected is { } selected && _modelsOptions is not null)
             {
-                <section aria-labelledby="type-equipment-models-heading">
+                <section class="type-equipment-models" aria-labelledby="type-equipment-models-heading">
                     <MudText Typo="Typo.h6" HtmlTag="h2" id="type-equipment-models-heading" Class="mb-2">
                         @selected.GetMenuName(CurrentUser!)
                     </MudText>
@@ -58,3 +59,4 @@ else
         </MudItem>
     </MudGrid>
 }
+</div>

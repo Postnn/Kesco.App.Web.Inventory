@@ -15,7 +15,7 @@ public partial class PhoneTemplateForm : IDisposable
     private const int DutyEngineerRoleId = 102;
     private const int PhoneEquipmentTypeId = 30;
 
-    private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "model-equipment-form", MaxWidth = "960px" };
+    private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "model-equipment-form" };
     private readonly ClayTextAreaOptions _templateOptions = new() { Lines = 24, Class = "phone-template-editor" };
     private readonly ClayToolbarButtonOptions _okOptions = new()
     {

@@ -1,6 +1,5 @@
 @page "/"
 @using Clayzor.Lib.Web.Settings
-@using Clayzor.Lib.Web.Controls.Themes
 @inject ClayAppSettings AppSettings
 
 <PageTitle>@_pageTitle</PageTitle>
@@ -9,14 +8,7 @@
     @if (!HideNavigationMenu)
     {
         <header class="inventory-home__navigation">
-            <InventoryMainMenu CurrentQueryId="CurrentQueryId">
-                <Actions>
-                    @if (ThemeState is not null)
-                    {
-                        <div class="inventory-theme-toggle"><ClayThemeSelector /></div>
-                    }
-                </Actions>
-            </InventoryMainMenu>
+            <InventoryMainMenu CurrentQueryId="CurrentQueryId" />
         </header>
     }
 

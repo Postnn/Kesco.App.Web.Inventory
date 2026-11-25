@@ -20,7 +20,7 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Maintenance;
 /// <summary>Показывает регламентные работы и регистрирует подтверждённое выполнение.</summary>
 public partial class MaintenancePage : IAsyncDisposable
 {
-    private const string DateFormat = "yyyy-MM-dd HH:mm:ss";
+    private const string DefaultOrder = "ВыполнитьДо ASC, КодРегламентныхРабот ASC";
     private const string ConfirmationScope = "confirmation";
     private const string FilterScope = "InvMaintenanceFilter";
     private const string CompletionKind = "maintenance.complete";
@@ -30,12 +30,16 @@ public partial class MaintenancePage : IAsyncDisposable
     private readonly ClayGridOptions _options = new()
     {
         Title = "Регламентные работы",
-        ShowToolbar = false,
+        ShowToolbar = true,
+        ShowTitle = false,
         ShowPagination = false,
         ShowAddButton = false,
-        AllowSorting = false,
+        AllowSorting = true,
         AllowColumnReorder = false,
         ColumnMenuMode = ColumnMenuMode.Hidden,
+        FilterTrayExpandedByDefault = true,
+        FillAvailableHeight = true,
+        CompactLayout = true,
         EmptyText = "Ничего не найдено.",
         FilterColumnTypes = new Dictionary<string, ColumnType>
         {
@@ -58,6 +62,7 @@ public partial class MaintenancePage : IAsyncDisposable
     private int? _registrationEmployee;
     private ClayGrid<MaintenanceWork>? _grid;
     private ClayFilterGroupNode? _filter;
+    private string _orderBy = DefaultOrder;
     private bool _restoreFilter;
     private bool _applyingFilter;
     private bool _completionRecorded;
@@ -169,7 +174,7 @@ public partial class MaintenancePage : IAsyncDisposable
     {
         var parameters = new DynamicParameters();
         var predicate = ClayCompositeSqlBuilder.Build(_filter, parameters, FilterColumns);
-        return MaintenanceData.ReadAsync(Db, ct, predicate, parameters);
+        return MaintenanceData.ReadAsync(Db, ct, predicate, parameters, _orderBy);
     }
 
     private async Task OnFilterChangedAsync(ClayDataQuery query)
@@ -180,6 +185,7 @@ public partial class MaintenancePage : IAsyncDisposable
         try
         {
             _filter = query.CompositeFilter;
+            _orderBy = query.BuildOrderBy(DefaultOrder, FilterColumns);
             _list = await ReadListAsync(ct);
             _loadFailed = false;
             if (_registration is { } registration)
