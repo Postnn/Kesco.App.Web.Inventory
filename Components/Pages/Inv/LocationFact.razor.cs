@@ -22,8 +22,8 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Inv;
 public partial class LocationFact : IAsyncDisposable
 {
     private const string DraftScope = "main";
-    private static readonly ClaySelectOptions LocationOptions = new() { Label = "Расположение", Required = true };
-    private static readonly ClaySelectOptions EmployeeOptions = new() { Label = "Поиск по ответственному" };
+    private static readonly ClaySelectOptions LocationOptions = new() { Label = "Расположение", DraftKey = "fact.location", Required = true };
+    private static readonly ClaySelectOptions EmployeeOptions = new() { Label = "Поиск по ответственному", DraftKey = "fact.responsible" };
     private static readonly ClayTextAreaOptions NotesOptions = new() { Label = "Примечание", Lines = 3, MaxLength = 500, DraftKey = "fact.notes" };
     private static readonly DialogOptions DialogOptions = new() { CloseOnEscapeKey = true, BackdropClick = false, FullWidth = true, MaxWidth = MaxWidth.Small };
     private static readonly ClayGridOptions GridOptions = new()
@@ -31,7 +31,7 @@ public partial class LocationFact : IAsyncDisposable
         Id = "location-fact-grid", ShowToolbar = false, ShowAddButton = false, ShowPagination = false, PageSize = int.MaxValue,
         AllowColumnReorder = false, AllowSorting = false, EnableValueFilter = false, ColumnMenuMode = ColumnMenuMode.Hidden,
     };
-    private readonly ClaySelectOptions _equipmentOptions = new() { Label = "Поиск по SN, Инв:№, коду", Disabled = true, AutoSelectSingle = true };
+    private readonly ClaySelectOptions _equipmentOptions = new() { Label = "Поиск по SN, Инв:№, коду", DraftKey = "fact.search", Disabled = true, AutoSelectSingle = true };
     private readonly CancellationTokenSource _lifetime = new();
     private ClaySelect<LocationLookup, int?>? _locationSelect;
     private ClaySelect<LocationFactMatch, int?>? _equipmentSelect;
