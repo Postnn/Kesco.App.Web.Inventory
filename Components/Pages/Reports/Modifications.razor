@@ -6,7 +6,7 @@
 
 <PageTitle>Изменения в БД</PageTitle>
 <InventoryMainMenu />
-<MudText Typo="Typo.h5" HtmlTag="h1" Class="clay-page-title mb-2">Изменения в БД</MudText>
+<MudText Typo="Typo.h5" Class="clay-page-title mb-2">Изменения в БД</MudText>
 <div class="d-flex flex-column gap-2">
     <ClayPeriodPicker @bind-Value="_period" />
     <ClayCheckList TKey="int" Label="Таблицы" Items="_options" @bind-Selected="_selected" />
