@@ -1,0 +1,166 @@
+@using Clayzor.Lib.Entities.Inventory
+
+<NavigationLock ConfirmExternalNavigation="@(Dirty || _busy)" OnBeforeInternalNavigation="BeforeNavigationAsync" />
+<ClayEntityForm Options="_formOptions">
+    <Toolbar>
+        @if (_draft is not null && _original?.Closed != 1)
+        {
+            <ClayToolbar>
+                <div @ref="_saveControl">
+                    <ClayToolbarButton Options="SaveButton" Disabled="@(!CanSave)" OnClick="SaveAsync" />
+                </div>
+            </ClayToolbar>
+        }
+    </Toolbar>
+    <ChildContent>
+        <MudText Typo="Typo.h6" HtmlTag="h1" Class="mb-2">Дежурство инженера</MudText>
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        @if (_message is not null)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-2">@_message</MudAlert>
+        }
+        @if (_retryRaw)
+        {
+            <MudButton OnClick="RetryRawAsync" Disabled="@_busy">Повторить восстановление</MudButton>
+        }
+        @if ((_unknown && _attemptDate is not null) || _conflict)
+        {
+            <MudButton OnClick="CompareAsync" Disabled="@_busy">Сверить состояние записи</MudButton>
+        }
+        @if (_conflict && !_unknown)
+        {
+            <MudButton OnClick="DiscardConflictAsync" Disabled="@_busy">Отбросить черновик</MudButton>
+        }
+        @if (!_unknown && !_conflict && (_storageError && !_failedLoad && _registration is not null || _confirmedRevision is not null))
+        {
+            <MudButton OnClick="RetryStorageAsync" Disabled="@_busy">Повторить сохранение черновика</MudButton>
+        }
+        @if (_failedLoad && _registration is null)
+        {
+            <MudButton OnClick="LoadAsync" Disabled="@_loading">Повторить загрузку</MudButton>
+        }
+
+        @if (_draft is { } draft)
+        {
+            <MudForm @ref="_form">
+                <div class="d-flex flex-column gap-2" data-draft-scope="main" inert="@_busy">
+                    <ClayDatePicker Options="_dateOptions" Value="@AsPickerDate(draft.Date)" ValueChanged="SetDateAsync" />
+                    @if (draft.Date is { } day)
+                    {
+                        <MudText Typo="Typo.body2" Color="@(_workDay == false ? Color.Warning : Color.Default)">
+                            @day.ToString("ddd", Russian) @WorkDayLabel
+                        </MudText>
+                    }
+                    @if (_original is not null && (IsFact || !CanEdit))
+                    {
+                        <div>Дежурный инженер: @EmployeeText(_original?.PlannedId, _original?.PlannedName)
+                            @if (EmployeeUrl(_original?.PlannedId) is { } planned)
+                            {
+                                <a href="@planned" @onclick:preventDefault @onclick="@(() => OpenEmployeeAsync(_original!.PlannedId))">Открыть карточку</a>
+                            }
+                        </div>
+                    }
+                    else if (_engineers is not null)
+                    {
+                        <ClaySelect TItem="DutyEngineer" TValue="int?" DataSource="_engineers" Options="_plannedOptions"
+                                    @ref="_planned" Value="@draft.PlannedId" ValueChanged="SetPlannedAsync"
+                                    ValueSelector="@(item => item.Id)" TextSelector="@(item => item.Name)">
+                            <ItemTemplate>
+                                <div class="d-flex justify-space-between gap-2">
+                                    <span>@context.Name</span><span>@context.Statistics</span>
+                                </div>
+                            </ItemTemplate>
+                        </ClaySelect>
+                    }
+
+                    @if (IsFact)
+                    {
+                        <MudText>Подтверждение дежурства:</MudText>
+                        <ClayRadioGroup TValue="DutyConfirmation?" Options="_radioOptions" Items="ConfirmationOptions"
+                                        Value="@draft.Confirmation" ValueChanged="SetConfirmationAsync" />
+                        @if (draft.Confirmation == DutyConfirmation.Other && _engineers is not null)
+                        {
+                            <ClaySelect TItem="DutyEngineer" TValue="int?" DataSource="_engineers" Options="_actualOptions"
+                                        @ref="_actual" Value="@draft.ActualId" ValueChanged="SetActualAsync"
+                                        ValueSelector="@(item => item.Id)" TextSelector="@(item => item.Name)">
+                                <ItemTemplate>
+                                    <div class="d-flex justify-space-between gap-2">
+                                        <span>@context.Name</span><span>@context.Statistics</span>
+                                    </div>
+                                </ItemTemplate>
+                            </ClaySelect>
+                        }
+                        @if (ShowTimeOff)
+                        {
+                            <ClayCheckbox Label="Отгул вместо оплаты" State="@draft.WantsTimeOff" Disabled="@(!CanEdit)"
+                                          StateChanged="SetWantsTimeOffAsync" />
+                            @if (draft.WantsTimeOff)
+                            {
+                                <div @ref="_timeOffControl">
+                                    <ClayDatePicker Options="_timeOffOptions" Value="@AsPickerDate(draft.TimeOff)" ValueChanged="SetTimeOffAsync" />
+                                </div>
+                            }
+                        }
+                        <ClayCheckbox Label="Подтверждаю закрытие дежурства" State="@draft.Close" Disabled="@(!CanEdit)"
+                                      StateChanged="SetCloseAsync" />
+                    }
+                    @if (_original is { Closed: 1 } closed)
+                    {
+                        <MudText Color="Color.Warning">Закрыто</MudText>
+                        <MudText>Фактическая информация о дежурстве:</MudText>
+                        @if (closed.ActualId is { } employeeId)
+                        {
+                            <div>
+                                @if (EmployeeUrl(employeeId) is { } employee)
+                                {
+                                    <a href="@employee" @onclick:preventDefault @onclick="@(() => OpenEmployeeAsync(employeeId))">@EmployeeText(employeeId, closed.ActualName)</a>
+                                }
+                                else
+                                {
+                                    @EmployeeText(employeeId, closed.ActualName)
+                                }
+                            </div>
+                        }
+                        else
+                        {
+                            <MudText>Никто не дежурил</MudText>
+                        }
+                        @if (closed.EmployerId is > 0)
+                        {
+                            <div>Работодатель:
+                                @if (PersonUrl(closed.EmployerId.Value) is { } person)
+                                {
+                                    <a href="@person" @onclick:preventDefault
+                                       @onclick="@(() => OpenAsync(person, $"duty-employer-{closed.EmployerId}"))">@EmployeeText(closed.EmployerId, _employerName)</a>
+                                }
+                                else
+                                {
+                                    @EmployeeText(closed.EmployerId, _employerName)
+                                }
+                            </div>
+                        }
+                        @if (closed.TimeOff is { } timeOff)
+                        {
+                            <div>Дата отгула: @timeOff.ToString("dd.MM.yyyy", Russian)</div>
+                        }
+                        @if (closed.Payment is { } payment)
+                        {
+                            <div>Оплата: @payment.ToString("F2", Russian)</div>
+                        }
+                    }
+                </div>
+            </MudForm>
+        }
+    </ChildContent>
+    <Footer>
+        @if (_original is { } row)
+        {
+            <ClayChanged ChangedById="@row.ChangedById" ChangedByName="@row.ChangedByName"
+                         ChangedAt="@row.ChangedAt" ChangedByUrl="@EmployeeUrl(row.ChangedById)" />
+        }
+    </Footer>
+</ClayEntityForm>
+

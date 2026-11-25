@@ -656,6 +656,10 @@
     overflow: hidden;
 }
 
+.mud-main-content:has(.inventory-list-page) > .inventory-main-menu {
+    flex: 0 0 auto;
+}
+
 .inventory-list-page {
     display: flex;
     flex: 1 1 0;

@@ -1,0 +1,12 @@
+@page "/Duty/duty_form"
+@page "/Duty/duty_form.aspx"
+@layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
+
+<PageTitle>Дежурство инженера</PageTitle>
+<DutyEditor @key="Id ?? string.Empty" RouteId="@Id" />
+
+@code {
+    /// <summary>Календарный ключ существующего дежурства.</summary>
+    [SupplyParameterFromQuery(Name = "id")] public string? Id { get; set; }
+}
+
