@@ -1,0 +1,49 @@
+@page "/Default/FinderTel"
+@page "/Default/FinderTel.aspx"
+@using Clayzor.Lib.Entities.Inventory
+@inherits PhoneFinderPageBase<FinderTelRow, int>
+
+<PageTitle>@Title</PageTitle>
+<div class="phone-finder">
+    @if (ReturnMode is not null)
+    {
+        <MudButton Variant="Variant.Outlined" OnClick="CloseAsync" Class="mb-2">Отмена</MudButton>
+    }
+    @if (ReturnMessage is not null) { <MudAlert Severity="Severity.Info" Class="mb-2">@ReturnMessage</MudAlert> }
+    @if (Error is not null)
+    {
+        <MudAlert Severity="Severity.Warning" Class="mb-2">
+            @Error
+            @if (CanRetry) { <MudButton OnClick="RetryAsync">Повторить</MudButton> }
+        </MudAlert>
+    }
+    <ClayGrid @key="Options" TEntity="FinderTelRow" Options="Options" Items="Rows" Loading="Loading" TotalCount="Total"
+              PageNumber="Page" OnQueryChanged="ReadAsync" DistinctValuesLoader="ReadValuesAsync">
+        <ColumnDefs>
+            <ClayColumnDef ColumnId="1" SqlName="PhoneTypeId" DisplayName="Тип" Filterable="true" AllowValueFilter="true" />
+            <ClayColumnDef ColumnId="2" SqlName="FullNumber" DisplayName="ПолныйНомер" Filterable="true" AllowValueFilter="true" />
+            <ClayColumnDef ColumnId="3" SqlName="ShortNumber" DisplayName="ТелефонныйНомер" Filterable="true" AllowValueFilter="true" />
+            <ClayColumnDef ColumnId="4" SqlName="Subscriber" DisplayName="Абонент" Filterable="true" AllowValueFilter="true" />
+            <ClayColumnDef ColumnId="5" SqlName="ConnectionEquipmentId" DisplayName="Оборудование подключения" Filterable="true" AllowValueFilter="true" />
+        </ColumnDefs>
+        <Columns>
+            <ClayColumn TEntity="FinderTelRow" ColumnId="1">
+                <CellTemplate>
+                    @if (context.Item.PhoneTypeId is int kind)
+                    {
+                        var label = TypeLabel(kind);
+                        @if (TypeIcon(kind) is { } source) { <img src="@source" title="@label" alt="@label" class="phone-finder-type-icon" /> }
+                        else { <span title="@label">@label</span> }
+                    }
+                </CellTemplate>
+            </ClayColumn>
+            <ClayColumn TEntity="FinderTelRow" ColumnId="2" TextSelector="@(row => row.FullNumber)" />
+            <ClayColumn TEntity="FinderTelRow" ColumnId="3" TextSelector="@(row => row.ShortNumber)" />
+            <ClayColumn TEntity="FinderTelRow" ColumnId="4" TextSelector="@(row => row.Subscriber)" />
+            <ClayColumn TEntity="FinderTelRow" ColumnId="5" TextSelector="@(row => row.ConnectionEquipmentId?.ToString())" />
+        </Columns>
+        <RowActions Context="row">
+            <MudButton Size="Size.Small" Disabled="@(!CanChoose)" OnClick="@(() => ChooseAsync(row))">Выбрать</MudButton>
+        </RowActions>
+    </ClayGrid>
+</div>

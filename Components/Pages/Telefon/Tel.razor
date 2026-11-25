@@ -362,6 +362,7 @@
                                             ValueSelector="@(item => item.Key)" TextSelector="@(item => item.Name)"
                                             Value="_equipmentChoice" ValueChanged="OnEquipmentChoiceChanged"
                                             SelectedItem="_selectedEquipmentChoice" SelectedItemChanged="OnEquipmentSelected"
+                                            AdvancedSearch="OpenEquipmentFinderAsync"
                                             Options="_equipmentChoiceOptions" />
                                 @FieldWarning(_availability.Equipment)
                             </div>

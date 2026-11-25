@@ -31,7 +31,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
     private readonly ClaySelectOptions _typeOptions = new() { Required = true, AutoSelectSingle = true, MaxItems = 300, Placeholder = "Выберите тип оборудования" };
     private readonly ClaySelectOptions _modelOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите модель" };
     private readonly ClaySelectOptions _phonePoolOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите телефонный пул" };
-    private readonly ClaySelectOptions _phoneOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите телефонный номер" };
+    private readonly ClaySelectOptions _phoneOptions = new() { AutoSelectSingle = true, AlwaysShowAdvancedSearch = true, Placeholder = "Выберите телефонный номер" };
     private readonly ClayGridOptions _phoneGridOptions = new() { EmptyText = "Нет телефонных номеров", ShowAddButton = false, ShowHeader = false };
     private int _hotelPhoneCount;
     private readonly ClayGridOptions _locationGridOptions = new() { EmptyText = "Нет расположений", AddTooltip = "Добавить расположение" };

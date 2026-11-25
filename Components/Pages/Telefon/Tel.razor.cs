@@ -36,7 +36,7 @@ public partial class Tel : IDisposable
     private readonly ClaySelectOptions _displayedOptions = new() { AutoSelectSingle = true, MaxItems = 100, Placeholder = "Выберите отображаемый номер" };
     private readonly ClaySelectOptions _socketOptions = new() { AutoSelectSingle = true, MaxItems = 50, Placeholder = "Выберите розетку" };
     private readonly ClaySelectOptions _groupChoiceOptions = new() { AutoSelectSingle = true, MaxItems = 50, Placeholder = "Добавить номер в группу" };
-    private readonly ClaySelectOptions _equipmentChoiceOptions = new() { AutoSelectSingle = true, MaxItems = 50, Placeholder = "Добавить оборудование" };
+    private readonly ClaySelectOptions _equipmentChoiceOptions = new() { AutoSelectSingle = true, AlwaysShowAdvancedSearch = true, MaxItems = 50, Placeholder = "Добавить оборудование" };
     private readonly ClayDropDownListOptions _portSelectOptions = new();
     private readonly ClayDropDownListOptions _pickupSelectOptions = new();
     private readonly ClayRadioGroupOptions _servicesRadioOptions = new();

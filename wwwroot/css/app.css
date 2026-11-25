@@ -685,3 +685,12 @@
 .territorial-form-fields .territorial-field-phone {
     max-inline-size: 14rem;
 }
+
+.phone-finder {
+    min-inline-size: 0;
+}
+
+.phone-finder-type-icon {
+    max-inline-size: 1.3rem;
+    max-block-size: 1.3rem;
+}

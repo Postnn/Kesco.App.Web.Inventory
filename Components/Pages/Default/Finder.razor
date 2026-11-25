@@ -1,0 +1,45 @@
+@page "/Default/Finder"
+@page "/Default/Finder.aspx"
+@using Clayzor.Lib.Entities.Inventory
+@inherits PhoneFinderPageBase<FinderEquipmentRow, PhoneEquipmentKey>
+
+<PageTitle>@Title</PageTitle>
+<div class="phone-finder">
+    @if (ReturnMode is not null)
+    {
+        <MudButton Variant="Variant.Outlined" OnClick="CloseAsync" Class="mb-2">Отмена</MudButton>
+    }
+    @if (ReturnMessage is not null) { <MudAlert Severity="Severity.Info" Class="mb-2">@ReturnMessage</MudAlert> }
+    @if (Error is not null)
+    {
+        <MudAlert Severity="Severity.Warning" Class="mb-2">
+            @Error
+            @if (CanRetry) { <MudButton OnClick="RetryAsync">Повторить</MudButton> }
+        </MudAlert>
+    }
+    <ClayGrid @key="Options" TEntity="FinderEquipmentRow" Options="Options" Items="Rows" Loading="Loading" TotalCount="Total"
+              PageNumber="Page" OnQueryChanged="ReadAsync" DistinctValuesLoader="ReadValuesAsync">
+        <ColumnDefs>
+            <ClayColumnDef ColumnId="1" SqlName="Model" DisplayName="МодельОборудования" Filterable="true" AllowValueFilter="true" />
+            <ClayColumnDef ColumnId="2" SqlName="EquipmentId" DisplayName="КодОборудования" Filterable="true" AllowValueFilter="true" />
+            <ClayColumnDef ColumnId="3" SqlName="SerialNumber" DisplayName="SN" Filterable="true" AllowValueFilter="true" />
+            <ClayColumnDef ColumnId="4" SqlName="LocationPath" DisplayName="Расположение" Filterable="true" AllowValueFilter="true" />
+            <ClayColumnDef ColumnId="5" SqlName="ConnectionEquipmentId" DisplayName="Код" Filterable="true" AllowValueFilter="true" />
+        </ColumnDefs>
+        <Columns>
+            <ClayColumn TEntity="FinderEquipmentRow" ColumnId="1" TextSelector="@(row => row.Model)" />
+            <ClayColumn TEntity="FinderEquipmentRow" ColumnId="2">
+                <CellTemplate>
+                    <a href="@EquipmentUrl(context.Item.EquipmentId)" @onclick:preventDefault
+                       @onclick="@(() => OpenEquipmentAsync(context.Item.EquipmentId))">@context.Item.EquipmentId</a>
+                </CellTemplate>
+            </ClayColumn>
+            <ClayColumn TEntity="FinderEquipmentRow" ColumnId="3" TextSelector="@(row => row.SerialNumber)" />
+            <ClayColumn TEntity="FinderEquipmentRow" ColumnId="4" TextSelector="@(row => row.LocationPath)" />
+            <ClayColumn TEntity="FinderEquipmentRow" ColumnId="5" TextSelector="@(row => row.ConnectionEquipmentId?.ToString())" />
+        </Columns>
+        <RowActions Context="row">
+            <MudButton Size="Size.Small" Disabled="@(!CanChoose)" OnClick="@(() => ChooseAsync(row))">Выбрать</MudButton>
+        </RowActions>
+    </ClayGrid>
+</div>
