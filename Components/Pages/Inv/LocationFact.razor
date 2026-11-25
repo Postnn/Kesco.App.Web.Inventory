@@ -70,6 +70,10 @@
                DefaultFocus="@(_askRelocation ? DefaultFocus.Element : DefaultFocus.None)">
         <TitleContent>Подтверждение нахождения оборудования на расположении</TitleContent>
         <DialogContent>
+            @if (_restoreIncomplete)
+            {
+                <MudAlert Severity="Severity.Warning">Ввод восстановлен частично. <MudButton OnClick="RestoreEditorAsync">Повторить восстановление</MudButton></MudAlert>
+            }
             @if (_dialogError is not null) { <MudAlert Severity="Severity.Warning" Class="mb-2">@_dialogError</MudAlert> }
             @if (_pending is { } pending)
             {
@@ -106,12 +110,12 @@
         <DialogActions>
             @if (_askRelocation)
             {
-                <MudButton Color="Color.Primary" Disabled="@(_busy || _blocked)" OnClick="@(() => ConfirmAsync(true))">Да</MudButton>
-                <MudButton Disabled="@(_busy || _blocked)" OnClick="@(() => ConfirmAsync(false))">Нет</MudButton>
+                <MudButton Color="Color.Primary" Disabled="@(_busy || _blocked || _restoreRaw || _restoreIncomplete)" OnClick="@(() => ConfirmAsync(true))">Да</MudButton>
+                <MudButton Disabled="@(_busy || _blocked || _restoreRaw || _restoreIncomplete)" OnClick="@(() => ConfirmAsync(false))">Нет</MudButton>
             }
             else
             {
-                <MudButton Color="Color.Primary" Disabled="@(_busy || _blocked)" OnClick="ReviewAsync">Подтвердить</MudButton>
+                <MudButton Color="Color.Primary" Disabled="@(_busy || _blocked || _restoreRaw || _restoreIncomplete)" OnClick="ReviewAsync">Подтвердить</MudButton>
             }
             <MudButton Disabled="@_busy" OnClick="CancelAsync">Отмена</MudButton>
         </DialogActions>

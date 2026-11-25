@@ -58,6 +58,7 @@ public partial class LocationFact : IAsyncDisposable
     private bool _focusSearch;
     private bool _focusNotes;
     private bool _restoreRaw;
+    private bool _restoreIncomplete;
     private bool _ready;
     private bool _busy;
     private bool _blocked;
@@ -126,7 +127,7 @@ public partial class LocationFact : IAsyncDisposable
         if (_restoreRaw && _registration is not null)
         {
             _restoreRaw = false;
-            try { await _registration.ApplyRawAsync(Token); }
+            try { await RestoreEditorAsync(); }
             catch (Exception e) when (e is JSException or InvalidOperationException) { BlockDraft("Не удалось полностью восстановить черновик."); StateHasChanged(); }
         }
         if (_focusLocation && _locationSelect is not null)
@@ -144,6 +145,16 @@ public partial class LocationFact : IAsyncDisposable
             _focusNotes = false;
             await JS.InvokeVoidAsync("clayLocationFact.focusNotes", Token, _dialogVersion);
         }
+    }
+
+    private async Task RestoreEditorAsync()
+    {
+        if (_registration is null) return;
+        _restoreIncomplete = true;
+        var applied = await _registration.ApplyRawWithResultAsync(DraftScope, Token);
+        var readiness = await _registration.GetRestoreReadinessAsync(Token);
+        _restoreIncomplete = applied.Pending.Count > 0 || !readiness.Complete;
+        if (!_disposed) StateHasChanged();
     }
 
     private async Task ChangeSiteAsync(int? id)
@@ -219,6 +230,7 @@ public partial class LocationFact : IAsyncDisposable
         var immediate = false;
         try
         {
+            await _registration!.OpenScopeAsync(DraftScope, Token);
             _pending = await LocationFactData.ReadForConfirmAsync(Db, site.Id, id, Token);
             _scanOperation = scan;
             _broken = !scan && _pending.Broken;
@@ -268,7 +280,7 @@ public partial class LocationFact : IAsyncDisposable
 
     private async Task ConfirmAsync(bool move)
     {
-        if (_busy || !CanConfirm || _pending is not { } expected || _registration is not { } registration || _site?.Id != expected.Site.Id) return;
+        if (_busy || _restoreRaw || _restoreIncomplete || !CanConfirm || _pending is not { } expected || _registration is not { } registration || _site?.Id != expected.Site.Id) return;
         if (LocationFactData.Validate(expected.Equipment.FactName, _notes, _broken, move) is { } validation)
         { _dialogError = validation; _askRelocation = false; return; }
         _busy = true;
@@ -335,7 +347,7 @@ public partial class LocationFact : IAsyncDisposable
     {
         if (_busy) return;
         _busy = true;
-        try { if (!_blocked && _registration is not null) await _registration.DiscardAsync(Token); }
+        try { if (!_blocked && _registration is not null) await _registration.DiscardScopeAsync(DraftScope, Token); }
         catch (Exception e) when (e is JSException or InvalidOperationException) { BlockDraft("Не удалось удалить черновик в браузере."); }
         finally { ClosePending(); _busy = false; }
     }
@@ -349,6 +361,7 @@ public partial class LocationFact : IAsyncDisposable
 
     private void ClosePending()
     {
+        _restoreIncomplete = false;
         _dialogVisible = false;
         _pending = null;
         _askRelocation = false;
