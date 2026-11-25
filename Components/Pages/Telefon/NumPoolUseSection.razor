@@ -65,6 +65,7 @@
     {
         _source = new(Db, Kind);
         _selectOptions = new() { Placeholder = "Добавить", AutoSelectSingle = true };
+        if (Kind is NumPoolKind.Connection or NumPoolKind.Customer) _selectOptions.MaxItems = 100;
         _options = new()
         {
             Id = $"numpool-{Kind.ToString().ToLowerInvariant()}", AutoHeight = true, ShowAddButton = false, ShowPagination = false,

@@ -88,8 +88,10 @@ public partial class NumPool
 
     private Task AddLinkAsync(NumPoolKind kind, NumPoolOption option)
     {
-        if (Draft is not { } draft || CurrentUser is not { } user || draft.Data.Links(kind).Any(link => link.Id == option.Id))
+        if (Draft is not { } draft || CurrentUser is not { } user)
             return Task.CompletedTask;
+        if (draft.Data.Links(kind).Any(link => link.Id == option.Id))
+            return kind == NumPoolKind.Employee && draft.EmployeePrivate ? ChangePrivateAsync(false) : Task.CompletedTask;
         var privateValue = kind == NumPoolKind.Employee && draft.EmployeePrivate ? (byte)1 : (byte)0;
         var link = new NumPoolLink(option.Id, option.Name, privateValue, user.Id, user.Name, DateTime.UtcNow);
         var links = draft.Data.Links(kind).Append(link).OrderBy(item => item.Name, StringComparer.CurrentCulture).ThenBy(item => item.Id).ToArray();
