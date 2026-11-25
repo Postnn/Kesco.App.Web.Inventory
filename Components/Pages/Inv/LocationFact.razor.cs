@@ -112,6 +112,7 @@ public partial class LocationFact : IAsyncDisposable
                     _notes = draft.Notes;
                     _broken = draft.Broken;
                     _scanOperation = draft.Scanner;
+                    _conflict = draft.Conflict;
                     _dialogError = _message;
                     ShowDialog();
                     _restoreRaw = restore.HasDraft;
@@ -275,7 +276,7 @@ public partial class LocationFact : IAsyncDisposable
     }
 
     private Task PersistAsync() => _registration!.SaveTypedScopeAsync(DraftScope,
-        JsonSerializer.Serialize(new FactDraft(_pending!, _notes, _broken, _scanOperation)), Token);
+        JsonSerializer.Serialize(new FactDraft(_pending!, _notes, _broken, _scanOperation, _conflict)), Token);
 
     private Task ReviewAsync()
     {
@@ -290,7 +291,7 @@ public partial class LocationFact : IAsyncDisposable
 
     private async Task ConfirmAsync(bool move)
     {
-        if (_busy || _restoreRaw || _restoreIncomplete || !CanConfirm || _pending is not { } expected || _registration is not { } registration || _site?.Id != expected.Site.Id) return;
+        if (_busy || _conflict || _restoreRaw || _restoreIncomplete || !CanConfirm || _pending is not { } expected || _registration is not { } registration || _site?.Id != expected.Site.Id) return;
         if (LocationFactData.Validate(expected.Equipment.FactName, _notes, _broken, move) is { } validation)
         { _dialogError = validation; _askRelocation = false; return; }
         _busy = true;
@@ -343,6 +344,7 @@ public partial class LocationFact : IAsyncDisposable
             {
                 await registration.RejectOperationAsync(attempt.Revision, Token);
                 _conflict = error is LocationFactConflict;
+                if (_conflict) await PersistAsync();
                 _dialogError = error is SqlException ? "База отклонила подтверждение или перемещение." : error.Message;
                 return;
             }
@@ -387,7 +389,12 @@ public partial class LocationFact : IAsyncDisposable
         _busy = true;
         try { if (!_blocked && _registration is not null) await _registration.DiscardScopeAsync(DraftScope, Token); }
         catch (Exception e) when (e is JSException or InvalidOperationException) { BlockDraft("Не удалось удалить черновик в браузере."); }
-        finally { ClosePending(); _busy = false; }
+        finally
+        {
+            if (_blocked) _dialogVisible = false;
+            else ClosePending();
+            _busy = false;
+        }
     }
 
     private void ShowDialog()
@@ -445,5 +452,5 @@ public partial class LocationFact : IAsyncDisposable
         _lifetime.Dispose();
     }
 
-    private sealed record FactDraft(LocationFactSnapshot Snapshot, string Notes, bool Broken, bool Scanner);
+    private sealed record FactDraft(LocationFactSnapshot Snapshot, string Notes, bool Broken, bool Scanner, bool Conflict = false);
 }

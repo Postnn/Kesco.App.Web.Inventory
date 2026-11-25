@@ -31,6 +31,10 @@
     </div>
     @if (_busy || !_ready && _message is null) { <MudProgressLinear Class="my-2" Indeterminate="true" /> }
     @if (_message is not null) { <MudAlert Severity="Severity.Warning" Class="my-2">@_message</MudAlert> }
+    @if (_blocked && !_dialogVisible && _pending is not null)
+    {
+        <MudButton OnClick="ShowDialog" Disabled="@_busy">Вернуться к сверке</MudButton>
+    }
     <ClayGrid TEntity="LocationFactRow" Options="GridOptions" Items="_rows" RowClass="@GetRowClass">
         <ColumnDefs>
             <ClayColumnDef ColumnId="1" SqlName="Id" DisplayName="Код" />
@@ -105,7 +109,7 @@
                 @if (!_askRelocation)
                 {
                     <ClayCheckbox Label="Сломано, ремонту не подлежит" State="_broken" StateChanged="ChangeBrokenAsync" />
-                    <ClayTextArea Options="NotesOptions" Value="_notes" ValueChanged="ChangeNotesAsync" />
+                    <ClayTextArea Options="NotesOptions" Value="@_notes" ValueChanged="ChangeNotesAsync" />
                     <div>
                         Подтвердите, что оборудование находится на расположении
                         @if (GetLocationUrl(pending.Site.Id) is { } siteUrl)
@@ -125,12 +129,12 @@
         <DialogActions>
             @if (_askRelocation)
             {
-                <MudButton Color="Color.Primary" Disabled="@(_busy || _blocked || _restoreRaw || _restoreIncomplete)" OnClick="@(() => ConfirmAsync(true))">Да</MudButton>
-                <MudButton Disabled="@(_busy || _blocked || _restoreRaw || _restoreIncomplete)" OnClick="@(() => ConfirmAsync(false))">Нет</MudButton>
+                <MudButton Color="Color.Primary" Disabled="@(_busy || _blocked || _conflict || _restoreRaw || _restoreIncomplete)" OnClick="@(() => ConfirmAsync(true))">Да</MudButton>
+                <MudButton Disabled="@(_busy || _blocked || _conflict || _restoreRaw || _restoreIncomplete)" OnClick="@(() => ConfirmAsync(false))">Нет</MudButton>
             }
             else
             {
-                <MudButton Color="Color.Primary" Disabled="@(_busy || _blocked || _restoreRaw || _restoreIncomplete)" OnClick="ReviewAsync">Подтвердить</MudButton>
+                <MudButton Color="Color.Primary" Disabled="@(_busy || _blocked || _conflict || _restoreRaw || _restoreIncomplete)" OnClick="ReviewAsync">Подтвердить</MudButton>
             }
             <MudButton Disabled="@_busy" OnClick="CancelAsync">Отмена</MudButton>
         </DialogActions>
