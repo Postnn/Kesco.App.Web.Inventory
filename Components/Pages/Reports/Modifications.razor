@@ -59,7 +59,7 @@
                             <CellTemplate>
                                 @if (EntryLink(section, result.Columns[0], column, context.Item) is { } link)
                                 {
-                                    <a href="@link" @onclick:preventDefault @onclick="@(() => OpenAsync(link))">@CellText(context.Item, column)</a>
+                                    <a href="@link" @onclick:preventDefault @onclick="@(() => OpenAsync(link))">@Clayzor.Lib.Entities.DynamicGrid.ModificationReportData.CellText(result, context.Item, column)</a>
                                 }
                                 else if (IsChangedDate(column) && context.Item[column] is DateTime date)
                                 {
@@ -69,7 +69,7 @@
                                 {
                                     <ClayLocalTime Value="offset.UtcDateTime" />
                                 }
-                                else { @CellText(context.Item, column) }
+                                else { @Clayzor.Lib.Entities.DynamicGrid.ModificationReportData.CellText(result, context.Item, column) }
                             </CellTemplate>
                         </ClayColumn>
                     }

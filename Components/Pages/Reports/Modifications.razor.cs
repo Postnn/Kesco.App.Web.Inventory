@@ -146,15 +146,13 @@ public partial class Modifications : IDisposable
     {
         if (column == first && row[column] is { } key)
             return InventoryMenuUrlBuilder.BuildCardLink(section.Definition.FormReference, Convert.ToString(key, CultureInfo.InvariantCulture) ?? "", Config, Navigation.Uri).Href;
-        if (column is "ФИО" or "ИзменилФИО" or "Изменил ФИО" && row["Изменил"] is { } employee)
+        if (column != first && ModificationReportData.IsAuthorColumn(column) && ModificationReportData.AuthorId(row) is int employee && section.Result?.Authors.ContainsKey(employee) == true)
             return InventoryMenuUrlBuilder.BuildCardLink("@URI_user_form", Convert.ToString(employee, CultureInfo.InvariantCulture) ?? "", Config, Navigation.Uri).Href;
         return null;
     }
 
     private static bool IsVisible(string name) => !name.Equals("Изменил", StringComparison.OrdinalIgnoreCase);
     private static bool IsChangedDate(string name) => name.Equals("Изменено", StringComparison.OrdinalIgnoreCase);
-    private static string? CellText(IReadOnlyDictionary<string, object?> row, string name) => Convert.ToString(row[name], CultureInfo.CurrentCulture);
-
     private async Task OpenAsync(string url)
     {
         if (!await Windows.OpenAsync(url, "report:" + url, _lifetime.Token)) _message = "Браузер заблокировал открытие карточки.";
