@@ -51,7 +51,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected TerritorialEntityAccess Access { get; private set; } = new();
     protected TState? Clean { get; private set; }
     protected TState? Draft { get; private set; }
-    protected bool Dirty => Draft is not null && !EqualityComparer<TState>.Default.Equals(Draft, Clean);
+    protected bool Dirty => Draft is not null && !StatesEqual(Draft, Clean);
     protected bool Busy { get; private set; }
     protected bool Loading { get; private set; } = true;
     protected bool StorageBlocked { get; private set; }
@@ -64,6 +64,9 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected abstract string RouteKey { get; }
     protected abstract bool Editable { get; }
     protected virtual bool CanRegisterDraft => Editable;
+
+    /// <summary>Сравнивает содержимое карточки после восстановления черновика.</summary>
+    protected virtual bool StatesEqual(TState? left, TState? right) => EqualityComparer<TState>.Default.Equals(left, right);
 
     /// <summary>Загружает разрешения карточки после подтверждения сотрудника.</summary>
     protected virtual async Task LoadAccessAsync(Employee user) => Access = await TerritorialEntityData.ReadAccessAsync(Db, user, Lifetime);
@@ -271,7 +274,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             JsonSerializer.Deserialize<DraftSnapshot>(json) is { } existing)
         {
             Draft = existing.Current;
-            if (!EqualityComparer<TState>.Default.Equals(existing.Original, Clean))
+            if (!StatesEqual(existing.Original, Clean))
             {
                 StorageBlocked = true;
                 Message = "Карточка изменилась после создания черновика. Перед записью нужна сверка.";

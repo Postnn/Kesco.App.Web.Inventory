@@ -59,6 +59,15 @@ window.claySimFmtn = {
     }
 };
 
+window.clayNumPool = {
+    focus(root, key) {
+        const field = document.querySelector(root)?.querySelector(`[data-draft-key="${CSS.escape(key)}"]`);
+        (field?.matches("input") ? field : field?.querySelector("input"))?.focus();
+    },
+
+    setSuccess() { window.returnValue = 1; }
+};
+
 window.clayLocationFact = {
     focusNotes(version) {
         const selector = `.location-fact-dialog [data-location-fact-dialog="${Number(version)}"] textarea`;

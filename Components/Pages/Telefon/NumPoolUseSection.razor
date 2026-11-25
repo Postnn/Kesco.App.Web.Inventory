@@ -1,0 +1,91 @@
+@using Clayzor.Lib.Entities.Inventory
+@using Clayzor.Lib.Web.DBSelect.Phones
+@inject Clayzor.Lib.DALC.DbManager Db
+
+<section class="d-flex flex-column gap-1" aria-label="@Label">
+    <MudText Typo="Typo.subtitle2" HtmlTag="h2">@Label</MudText>
+    @if (Editable)
+    {
+        @if (Kind == NumPoolKind.Employee)
+        {
+            <ClayCheckbox Label="Private" State="Private" StateChanged="@(value => PrivateChanged.InvokeAsync(value == true))" />
+        }
+        <ClaySelect @key="_selectVersion" @ref="_select" TItem="NumPoolOption" TValue="int?" DataSource="_source" Options="_selectOptions"
+                    ValueSelector="@(item => item.Id)" TextSelector="@(item => item.Name)" SelectedItemChanged="AddAsync" />
+    }
+    <ClayGrid TEntity="NumPoolLink" Options="_options" Items="Links">
+        <ColumnDefs><ClayColumnDef ColumnId="1" SqlName="Name" DisplayName="@Label" /></ColumnDefs>
+        <Columns>
+            <ClayColumn TEntity="NumPoolLink" ColumnId="1">
+                <CellTemplate>
+                    <MudTooltip>
+                        <TooltipContent>
+                            <span>Изменил: @(context.Item.ChangedByName ?? $"#{context.Item.ChangedBy}") <ClayLocalTime Value="context.Item.ChangedAt" /></span>
+                        </TooltipContent>
+                        <ChildContent>
+                            @if (GetLink?.Invoke(context.Item.Id) is { } url)
+                            {
+                                <a href="@url" @onclick:preventDefault @onclick="@(() => OpenLink.InvokeAsync(url))">@Display(context.Item)</a>
+                            }
+                            else { @Display(context.Item) }
+                        </ChildContent>
+                    </MudTooltip>
+                </CellTemplate>
+            </ClayColumn>
+        </Columns>
+        <RowActions Context="item">
+            @if (Editable)
+            {
+                <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить связь" OnClick="@(() => Remove.InvokeAsync(item.Id))" />
+            }
+        </RowActions>
+    </ClayGrid>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public NumPoolKind Kind { get; set; }
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter, EditorRequired] public IReadOnlyList<NumPoolLink> Links { get; set; } = [];
+    [Parameter] public bool Editable { get; set; }
+    [Parameter] public bool Private { get; set; }
+    [Parameter] public EventCallback<bool> PrivateChanged { get; set; }
+    [Parameter] public EventCallback<NumPoolOption> Add { get; set; }
+    [Parameter] public EventCallback<int> Remove { get; set; }
+    [Parameter] public Func<int, string?>? GetLink { get; set; }
+    [Parameter] public EventCallback<string> OpenLink { get; set; }
+
+    private ClayGridOptions _options = null!;
+    private NumPoolSelectDataSource _source = null!;
+    private ClaySelectOptions _selectOptions = null!;
+    private ClaySelect<NumPoolOption, int?>? _select;
+    private int _selectVersion;
+    private bool _focusPending;
+
+    protected override void OnInitialized()
+    {
+        _source = new(Db, Kind);
+        _selectOptions = new() { Placeholder = "Добавить", AutoSelectSingle = true };
+        _options = new()
+        {
+            Id = $"numpool-{Kind.ToString().ToLowerInvariant()}", AutoHeight = true, ShowAddButton = false, ShowPagination = false,
+            ShowToolbar = false, PageSize = int.MaxValue, AllowSorting = false, EnableValueFilter = false, AllowColumnReorder = false,
+        };
+    }
+
+    private async Task AddAsync(NumPoolOption? option)
+    {
+        if (option is null || !Editable) return;
+        await Add.InvokeAsync(option);
+        _focusPending = true;
+        _selectVersion++;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusPending || _select is null) return;
+        _focusPending = false;
+        await _select.FocusAsync();
+    }
+
+    private static string Display(NumPoolLink link) => link.Private == 1 ? "* " + link.Name : link.Name;
+}

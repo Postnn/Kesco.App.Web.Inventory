@@ -694,3 +694,7 @@
     max-inline-size: 1.3rem;
     max-block-size: 1.3rem;
 }
+
+.numpool-header {
+    max-inline-size: 38rem;
+}

@@ -1,0 +1,75 @@
+@page "/Telefon/NumPool"
+@page "/Telefon/NumPool.aspx"
+@layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
+@using Clayzor.Lib.Entities.Inventory
+@using Kesco.App.Web.Inventory.Components.Pages.TerritorialEntity
+@inherits TerritorialEntityCardBase<NumPool.FormState>
+
+<PageTitle>@CardTitle</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@(Dirty || Busy)" OnBeforeInternalNavigation="BeforeNavigationAsync" />
+
+<ClayEntityForm Options="FormOptions">
+    <Toolbar>
+        <ClayToolbar>
+            <ClayToolbarButton Options="OkButton" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="SaveButton" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
+            <ClayToolbarButton Options="ReloadButton" Disabled="@(Busy || Loading || StorageBlocked)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="CancelButton" Disabled="@Busy" OnClick="CancelAsync" />
+            @if (CanDelete)
+            {
+                <ClayToolbarButton Options="DeleteButton" Disabled="@(!CanCommit)" OnClick="DeleteAsync" />
+            }
+        </ClayToolbar>
+    </Toolbar>
+    <ChildContent>
+        <MudText Typo="Typo.h6" HtmlTag="h1" Class="mb-2">@CardTitle</MudText>
+        @if (Loading) { <MudProgressLinear Indeterminate="true" /> }
+        @if (Message is not null) { <MudAlert Severity="Severity.Warning" Class="mb-2">@Message</MudAlert> }
+        @if (Validation.Count > 0)
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-2"><ul>@foreach (var error in Validation) { <li>@error</li> }</ul></MudAlert>
+        }
+        @if (Draft is { } draft)
+        {
+            <div data-draft-scope="main" inert="@Busy" class="d-flex flex-column gap-3">
+                <div class="numpool-header d-flex flex-column gap-2">
+                    <ClayTextBox Options="_number" Value="@draft.Data.Header.Number" ValueChanged="@(value => ChangeHeaderAsync(Draft!.Data.Header with { Number = value ?? "" }))" />
+                    <ClaySelect TItem="NumPoolOption" TValue="int?" DataSource="_capacities" Options="_capacity"
+                                ValueSelector="@(item => item.Id)" TextSelector="@(item => item.Name)" Value="draft.Data.Header.CapacityId"
+                                ValueChanged="@(value => ChangeHeaderAsync(Draft!.Data.Header with { CapacityId = value }))" />
+                    <ClayTextBox Options="_incomingFor" Value="@draft.Data.Header.IncomingFor" ValueChanged="@(value => ChangeHeaderAsync(Draft!.Data.Header with { IncomingFor = value }))" />
+                    <ClayTextBox Options="_incomingTo" Value="@draft.Data.Header.IncomingTo" ValueChanged="@(value => ChangeHeaderAsync(Draft!.Data.Header with { IncomingTo = value }))" />
+                    <ClayNumber Options="_control" Value="draft.Data.Header.Control" ValueChanged="@(value => ChangeHeaderAsync(Draft!.Data.Header with { Control = value }))" />
+                    <ClayTextArea Options="_notes" Value="@draft.Data.Header.Notes" ValueChanged="@(value => ChangeHeaderAsync(Draft!.Data.Header with { Notes = value }))" />
+                </div>
+                <NumPoolUseSection Kind="NumPoolKind.Connection" Label="Подключения телефонии" Links="draft.Data.Connections" Editable="Editable"
+                                   Add="@(option => AddLinkAsync(NumPoolKind.Connection, option))" Remove="@(id => RemoveLinkAsync(NumPoolKind.Connection, id))" />
+                <MudGrid Spacing="2">
+                    <MudItem xs="12" md="4">
+                        <NumPoolUseSection Kind="NumPoolKind.Customer" Label="Лица заказчики" Links="draft.Data.Customers" Editable="Editable"
+                                           Add="@(option => AddLinkAsync(NumPoolKind.Customer, option))" Remove="@(id => RemoveLinkAsync(NumPoolKind.Customer, id))"
+                                           GetLink="CustomerUrl" OpenLink="OpenLinkAsync" />
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <NumPoolUseSection Kind="NumPoolKind.Employee" Label="Сотрудники" Links="draft.Data.Employees" Editable="Editable"
+                                           Private="draft.EmployeePrivate" PrivateChanged="ChangePrivateAsync"
+                                           Add="@(option => AddLinkAsync(NumPoolKind.Employee, option))" Remove="@(id => RemoveLinkAsync(NumPoolKind.Employee, id))"
+                                           GetLink="EmployeeUrl" OpenLink="OpenLinkAsync" />
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <NumPoolUseSection Kind="NumPoolKind.Phone" Label="Телефонные номера" Links="draft.Data.Phones" Editable="Editable"
+                                           Add="@(option => AddLinkAsync(NumPoolKind.Phone, option))" Remove="@(id => RemoveLinkAsync(NumPoolKind.Phone, id))"
+                                           GetLink="PhoneUrl" OpenLink="OpenLinkAsync" />
+                    </MudItem>
+                </MudGrid>
+            </div>
+        }
+    </ChildContent>
+    <Footer>
+        @if (_saved?.Header is { } header)
+        {
+            <ClayChanged ChangedById="header.ChangedBy" ChangedByName="@header.ChangedByName" ChangedAt="header.ChangedAt"
+                         ChangedByUrl="@EmployeeUrl(header.ChangedBy)" />
+        }
+    </Footer>
+</ClayEntityForm>
