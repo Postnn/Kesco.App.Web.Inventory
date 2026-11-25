@@ -1,5 +1,6 @@
 using Clayzor.Lib.DALC;
 using Clayzor.Lib.Entities.Inventory;
+using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.TerritorialEntity;
 using Clayzor.Lib.Entities.Tree;
 using Clayzor.Lib.Web.Controls.Components.Grid;
