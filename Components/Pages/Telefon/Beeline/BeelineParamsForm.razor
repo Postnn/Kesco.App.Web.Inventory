@@ -1,0 +1,83 @@
+@using System.Globalization
+@page "/Telefon/BeelineParams"
+@page "/Telefon/BeelineParams.aspx"
+@layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
+@using Clayzor.Lib.Entities.Inventory
+@using Kesco.App.Web.Inventory.Components.Pages.TerritorialEntity
+@inherits TerritorialEntityCardBase<BeelineDraft>
+
+<PageTitle>Параметры договора Билайн</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@(Dirty || Busy || ConfirmedCleanupPending)" OnBeforeInternalNavigation="BeforeNavigationAsync" />
+<ClayEntityForm Options="FormOptions">
+    <Toolbar>
+        <ClayToolbar>
+            <ClayToolbarButton Options="Ok" Disabled="@(Busy || Loading || _openingSim || ConfirmedCleanupPending || Draft is null || Dirty && !CanSave)"
+                               OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="SaveButton" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
+            <ClayToolbarButton Options="ReloadButton" Disabled="@(!CanRefresh || _openingSim)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="CancelButton" Disabled="@(Busy || _openingSim)" OnClick="CancelAsync" />
+        </ClayToolbar>
+    </Toolbar>
+    <ChildContent>
+        <MudText Typo="Typo.h6" HtmlTag="h1" Class="mb-2">Параметры договора Билайн</MudText>
+        @if (Loading)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        @if (Message is not null)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-2">@Message</MudAlert>
+        }
+        @if (Validation.Count != 0)
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-2">
+                <ul>@foreach (var error in Validation) { <li>@error</li> }</ul>
+            </MudAlert>
+        }
+        @if (_contract is { } contract && Draft is { } draft)
+        {
+            @if (_zones.Length == 0)
+            {
+                <MudAlert Severity="Severity.Error" Class="mb-2">Список Time Zone не настроен. Сохранение недоступно.</MudAlert>
+            }
+            else if (!string.IsNullOrEmpty(draft.TimeZone) && !_zones.Contains(draft.TimeZone, StringComparer.Ordinal))
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-2">Сохранённый Time Zone отсутствует в списке. Для записи выберите настроенный вариант.</MudAlert>
+            }
+
+            <div class="d-flex flex-column gap-2" data-draft-scope="main" inert="@(DraftInputSuppressed || _openingSim)">
+                <ClayTextBox Options="BaseNumberOptions" Value="@contract.BaseNumber" />
+                @if (contract.MobileBudget)
+                {
+                    <ClayTextBox Options="BudgetNumberOptions" Value="@contract.BudgetNumber" />
+                    <div class="d-flex align-items-center flex-wrap gap-2">
+                        <MudLink OnClick="OpenSimAsync">Номер телефона МБ:</MudLink>
+                        <ClayTextBox Options="BudgetPhoneOptions" Value="@contract.BudgetPhone" />
+                    </div>
+                    <MudText Typo="Typo.body2">Мобильный бюджет</MudText>
+                }
+                <ClayTextBox Options="CustomerOptions" Value="@contract.Customer" />
+                @if (contract.MobileBudget)
+                {
+                    <ClayTextBox Options="UserOptions" Value="@contract.UserName" />
+                }
+                <div class="d-flex align-items-center flex-wrap gap-2">
+                    <ClayDatePicker Options="ActualDateOptions" Value="@contract.Actual.Date" />
+                    <ClayTextBox Options="ActualTimeOptions" Value="@contract.Actual.ToString("HH:mm:ss", CultureInfo.InvariantCulture)" />
+                </div>
+                <ClayDropDownList TItem="string" TValue="string" Options="_zoneOptions" Items="@ZoneChoices"
+                                  Value="@draft.TimeZone" ValueChanged="ChangeZoneAsync"
+                                  ValueSelector="@Identity" TextSelector="@Identity" />
+                <ClayTextBox Options="_emailOptions" Value="@draft.EmailManager" ValueChanged="ChangeEmailAsync" />
+            </div>
+        }
+    </ChildContent>
+    <Footer>
+        @if (_contract is { } changed)
+        {
+            <ClayChanged ChangedById="@changed.ChangedBy" ChangedByName="@changed.ChangedByName"
+                         ChangedAt="@changed.ChangedAt" ChangedByUrl="@AuthorUrl(changed.ChangedBy)" />
+        }
+    </Footer>
+</ClayEntityForm>
+
