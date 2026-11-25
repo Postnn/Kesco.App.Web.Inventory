@@ -1,5 +1,6 @@
 using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Web.Controls.Components.Form;
+using Kesco.App.Web.Inventory.Components.Pages.TerritorialEntity;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 
@@ -34,13 +35,45 @@ public partial class SimFmtnForm
     protected override bool Editable => !_deleted && (Id is null ? _access.CanInsert : _original is not null && _access.CanUpdate);
     private bool CanDelete => _original?.Fields.FitsWritePolicy == true && _access.CanDelete;
     protected override bool CanRegisterDraft => Editable || CanDelete;
+    protected override DraftRowVersion? ReadDraftRowVersion() => _original is { } row
+        ? new(row.Prefix, row.ChangedBy, row.ChangedByName, row.ChangedAt) : null;
+
+    protected override IReadOnlyList<DraftMergeField> MergeFields =>
+    [
+        new("Prefix", "Префикс FMTN", "fmt.prefix"),
+        new("ShortNumber", "Короткий номер", "fmt.short"),
+        new("Description", "Описание", "fmt.description"),
+    ];
+    protected override bool CanReadMissingDraft => _access.CanRead && (_access.CanUpdate || _access.CanDelete) &&
+        Id is { Length: > 0 and <= 20 } key && key.All(c => char.IsAsciiDigit(c) || c is '(' or ')' or '_');
+
+    protected override async Task<CompareRead> ReadForComparisonAsync(SimFmtnFields proposed, Employee actor, CancellationToken token)
+    {
+        var access = await SimFmtnData.ReadAccessAsync(Db, actor, token);
+        if (!access.CanRead) throw new UnauthorizedAccessException();
+        var target = proposed.Prefix;
+        if (target is not { Length: > 0 and <= 20 } ||
+            target.Any(c => !char.IsAsciiDigit(c) && c is not ('(' or ')' or '_'))) return new(null);
+        var found = await SimFmtnData.ReadAsync(Db, target, token);
+        if (Id is not { } original || original == target) return new(found?.Fields);
+        token.ThrowIfCancellationRequested();
+        var source = await SimFmtnData.ReadAsync(Db, original, token);
+        return new(found?.Fields, source?.Fields, ChangedKey: true);
+    }
     protected override bool IsDomainRejection(Exception exception) => exception is SimFmtnConflict;
-    protected override async Task LoadAccessAsync(Employee user) => _access = await SimFmtnData.ReadAccessAsync(Db, user, Lifetime);
+    protected override async Task LoadAccessAsync(Employee user, CancellationToken routeToken)
+    {
+        var access = await SimFmtnData.ReadAccessAsync(Db, user, routeToken);
+        routeToken.ThrowIfCancellationRequested();
+        _access = access;
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        var root = DraftRootSelector;
         var focus = _focusPending && !Loading;
         await base.OnAfterRenderAsync(firstRender);
+        if (root != DraftRootSelector || Loading) return;
         if (_savedKeyForNavigation is { } target && Id == target && !Loading)
         {
             _savedKeyForNavigation = null;
@@ -52,7 +85,7 @@ public partial class SimFmtnForm
         await JS.InvokeVoidAsync("claySimFmtn.focusPrefix", Lifetime, _fields);
     }
 
-    protected override async Task<SimFmtnFields?> LoadCardAsync()
+    protected override async Task<SimFmtnFields?> LoadCardAsync(CancellationToken routeToken)
     {
         _original = null;
         _deleted = false;
@@ -64,8 +97,15 @@ public partial class SimFmtnForm
                 Message = "Некорректный префикс FMTN в ссылке.";
                 return null;
             }
-            _original = await SimFmtnData.ReadAsync(Db, key, Lifetime);
-            if (_original is null) { Message = "Запись FMTN не найдена."; return null; }
+            var original = await SimFmtnData.ReadAsync(Db, key, routeToken);
+            routeToken.ThrowIfCancellationRequested();
+            _original = original;
+            if (_original is null)
+            {
+                _prefix.ReadOnly = _shortNumber.ReadOnly = _description.ReadOnly = true;
+                Message = "Запись FMTN не найдена.";
+                return null;
+            }
         }
         _prefix.ReadOnly = _shortNumber.ReadOnly = _description.ReadOnly = !Editable;
         _focusPending = Editable;
@@ -86,15 +126,15 @@ public partial class SimFmtnForm
             Accept(_original.Fields);
         })) return;
 
-        if (StorageBlocked) return;
+        await AfterDraftCleanupAsync(CompleteSaveAsync);
+    }
+
+    private async Task CompleteSaveAsync()
+    {
         if (Id != _original!.Prefix)
         {
             _savedKeyForNavigation = _original.Prefix;
-            try
-            {
-                if (ParentPage is null && ParentId is null && ParentName is null) await RefreshOpenerAsync();
-            }
-            catch (JSException) { Message = "Запись сохранена. Обновить родительское окно не удалось."; }
+            if (ParentPage is null && ParentId is null && ParentName is null) await RefreshOpenerAsync();
             Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("id", _original.Prefix), replace: true);
             return;
         }
@@ -113,8 +153,11 @@ public partial class SimFmtnForm
         _original = null;
         _deleted = true;
         _prefix.ReadOnly = _shortNumber.ReadOnly = _description.ReadOnly = true;
-        Message = "Запись FMTN удалена.";
-        await CompleteAsync();
+        await AfterDraftCleanupAsync(async () =>
+        {
+            Message = "Запись FMTN удалена.";
+            await CompleteAsync();
+        });
     }
 
     private async Task CompleteAsync()

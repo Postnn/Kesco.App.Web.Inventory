@@ -1,0 +1,50 @@
+@using MudBlazor
+
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">Сверка карточки</MudText></TitleContent>
+    <DialogContent>
+        <div class="d-flex flex-column gap-3">
+            <MudText>Выберите версию каждого поля. Независимые изменения будут объединены в черновике.</MudText>
+            @foreach (var conflict in Conflicts)
+            {
+                <fieldset>
+                    <legend>@conflict.Field.Label</legend>
+                    <MudText Typo="Typo.body2">Исходное значение — @conflict.Original</MudText>
+                    <MudRadioGroup T="bool?" Value="@Choice(conflict)" ValueChanged="value => SetChoice(conflict, value)">
+                        <MudRadio T="bool?" Value="@((bool?)false)">Мой ввод — @conflict.Local</MudRadio>
+                        <MudRadio T="bool?" Value="@((bool?)true)">Текущее в базе — @conflict.Fresh</MudRadio>
+                    </MudRadioGroup>
+                    @if (conflict.HasBrowserInput)
+                    {
+                        <MudText Typo="Typo.body2">Выбор версии базы заменит локальный ввод этого поля в браузере.</MudText>
+                    }
+                </fieldset>
+            }
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Отмена</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(_choices.Count != Conflicts.Count)" OnClick="Confirm">Сохранить выбор</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance? Dialog { get; set; }
+    [Parameter, EditorRequired] public IReadOnlyList<DraftFieldConflict> Conflicts { get; set; } = [];
+
+    private readonly Dictionary<string, bool> _choices = new(StringComparer.Ordinal);
+
+    private bool? Choice(DraftFieldConflict conflict) => _choices.TryGetValue(conflict.Field.Path, out var value) ? value : null;
+
+    private void SetChoice(DraftFieldConflict conflict, bool? value)
+    {
+        if (value.HasValue) _choices[conflict.Field.Path] = value.Value;
+    }
+
+    private void Cancel() => Dialog?.Cancel();
+    private void Confirm()
+    {
+        if (_choices.Count == Conflicts.Count)
+            Dialog?.Close(DialogResult.Ok(_choices));
+    }
+}

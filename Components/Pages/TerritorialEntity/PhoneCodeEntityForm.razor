@@ -5,16 +5,16 @@
 @inherits TerritorialEntityCardBase<PhoneCodeEntityForm.FormState>
 
 <PageTitle>Телефонный код</PageTitle>
-<NavigationLock ConfirmExternalNavigation="@(Dirty || Busy)" OnBeforeInternalNavigation="BeforeNavigationAsync" />
+<NavigationLock ConfirmExternalNavigation="@(Dirty || Busy || ConfirmedCleanupPending)" OnBeforeInternalNavigation="BeforeNavigationAsync" />
 
 <ClayEntityForm Options="FormOptions">
     <Toolbar>
         <ClayToolbar>
             <ClayToolbarButton Options="OkButton" Disabled="@(Busy || Loading || Draft is null || (Dirty && !CanCommit))" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="ApplyButton" Disabled="@(!Editable || !CanCommit || !Dirty)" OnClick="@(() => SaveAsync(false))" />
-            <ClayToolbarButton Options="ReloadButton" Disabled="@(Busy || Loading || StorageBlocked)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="ReloadButton" Disabled="@(!CanRefresh)" OnClick="RefreshAsync" />
             <ClayToolbarButton Options="CancelButton" Disabled="@Busy" OnClick="CancelAsync" />
-            @if (_original is not null && Access.PhoneDelete)
+            @if (CanDelete)
             {
                 <ClayToolbarButton Options="DeleteButton" Disabled="@(!CanCommit)" OnClick="DeleteAsync" />
             }
@@ -38,7 +38,7 @@
         }
         @if (Draft is { } draft)
         {
-            <div class="d-flex flex-column gap-2" data-draft-scope="main" inert="@Busy">
+            <div class="d-flex flex-column gap-2" data-draft-scope="main" inert="@DraftInputSuppressed">
                 <ClaySelect TItem="TerritorialEntityLookup" TValue="int?" DataSource="_territorySource"
                             ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.DisplayName)"
                             Value="@draft.TerritoryId" ValueChanged="ChangeTerritoryAsync" Options="_territoryOptions"

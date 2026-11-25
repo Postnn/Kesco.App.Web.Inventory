@@ -5,6 +5,7 @@ using Clayzor.Lib.Web.Controls.Components.Select;
 using Clayzor.Lib.Web.Controls.Services;
 using Clayzor.Lib.Web.DBSelect.Phones;
 using Kesco.App.Web.Inventory.Services;
+using Kesco.App.Web.Inventory.Components.Pages.TerritorialEntity;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 using MudBlazor;
@@ -38,18 +39,54 @@ public partial class NumPool
     protected override string EntityKey => RouteKey;
     protected override bool Editable => !_deleted && (Id is null && _saved is null ? _access.CanInsert : _saved is not null && _access.CanUpdate);
     protected override bool CanRegisterDraft => Editable || CanDelete;
+    protected override IReadOnlyList<DraftMergeField> MergeFields =>
+    [
+        .. (Id is null ? new DraftMergeField[]
+        {
+            new("Data.Header.Number", "Номер ТфОП", "numpool.number"),
+            new("Data.Header.CapacityId", "Номерная ёмкость", "numpool.capacity"),
+        } : []),
+        new("Data.Header.IncomingFor", "Входящий для", "numpool.for"),
+        new("Data.Header.IncomingTo", "Входящий на", "numpool.to"),
+        new("Data.Header.Control", "Контроль", "numpool.control"),
+        new("Data.Header.Notes", "Примечания", "numpool.notes"),
+        new("Data.Connections", "Подключения телефонии"),
+        new("Data.Customers", "Лица заказчики"),
+        new("Data.Employees", "Сотрудники"),
+        new("Data.Phones", "Телефонные номера"),
+        new("EmployeePrivate", "Признак личного номера при добавлении сотрудника"),
+    ];
+    protected override bool CanReadMissingDraft => _access.CanRead && (_access.CanUpdate || _access.CanDelete) && NumPoolData.ValidNumber(Id);
+
+    protected override async Task<CompareRead> ReadForComparisonAsync(FormState proposed, Employee actor, CancellationToken token)
+    {
+        var number = Id ?? proposed.Data.Header.Number;
+        if (!NumPoolData.ValidNumber(number)) return new(null);
+        var access = await NumPoolData.ReadAccessAsync(Db, actor, token);
+        if (!access.CanRead) throw new UnauthorizedAccessException();
+        token.ThrowIfCancellationRequested();
+        var actual = await NumPoolData.ReadAsync(Db, number, token);
+        return new(actual is null ? null : new FormState(actual, false));
+    }
+
+    protected override bool SameComparisonValues(FormState actual, FormState proposed) =>
+        NumPoolData.SameValues(actual.Data, proposed.Data);
     private bool CanDelete => !_deleted && _saved is not null && _access.CanDelete;
     private bool CanSave => Editable && CanCommit && Draft is { } draft && Clean is { } clean && !NumPoolData.SameValues(draft.Data, clean.Data);
     private string CardTitle => $"Номер ТфОП: {_saved?.Header.Number ?? Id}";
 
     protected override void OnInitialized() => _capacities = new(Db, NumPoolKind.Capacity);
-    protected override Task LoadAccessAsync(Employee user) => SetAccessAsync(user);
-    private async Task SetAccessAsync(Employee user) => _access = await NumPoolData.ReadAccessAsync(Db, user, Lifetime);
+    protected override async Task LoadAccessAsync(Employee user, CancellationToken routeToken)
+    {
+        var access = await NumPoolData.ReadAccessAsync(Db, user, routeToken);
+        routeToken.ThrowIfCancellationRequested();
+        _access = access;
+    }
     protected override bool IsDomainRejection(Exception exception) => exception is NumPoolConflict;
     protected override bool StatesEqual(FormState? left, FormState? right) => left is null || right is null
         ? left == right : left.EmployeePrivate == right.EmployeePrivate && NumPoolData.SameVersion(left.Data, right.Data);
 
-    protected override async Task<FormState?> LoadCardAsync()
+    protected override async Task<FormState?> LoadCardAsync(CancellationToken routeToken)
     {
         _saved = null;
         _deleted = false;
@@ -57,8 +94,15 @@ public partial class NumPool
         if (Id is { } number)
         {
             if (!NumPoolData.ValidNumber(number)) { Message = "Некорректный номер ТфОП в ссылке."; return null; }
-            _saved = await NumPoolData.ReadAsync(Db, number, Lifetime);
-            if (_saved is null) { Message = "Номер ТфОП не найден или недоступен."; return null; }
+            var saved = await NumPoolData.ReadAsync(Db, number, routeToken);
+            routeToken.ThrowIfCancellationRequested();
+            _saved = saved;
+            if (_saved is null)
+            {
+                UpdateOptions();
+                Message = "Номер ТфОП не найден или недоступен.";
+                return null;
+            }
         }
         UpdateOptions();
         _focusPending = Editable;
@@ -67,9 +111,10 @@ public partial class NumPool
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        var root = DraftRootSelector;
         var focus = _focusPending && !Loading;
         await base.OnAfterRenderAsync(firstRender);
-        if (!focus || Draft is null) return;
+        if (root != DraftRootSelector || Loading || !focus || Draft is null) return;
         _focusPending = false;
         await JS.InvokeVoidAsync("clayNumPool.focus", Lifetime, DraftRootSelector, _saved is null ? _number.DraftKey : _incomingFor.DraftKey);
     }
@@ -112,10 +157,13 @@ public partial class NumPool
 
         Accept(new(_saved!, false));
         UpdateOptions();
-        await RefreshOpenerAsync();
-        if (close) await FinishAsync();
-        else if (Id != _saved!.Header.Number && !StorageBlocked)
-            Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("id", _saved.Header.Number), replace: true);
+        await AfterDraftCleanupAsync(async () =>
+        {
+            await RefreshOpenerAsync();
+            if (close) await FinishAsync();
+            else if (Id != _saved!.Header.Number)
+                Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("id", _saved.Header.Number), replace: true);
+        });
     }
 
     private async Task DeleteAsync()
@@ -127,9 +175,12 @@ public partial class NumPool
         _saved = null;
         Accept(new(NumPoolSnapshot.Empty, false));
         UpdateOptions();
-        Message = "Номер ТфОП удалён.";
-        await RefreshOpenerAsync();
-        await FinishAsync();
+        await AfterDraftCleanupAsync(async () =>
+        {
+            Message = "Номер ТфОП удалён.";
+            await RefreshOpenerAsync();
+            await FinishAsync();
+        });
     }
 
     private async Task FinishAsync()

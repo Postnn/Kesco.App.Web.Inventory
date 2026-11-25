@@ -1,4 +1,5 @@
 using System.Globalization;
+using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Entities.TerritorialEntity;
 using Clayzor.Lib.Web.Controls.Components.Form;
 using Clayzor.Lib.Web.Controls.Components.Select;
@@ -33,43 +34,80 @@ public partial class PhoneCodeEntityForm
     private TerritorialEntityOption[] _types = [];
     private PhoneCodeEntityRecord? _original;
     private bool _territoryConflict;
+    private bool _deleted;
 
     protected override string FormKey => "phone-code-form";
-    protected override string EntityKey => _original is null ? $"new:{QueryTerritory ?? ""}" : $"existing:{_original.Code}";
+    protected override string EntityKey => _original is { } original ? $"existing:{original.Code}" : RouteKey;
     protected override string RouteKey => QueryId is null ? $"new:{QueryTerritory}" : $"existing:{QueryId}";
-    protected override bool Editable => _original is null ? string.IsNullOrEmpty(QueryId) && Access.PhoneInsert : Access.PhoneUpdate;
-    protected override bool CanRegisterDraft => Editable || _original is not null && Access.PhoneDelete;
+    protected override bool Editable => !_deleted && (_original is null ? string.IsNullOrEmpty(QueryId) && Access.PhoneInsert : Access.PhoneUpdate);
+    private bool CanDelete => !_deleted && _original is not null && Access.PhoneDelete;
+    protected override bool CanRegisterDraft => Editable || CanDelete;
+    protected override DraftRowVersion? ReadDraftRowVersion() => _original is { } row
+        ? new(row.Code, row.ChangedBy, row.ChangedByName, row.ChangedAt) : null;
 
-    protected override async Task<FormState?> LoadCardAsync()
+    protected override IReadOnlyList<DraftMergeField> MergeFields =>
+    [
+        .. (QueryId is null ? new DraftMergeField[] { new("Code", "Телефонный код", "phone-code.code") } : []),
+        new("TerritoryId", "Территория", "phone-code.territory"),
+        new("Length", "Длина кода области", "phone-code.length"),
+        new("TypeId", "Тип телефонной связи", "phone-code.type"),
+        new("Comment", "Комментарий", "phone-code.comment"),
+    ];
+    protected override bool CanReadMissingDraft => QueryId is { Length: > 0 and <= 20 } code &&
+        !string.IsNullOrWhiteSpace(code) && (Access.PhoneUpdate || Access.PhoneDelete);
+
+    protected override async Task<CompareRead> ReadForComparisonAsync(FormState proposed, Employee actor, CancellationToken token)
+    {
+        var code = QueryId ?? proposed.Code;
+        if (string.IsNullOrWhiteSpace(code) || code.Length > 20) return new(null);
+        var found = await TerritorialEntityData.ReadPhoneAsync(Db, code, token);
+        return new(found is null ? null : ToState(found));
+    }
+
+    protected override async Task<FormState?> LoadCardAsync(CancellationToken routeToken)
     {
         _original = null;
+        _deleted = false;
         _territoryConflict = false;
-        _territorySource = new(Db);
+        var source = _territorySource = new TerritorialEntitySelectDataSource(Db);
+        var code = QueryId;
+        var territory = QueryTerritory;
         int? defaultTerritory = null;
-        if (!string.IsNullOrEmpty(QueryId))
+        PhoneCodeEntityRecord? original = null;
+        var territoryConflict = false;
+        if (!string.IsNullOrEmpty(code))
         {
-            if (QueryId.Length > 20 || string.IsNullOrWhiteSpace(QueryId))
+            if (code.Length > 20 || string.IsNullOrWhiteSpace(code))
             {
                 Message = "Некорректный телефонный код.";
                 return null;
             }
-            _original = await TerritorialEntityData.ReadPhoneAsync(Db, QueryId, Lifetime);
-            if (_original is null)
+            original = await TerritorialEntityData.ReadPhoneAsync(Db, code, routeToken);
+            routeToken.ThrowIfCancellationRequested();
+            if (original is null)
             {
-                Message = $"Телефонный код {QueryId} не найден или недоступен!";
+                UpdateAccess();
+                Message = $"Телефонный код {code} не найден или недоступен!";
                 return null;
             }
-            var savedTerritory = await _territorySource.GetByIdAsync(_original.TerritoryId, Lifetime);
-            _territoryConflict = savedTerritory?.IsPhoneCodeTerritory != true;
+            var savedTerritory = await source.GetByIdAsync(original.TerritoryId, routeToken);
+            routeToken.ThrowIfCancellationRequested();
+            territoryConflict = savedTerritory?.IsPhoneCodeTerritory != true;
         }
-        else if (QueryTerritory is not null)
+        else if (territory is not null)
         {
-            if (!TerritorialEntityRoutes.TryPositiveId(QueryTerritory, out var id) ||
-                (await _territorySource.GetByIdAsync(id, Lifetime))?.IsPhoneCodeTerritory != true)
+            if (TerritorialEntityRoutes.TryPositiveId(territory, out var id) &&
+                (await source.GetByIdAsync(id, routeToken))?.IsPhoneCodeTerritory == true)
+                defaultTerritory = id;
+            routeToken.ThrowIfCancellationRequested();
+            if (defaultTerritory is null)
                 Message = "Переданная территория не найдена или не подходит для телефонного кода. Выберите другую.";
-            else defaultTerritory = id;
         }
-        _types = (await TerritorialEntityData.ReadPhoneTypesAsync(Db, Lifetime)).ToArray();
+        var types = await TerritorialEntityData.ReadPhoneTypesAsync(Db, routeToken);
+        routeToken.ThrowIfCancellationRequested();
+        _original = original;
+        _territoryConflict = territoryConflict;
+        _types = types.ToArray();
         UpdateAccess();
         return _original is null ? new(defaultTerritory, "", null, null, "") : ToState(_original);
     }
@@ -163,23 +201,29 @@ public partial class PhoneCodeEntityForm
         _original = saved!;
         Accept(ToState(_original));
         UpdateAccess();
-        await RefreshOpenerAsync();
-        if (close)
+        await AfterDraftCleanupAsync(async () =>
         {
-            await CloseAsync();
-            return;
-        }
-        if (inserting)
-            Navigation.NavigateTo(Navigation.ToAbsoluteUri(TerritorialEntityRoutes.PhoneEdit(_original.Code)).AbsoluteUri, replace: true);
+            await RefreshOpenerAsync();
+            if (close) await CloseAsync();
+            else if (inserting)
+                Navigation.NavigateTo(Navigation.ToAbsoluteUri(TerritorialEntityRoutes.PhoneEdit(_original.Code)).AbsoluteUri, replace: true);
+        });
     }
 
     private async Task DeleteAsync()
     {
-        if (_original is not { } original || !Access.PhoneDelete || !CanCommit ||
+        if (_original is not { } original || !CanDelete || !CanCommit ||
             !await ConfirmAsync("Удаление", "Вы уверены, что хотите удалить информацию о телефонном коде?")) return;
         if (!await ExecuteWriteAsync("phone-code.delete", principal => TerritorialEntityData.DeletePhoneAsync(Db, principal, original, Lifetime))) return;
-        await RefreshOpenerAsync();
-        await CloseAsync();
+        _deleted = true;
+        Accept(ToState(original));
+        UpdateAccess();
+        await AfterDraftCleanupAsync(async () =>
+        {
+            Message = "Телефонный код удалён.";
+            await RefreshOpenerAsync();
+            await CloseAsync();
+        });
     }
 
     private static FormState ToState(PhoneCodeEntityRecord value) => new(value.TerritoryId, value.Code,

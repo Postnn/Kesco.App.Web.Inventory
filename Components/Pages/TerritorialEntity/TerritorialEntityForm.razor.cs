@@ -33,6 +33,7 @@ public partial class TerritorialEntityForm
     private readonly ClayTextBoxOptions _directionOptions = new() { Label = "Направление", Required = true, MaxLength = 300, DraftKey = "territory.direction" };
     private TerritorialEntityOption[] _types = [];
     private int _id;
+    private bool _recordAvailable;
     private int _phoneListVersion;
     private string PhoneListUrl => Navigation.ToAbsoluteUri(TerritorialEntityRoutes.Grid(Запросы.Телефонные_коды,
         _id, TerritorialEntityRoutes.PhoneListContext)).AbsoluteUri;
@@ -40,30 +41,60 @@ public partial class TerritorialEntityForm
     protected override string FormKey => "territory-form";
     protected override string EntityKey => _id.ToString(CultureInfo.InvariantCulture);
     protected override string RouteKey => $"{QueryId}:{QueryParent}";
-    protected override bool Editable => _id > 0 && Access.TerritoryUpdate;
+    protected override bool Editable => _recordAvailable && _id > 0 && Access.TerritoryUpdate;
+    protected override IReadOnlyList<DraftMergeField> MergeFields =>
+    [
+        new("Record.Type", "Тип", "territory.type"),
+        new("Classification", "Код ОКСМ", "territory.oksm"),
+        new("Record.Name", "Название территории на русском языке", "territory.name"),
+        new("Record.AlternateName", "Альтернативное название на русском языке", "territory.alternate-name"),
+        new("Record.Caption", "Международное название на английском языке", "territory.caption"),
+        new("Record.AlternateCaption", "Альтернативное международное название", "territory.alternate-caption"),
+        new("Record.Abbreviation", "Аббревиатура", "territory.abbreviation"),
+        new("Record.CountryCode", "Тел. код страны", "territory.country-code"),
+        new("Record.Direction", "Направление", "territory.direction"),
+    ];
+    protected override bool CanReadMissingDraft => Access.TerritoryUpdate && TerritorialEntityRoutes.TryPositiveId(QueryId, out _);
 
-    protected override async Task<FormState?> LoadCardAsync()
+    protected override async Task<CompareRead> ReadForComparisonAsync(FormState proposed, Clayzor.Lib.Entities.Inventory.Employee actor, CancellationToken token)
     {
-        if (!TerritorialEntityRoutes.TryTerritoryId(QueryId, out _id))
+        if (!TerritorialEntityRoutes.TryPositiveId(QueryId, out var id)) return new(null);
+        var record = await TerritorialEntityData.ReadTerritoryAsync(Db, id, token);
+        return new(record is null ? null : new FormState(record, record.CountryClassification?.ToString(CultureInfo.InvariantCulture)));
+    }
+
+    protected override async Task<FormState?> LoadCardAsync(CancellationToken routeToken)
+    {
+        _id = 0;
+        _recordAvailable = false;
+        var queryParent = QueryParent;
+        if (!TerritorialEntityRoutes.TryTerritoryId(QueryId, out var id))
         {
             Message = QueryId is null ? "Код территории не передан." : "Некорректный код территории.";
             return null;
         }
-        if (_id == 0 && QueryParent is not null &&
-            (!TerritorialEntityRoutes.TryPositiveId(QueryParent, out var parent) ||
-             await TerritorialEntityData.FindTerritoryAsync(Db, parent, Lifetime) is null))
+        if (id == 0 && queryParent is not null &&
+            (!TerritorialEntityRoutes.TryPositiveId(queryParent, out var parent) ||
+             await TerritorialEntityData.FindTerritoryAsync(Db, parent, routeToken) is null))
         {
+            routeToken.ThrowIfCancellationRequested();
             Message = "Родительская территория не найдена или недоступна.";
             return null;
         }
-        var record = _id == 0 ? new TerritorialEntityRecord { ParentId = int.TryParse(QueryParent, out var parentId) ? parentId : null }
-            : await TerritorialEntityData.ReadTerritoryAsync(Db, _id, Lifetime);
+        routeToken.ThrowIfCancellationRequested();
+        _id = id;
+        var record = id == 0 ? new TerritorialEntityRecord { ParentId = int.TryParse(queryParent, out var parentId) ? parentId : null }
+            : await TerritorialEntityData.ReadTerritoryAsync(Db, id, routeToken);
+        routeToken.ThrowIfCancellationRequested();
         if (record is null)
         {
             Message = "Территория не найдена или недоступна.";
             return null;
         }
-        _types = (await TerritorialEntityData.ReadTerritoryTypesAsync(Db, Lifetime)).ToArray();
+        var types = await TerritorialEntityData.ReadTerritoryTypesAsync(Db, routeToken);
+        routeToken.ThrowIfCancellationRequested();
+        _recordAvailable = true;
+        _types = types.ToArray();
         foreach (var option in new ClayInputOptions[] { _typeOptions, _classificationOptions, _nameOptions, _alternateNameOptions,
             _captionOptions, _alternateCaptionOptions, _abbreviationOptions, _countryOptions, _directionOptions })
             option.ReadOnly = !Editable;
@@ -95,8 +126,11 @@ public partial class TerritorialEntityForm
         if (!await ExecuteWriteAsync("territory.update", async principal =>
                 saved = await TerritorialEntityData.UpdateTerritoryAsync(Db, principal, original.Record, record, Lifetime))) return;
         Accept(new(saved!, saved!.CountryClassification?.ToString(CultureInfo.InvariantCulture)));
-        await RefreshOpenerAsync();
-        if (close) await CloseAsync();
+        await AfterDraftCleanupAsync(async () =>
+        {
+            await RefreshOpenerAsync();
+            if (close) await CloseAsync();
+        });
     }
 
     [Inject] private IConfiguration Configuration { get; set; } = null!;

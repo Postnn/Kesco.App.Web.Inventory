@@ -26,15 +26,31 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected ClayEntityFormOptions FormOptions { get; } = new() { MaxWidth = "100%" };
 
     /// <summary>CSS-селектор корня этой карточки и её draft-области.</summary>
-    protected string DraftRootSelector => $".territory-draft-{_draftOwner}";
+    protected string DraftRootSelector => $".{DraftRootClass}";
 
     /// <summary>Уникальный CSS-класс корня карточки.</summary>
     protected string DraftRootClass => FormOptions.Class!;
 
     /// <summary>Назначает уникальный CSS-корень для изоляции draft-ввода.</summary>
     protected TerritorialEntityCardBase() => FormOptions.Class = $"territory-draft-{_draftOwner}";
+    private CancellationTokenSource? _routeLoad;
+    private readonly Dictionary<string, Task> _pendingDraftWork = new(StringComparer.Ordinal);
     private ClayDraftRegistration? _registration;
+    private string? _registrationKey;
+    private TState? _draftOriginal;
+    private DraftRowVersion? _freshVersion;
+    private DraftRowVersion? _originalVersion;
+    private ClayDraftOperation? _unresolvedOperation;
+    private bool _storageRetryRequired;
+    private bool _initialStorageFailed;
+    private bool _baselineConflict;
+    private bool _readOnlyDraft;
+    private string? _notSentAttemptId;
+    private long? _confirmedCleanupRevision;
+    private Func<Task>? _afterConfirmedCleanup;
     private bool _restoreRaw;
+    private bool _restoreIncomplete;
+    private bool _applyingRaw;
     private bool _disposed;
     private bool _loadPending;
     private bool _navigationApproved;
@@ -55,7 +71,11 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected bool Busy { get; private set; }
     protected bool Loading { get; private set; } = true;
     protected bool StorageBlocked { get; private set; }
-    protected bool CanCommit => !Loading && !Busy && !StorageBlocked && _registration is not null;
+    protected bool ConfirmedCleanupPending => _confirmedCleanupRevision.HasValue;
+    protected bool CanRefresh => !Busy && !Loading && (!StorageBlocked || _restoreIncomplete || ConfirmedCleanupPending ||
+        _storageRetryRequired || _unresolvedOperation is not null || _baselineConflict && Editable && Clean is not null && MergeFields.Count > 0);
+    protected bool DraftInputSuppressed => Loading || Busy || ConfirmedCleanupPending || _initialStorageFailed;
+    protected bool CanCommit => !Loading && !Busy && CanRegisterDraft && !_restoreRaw && !_restoreIncomplete && !_applyingRaw && !StorageBlocked && _registration is not null;
     protected string? Message { get; set; }
     protected IReadOnlyList<string> Validation { get; set; } = [];
     protected CancellationToken Lifetime => _lifetime.Token;
@@ -64,17 +84,34 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected abstract string RouteKey { get; }
     protected abstract bool Editable { get; }
     protected virtual bool CanRegisterDraft => Editable;
+    protected virtual bool CanReadMissingDraft => false;
+    protected virtual IReadOnlyList<DraftMergeField> MergeFields => [];
+    protected virtual DraftRowVersion? ReadDraftRowVersion() => null;
+
+    protected sealed record DraftRowVersion(string Key, int ChangedBy, string? ChangedByName, DateTime ChangedAt);
+
+    protected sealed record CompareRead(TState? Target, TState? Source = null, bool ChangedKey = false);
+
+    protected virtual Task<CompareRead> ReadForComparisonAsync(TState proposed, Employee actor, CancellationToken token) =>
+        Task.FromResult(new CompareRead(null));
+
+    protected virtual bool SameComparisonValues(TState actual, TState proposed) => StatesEqual(actual, proposed);
 
     /// <summary>Сравнивает содержимое карточки после восстановления черновика.</summary>
     protected virtual bool StatesEqual(TState? left, TState? right) => EqualityComparer<TState>.Default.Equals(left, right);
 
     /// <summary>Загружает разрешения карточки после подтверждения сотрудника.</summary>
-    protected virtual async Task LoadAccessAsync(Employee user) => Access = await TerritorialEntityData.ReadAccessAsync(Db, user, Lifetime);
+    protected virtual async Task LoadAccessAsync(Employee user, CancellationToken routeToken)
+    {
+        var access = await TerritorialEntityData.ReadAccessAsync(Db, user, routeToken);
+        routeToken.ThrowIfCancellationRequested();
+        Access = access;
+    }
 
     /// <summary>Определяет ожидаемый доменный отказ без повтора.</summary>
     protected virtual bool IsDomainRejection(Exception exception) => exception is TerritorialEntityRuleException;
 
-    protected abstract Task<TState?> LoadCardAsync();
+    protected abstract Task<TState?> LoadCardAsync(CancellationToken routeToken);
 
     protected static ClayToolbarButtonOptions OkButton { get; } = new() { Text = "ОК", Icon = Icons.Material.Filled.Check, Color = Color.Primary, Variant = Variant.Filled };
     protected static ClayToolbarButtonOptions ApplyButton { get; } = new() { Text = "Применить", Icon = Icons.Material.Filled.Save };
@@ -87,62 +124,155 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     {
         if (string.Equals(_routeKey, RouteKey, StringComparison.Ordinal)) return;
         _routeKey = RouteKey;
-        _loadPending = true;
-        Loading = true;
+        _routeLoad?.Cancel();
+        _routeLoad?.Dispose();
+        _routeLoad = CancellationTokenSource.CreateLinkedTokenSource(Lifetime);
+        FormOptions.Class = $"territory-draft-{_draftOwner}-{Guid.NewGuid():N}";
+        _loadPending = Loading = true;
+        _restoreRaw = _restoreIncomplete = _applyingRaw = StorageBlocked = false;
+        _unresolvedOperation = null;
+        _storageRetryRequired = _initialStorageFailed = _baselineConflict = _readOnlyDraft = false;
+        _notSentAttemptId = null;
+        _confirmedCleanupRevision = null;
+        _afterConfirmedCleanup = null;
+        CurrentUser = null;
+        Access = new();
+        _draftOriginal = Clean = Draft = null;
+        _originalVersion = _freshVersion = null;
+        Message = null;
+        Validation = [];
     }
 
     /// <inheritdoc />
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender || _loadPending)
+        if (_loadPending && _routeLoad is { } load)
         {
             _loadPending = false;
+            var token = load.Token;
             await ReleaseDraftAsync();
-            await LoadAsync();
+            if (!token.IsCancellationRequested) await LoadAsync(token);
             return;
         }
         if (!_restoreRaw || _registration is null) return;
         _restoreRaw = false;
-        try { await _registration.ApplyRawAsync(Lifetime); }
-        catch (Exception exception) when (exception is JSException or InvalidOperationException)
+        await RetryRawAsync();
+    }
+
+    private async Task RetryRawAsync()
+    {
+        if (_applyingRaw || _registration is not { } registration) return;
+        var token = _routeLoad!.Token;
+        _applyingRaw = _restoreIncomplete = true;
+        try
         {
-            StorageBlocked = true;
-            Message = "Часть черновика недоступна. Сохранение приостановлено.";
-            StateHasChanged();
+            var result = await registration.ApplyRawWithResultAsync(DraftScope, token);
+            if (token.IsCancellationRequested) return;
+            var readiness = await registration.GetRestoreReadinessAsync(token);
+            if (token.IsCancellationRequested || !ReferenceEquals(registration, _registration)) return;
+            _restoreIncomplete = result.Pending.Count != 0 || !readiness.Complete;
+            if (!StorageBlocked) Message = _restoreIncomplete ? "Часть ввода ожидает восстановления. Нажмите Обновить для повторной попытки." : null;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception e) when (e is JSException or InvalidOperationException)
+        {
+            if (!token.IsCancellationRequested && !StorageBlocked)
+                Message = "Не удалось восстановить ввод. Нажмите Обновить для повторной попытки.";
+        }
+        finally
+        {
+            if (!token.IsCancellationRequested && ReferenceEquals(registration, _registration))
+            {
+                _applyingRaw = false;
+                StateHasChanged();
+            }
         }
     }
 
     protected async Task UpdateDraftAsync(TState value)
     {
-        if (Busy || !Editable) return;
+        if (DraftInputSuppressed || !Editable) return;
         Draft = value;
-        if (_registration is null) return;
+        if (_registration is not { } registration) return;
         try { await PersistAsync(); }
         catch (Exception exception) when (exception is JSException or InvalidOperationException)
         {
-            StorageBlocked = true;
+            if (!ReferenceEquals(registration, _registration) || Loading) return;
+            _storageRetryRequired = StorageBlocked = true;
             Message = "Черновик не удалось сохранить в браузере. Введённые данные остаются на форме.";
         }
     }
 
     protected async Task RefreshAsync()
     {
-        if (Busy || StorageBlocked) return;
+        if (!CanRefresh || _routeLoad is not { } load) return;
+        var token = load.Token;
+        if (_confirmedCleanupRevision is { } confirmed)
+        {
+            await RetryConfirmedCleanupAsync(confirmed, token);
+            return;
+        }
+        if (_storageRetryRequired)
+        {
+            await RetryStorageAsync(token);
+            return;
+        }
+        if (_unresolvedOperation is { } unresolved)
+        {
+            if (_restoreIncomplete && Draft is not null) await RetryRawAsync();
+            if (!token.IsCancellationRequested) await CompareUnresolvedAsync(unresolved, token);
+            return;
+        }
+        if (_restoreIncomplete) { await RetryRawAsync(); return; }
+        if (_baselineConflict)
+        {
+            await ResolveFieldConflictsAsync(token);
+            return;
+        }
+        if (StorageBlocked) return;
         if (Dirty && !await ConfirmAsync("Обновление", "Отменить несохранённые изменения и загрузить запись повторно?")) return;
+        if (token.IsCancellationRequested || Loading) return;
         if (_registration is not null)
         {
             await _registration.DiscardAsync(Lifetime);
+            if (token.IsCancellationRequested) return;
             await ReleaseDraftAsync();
         }
-        await LoadAsync();
+        if (!token.IsCancellationRequested) await LoadAsync(token);
     }
 
     protected async Task CancelAsync()
     {
         if (Busy) return;
-        if (Dirty && !await ConfirmAsync("Закрытие формы", "Закрыть форму без сохранения изменений?")) return;
-        if (_registration is not null && !StorageBlocked) await _registration.DiscardAsync(Lifetime);
-        await CloseAsync();
+        var token = _routeLoad?.Token ?? Lifetime;
+        if (ConfirmedCleanupPending &&
+            !await ConfirmAsync("Закрытие формы", "База подтвердила операцию. Закрыть форму, не завершив обработку черновика?")) return;
+        if ((Dirty || _restoreRaw || _restoreIncomplete || _applyingRaw) &&
+            !await ConfirmAsync("Закрытие формы", "Закрыть форму без сохранения изменений?")) return;
+        if (token.IsCancellationRequested) return;
+        if (!Loading && _registration is { } registration && !StorageBlocked)
+        {
+            Busy = true;
+            try
+            {
+                await registration.DiscardAsync(Lifetime);
+                if (token.IsCancellationRequested) return;
+                await ReleaseDraftAsync();
+                if (token.IsCancellationRequested) return;
+                await LoadAsync(token);
+            }
+            catch (Exception e) when (e is JSException or InvalidOperationException)
+            {
+                if (!token.IsCancellationRequested)
+                {
+                    StorageBlocked = true;
+                    Message = "Не удалось завершить отмену. Откройте карточку повторно для сверки черновика.";
+                }
+                return;
+            }
+            finally { Busy = false; }
+        }
+        if (!token.IsCancellationRequested) await CloseAsync();
     }
 
     protected async Task BeforeNavigationAsync(LocationChangingContext context)
@@ -157,15 +287,25 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             context.PreventNavigation();
             return;
         }
-        if (!Dirty) return;
+        if (!Dirty && !ConfirmedCleanupPending) return;
         context.PreventNavigation();
-        if (!await ConfirmAsync("Закрытие формы", "Покинуть форму с несохранёнными изменениями?")) return;
+        var message = ConfirmedCleanupPending
+            ? "База подтвердила операцию. Покинуть форму, не завершив обработку черновика?"
+            : "Покинуть форму с несохранёнными изменениями?";
+        if (!await ConfirmAsync("Закрытие формы", message)) return;
         _navigationApproved = true;
         Navigation.NavigateTo(context.TargetLocation);
     }
 
     protected Task CloseAsync() => JS.InvokeVoidAsync("clayModelEquipmentForm.close", Lifetime).AsTask();
-    protected Task RefreshOpenerAsync() => JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", Lifetime).AsTask();
+    protected async Task RefreshOpenerAsync()
+    {
+        try { await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", Lifetime); }
+        catch (Exception e) when (e is JSException or InvalidOperationException)
+        {
+            Message = "Операция подтверждена. Обновить родительское окно не удалось.";
+        }
+    }
 
     protected async Task<bool> ConfirmAsync(string title, string message)
     {
@@ -184,12 +324,21 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         Message = null;
         ClayDraftOperation? attempt = null;
         var databaseConfirmed = false;
+        string? beginningAttemptId = null;
         try
         {
+            if (!(await _registration.GetRestoreReadinessAsync(Lifetime)).Complete)
+            {
+                _restoreIncomplete = true;
+                Message = "Часть ввода ожидает восстановления. Нажмите Обновить.";
+                return false;
+            }
             await _registration.EnsureCommandAllowedAsync(Lifetime);
             await PersistAsync();
-            var intentData = JsonSerializer.Serialize(new DraftSnapshot(Clean!, Draft!));
-            attempt = await _registration.BeginOperationAsync(new ClayDraftOperationIntent(operation, intentData, [DraftScope]), Lifetime);
+            var intentData = JsonSerializer.Serialize(new DraftSnapshot(_draftOriginal, Draft!, _originalVersion));
+            beginningAttemptId = Guid.NewGuid().ToString("N");
+            attempt = await _registration.BeginOperationAsync(
+                new ClayDraftOperationIntent(operation, intentData, [DraftScope], beginningAttemptId), Lifetime);
             await action(await ReadPrincipalAsync());
             databaseConfirmed = true;
             await _registration.CommitOperationAsync(attempt.Revision, cancellationToken: Lifetime);
@@ -200,13 +349,18 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             if (_disposed) return false;
             if (databaseConfirmed)
             {
+                _confirmedCleanupRevision = attempt!.Revision;
                 StorageBlocked = true;
-                Message = "База подтвердила операцию. Не удалось завершить обработку черновика. Повтор записи заблокирован.";
+                Message = "База подтвердила операцию. Нажмите «Обновить», чтобы завершить обработку черновика.";
                 return true;
             }
             var rejected = exception is UnauthorizedAccessException || IsDomainRejection(exception) ||
                 exception is SqlException sql && !DbManager.IsConnectivityError(sql) && sql.Number != -2;
-            if (attempt is null) StorageBlocked = true;
+            if (attempt is null)
+            {
+                _notSentAttemptId = beginningAttemptId;
+                _storageRetryRequired = StorageBlocked = true;
+            }
             else
             {
                 try
@@ -223,72 +377,309 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
                     StorageBlocked = true;
                 }
             }
-            Message = StorageBlocked ? "Результат операции не подтверждён. Черновик сохранён для сверки. Повтор заблокирован."
+            if (StorageBlocked && attempt is not null) _unresolvedOperation = attempt;
+            Message = _unresolvedOperation is not null ? "Исход операции требует сверки. Нажмите «Обновить»."
+                : StorageBlocked ? "Команда не отправлена. Нажмите «Обновить» после восстановления хранилища."
                 : exception is SqlException ? "База отклонила операцию. Проверьте данные или связанность записи." : exception.Message;
             return false;
         }
         finally { Busy = false; }
     }
 
-    protected void Accept(TState value) => Clean = Draft = value;
+    private async Task ResolveFieldConflictsAsync(CancellationToken token)
+    {
+        if (!Editable || _registration is not { } registration || Clean is not { } fresh || Draft is not { } local) return;
+        Busy = true;
+        try
+        {
+            var readiness = await registration.GetRestoreReadinessAsync(token);
+            token.ThrowIfCancellationRequested();
+            if (!readiness.Complete)
+            {
+                _restoreIncomplete = true;
+                Message = "Сначала полностью восстановите ввод. Нажмите «Обновить».";
+                return;
+            }
+            var state = await registration.ReadRebaseStateAsync(DraftScope, token);
+            token.ThrowIfCancellationRequested();
+            var plan = new DraftFieldMerge<TState>(_draftOriginal, local, fresh, MergeFields, state.RawKeys);
+            IReadOnlyDictionary<string, bool> choice = new Dictionary<string, bool>();
+            if (plan.Conflicts.Count == 0)
+            {
+                if (!await ConfirmAsync("Сверка карточки", "Объединить независимые изменения и принять текущую версию за исходную?")) return;
+            }
+            else
+            {
+                var parameters = new DialogParameters<DraftConflictDialog> { { d => d.Conflicts, plan.Conflicts } };
+                var dialog = await Dialogs.ShowAsync<DraftConflictDialog>("Сверка карточки", parameters);
+                if (await dialog.Result is not { Canceled: false, Data: IReadOnlyDictionary<string, bool> selected }) return;
+                choice = selected;
+            }
 
-    private async Task LoadAsync()
+            token.ThrowIfCancellationRequested();
+            var resolved = plan.Select(choice);
+            var json = JsonSerializer.Serialize(new DraftSnapshot(fresh, resolved.State, _freshVersion));
+            var persisted = await registration.RebaseScopeAsync(DraftScope, state.Revision, json, resolved.DiscardedRaw, token);
+            token.ThrowIfCancellationRequested();
+            _draftOriginal = fresh;
+            _originalVersion = _freshVersion;
+            Draft = resolved.State;
+            _baselineConflict = false;
+            _storageRetryRequired = StorageBlocked = !persisted;
+            Message = persisted ? "Выбор сохранён в черновике." : "Выбор сделан. Для сохранения черновика нажмите «Обновить».";
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception e) when (e is JSException or InvalidOperationException or JsonException)
+        {
+            if (!token.IsCancellationRequested) Message = "Не удалось подтвердить сохранение выбора. Повторите сверку.";
+        }
+        finally { Busy = false; }
+    }
+
+    private async Task RetryStorageAsync(CancellationToken token)
+    {
+        Busy = true;
+        try
+        {
+            if (_registration is not { } registration)
+            {
+                await RegisterDraftAsync(token);
+            }
+            else
+            {
+                var unresolved = await registration.RetryStorageAsync(_notSentAttemptId, token);
+                token.ThrowIfCancellationRequested();
+                _unresolvedOperation = unresolved;
+                if (Draft is not null) await PersistAsync();
+            }
+            token.ThrowIfCancellationRequested();
+            _notSentAttemptId = null;
+            _storageRetryRequired = _initialStorageFailed = false;
+            StorageBlocked = _baselineConflict || _readOnlyDraft || _unresolvedOperation is not null;
+            Message = _unresolvedOperation is not null
+                ? "Черновик сохранён. Нажмите «Обновить» для сверки незавершённой операции."
+                : _readOnlyDraft ? "Черновик доступен для просмотра. Сейчас запись запрещена."
+                : _baselineConflict ? "Черновик сохранён. Для записи требуется сверка исходных данных." : null;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception e) when (e is JSException or InvalidOperationException or JsonException)
+        {
+            if (!token.IsCancellationRequested)
+                Message = "Хранилище черновика пока недоступно. Повторите «Обновить».";
+        }
+        finally { Busy = false; }
+    }
+
+    private async Task CompareUnresolvedAsync(ClayDraftOperation operation, CancellationToken token)
+    {
+        var guidance = $"Проверьте журнал по идентификатору {operation.AttemptId}. Повтор записи заблокирован.";
+        Busy = true;
+        try
+        {
+            var snapshot = JsonSerializer.Deserialize<DraftSnapshot>(operation.Data);
+            if (snapshot?.Current is not { } proposed)
+            {
+                Message = $"Снимок отправленных данных недоступен. {guidance}";
+                return;
+            }
+
+            var principal = await ReadPrincipalAsync();
+            token.ThrowIfCancellationRequested();
+            var actor = await Employee.GetCurrentWithRolesAsync(Db, principal, token);
+            token.ThrowIfCancellationRequested();
+            if (actor is null || actor.Id != CurrentUser?.Id)
+            {
+                Message = $"Текущий сотрудник для сверки не подтверждён. {guidance}";
+                return;
+            }
+
+            var deleting = operation.Kind.EndsWith("delete", StringComparison.Ordinal);
+            var current = await ReadForComparisonAsync(deleting && snapshot.Original is { } before ? before : proposed, actor, token);
+            token.ThrowIfCancellationRequested();
+            var detail = current.Target is null
+                ? "Запись по ключу операции недоступна."
+                : deleting
+                    ? "Запись по ключу операции видна в базе."
+                    : SameComparisonValues(current.Target, proposed)
+                        ? "Данные в базе совпадают с отправленными."
+                        : snapshot.Original is { } original && SameComparisonValues(current.Target, original)
+                            ? "Данные в базе совпадают с исходными."
+                            : "Данные в базе отличаются от отправленных и исходных.";
+            if (current.ChangedKey)
+                detail += current.Source is null ? " Запись по прежнему ключу недоступна." : " Запись по прежнему ключу видна.";
+            Message = $"{detail} {guidance}";
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            if (!token.IsCancellationRequested) Message = $"Сверка недоступна. {guidance}";
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        finally { Busy = false; }
+    }
+
+    protected Task AfterDraftCleanupAsync(Func<Task> action)
+    {
+        if (!ConfirmedCleanupPending) return action();
+        _afterConfirmedCleanup = action;
+        return Task.CompletedTask;
+    }
+
+    private async Task RetryConfirmedCleanupAsync(long revision, CancellationToken token)
+    {
+        if (_registration is not { } registration) return;
+        Busy = true;
+        try
+        {
+            await registration.CommitOperationAsync(revision, cancellationToken: Lifetime);
+            if (token.IsCancellationRequested) return;
+            _confirmedCleanupRevision = null;
+            StorageBlocked = false;
+            Message = null;
+        }
+        catch (Exception e) when (e is JSException or InvalidOperationException or OperationCanceledException)
+        {
+            if (!token.IsCancellationRequested)
+                Message = "База подтвердила операцию. Хранилище черновика пока недоступно. Повторите «Обновить».";
+            return;
+        }
+        finally { Busy = false; }
+
+        var complete = _afterConfirmedCleanup;
+        _afterConfirmedCleanup = null;
+        if (complete is not null) await complete();
+    }
+
+    protected void Accept(TState value)
+    {
+        _draftOriginal = Clean = Draft = value;
+        _originalVersion = _freshVersion = ReadDraftRowVersion();
+    }
+
+    private async Task LoadAsync(CancellationToken token)
     {
         Loading = true;
+        _restoreIncomplete = _readOnlyDraft = false;
         StorageBlocked = false;
         Message = null;
         Validation = [];
-        Clean = Draft = null;
+        _draftOriginal = Clean = Draft = null;
+        _originalVersion = _freshVersion = null;
+        var openingDraft = false;
         try
         {
-            CurrentUser = await Employee.GetCurrentWithRolesAsync(Db, await ReadPrincipalAsync(), Lifetime);
+            var principal = await ReadPrincipalAsync();
+            token.ThrowIfCancellationRequested();
+            var employee = await Employee.GetCurrentWithRolesAsync(Db, principal, token);
+            token.ThrowIfCancellationRequested();
+            CurrentUser = employee;
             if (CurrentUser is null)
             {
                 Message = "Не удалось подтвердить текущего сотрудника.";
                 return;
             }
-            await LoadAccessAsync(CurrentUser);
-            Clean = Draft = await LoadCardAsync();
-            if (Draft is not null && CanRegisterDraft) await RegisterDraftAsync();
+            await LoadAccessAsync(CurrentUser, token);
+            token.ThrowIfCancellationRequested();
+            var card = await LoadCardAsync(token);
+            token.ThrowIfCancellationRequested();
+            Clean = Draft = card;
+            _freshVersion = ReadDraftRowVersion();
+            if (Draft is not null || CanReadMissingDraft)
+            {
+                openingDraft = true;
+                await RegisterDraftAsync(token);
+            }
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
+            if (token.IsCancellationRequested) return;
             Message = Draft is null ? "Не удалось загрузить карточку. Повторите загрузку."
                 : "Не удалось подключить хранилище черновика. Сохранение приостановлено.";
-            StorageBlocked = Draft is not null;
+            _storageRetryRequired = _initialStorageFailed = openingDraft && exception is JSException or InvalidOperationException;
+            StorageBlocked = openingDraft;
+            if (_storageRetryRequired)
+                Message = "Хранилище черновика недоступно. Для повтора нажмите «Обновить».";
         }
         finally
         {
-            Loading = false;
-            if (!_disposed) StateHasChanged();
+            if (!token.IsCancellationRequested && !_disposed)
+            {
+                Loading = false;
+                StateHasChanged();
+            }
         }
     }
 
-    private async Task RegisterDraftAsync()
+    private async Task RegisterDraftAsync(CancellationToken token)
     {
         if (CurrentUser is null) return;
-        _registration = await DraftStore.RegisterHandleAsync(FormKey, EntityKey,
-            CurrentUser.Id.ToString(CultureInfo.InvariantCulture), 1, DraftRootSelector, Lifetime);
-        var restore = _registration.Restore;
+        var user = CurrentUser.Id.ToString(CultureInfo.InvariantCulture);
+        var key = EntityKey;
+        var root = DraftRootSelector;
+        var canWrite = CanRegisterDraft;
+        await WithDraftKeyAsync(key, async () =>
+        {
+            token.ThrowIfCancellationRequested();
+            // JS может уже выделить блокировку. Получаем handle даже после смены маршрута.
+            var registration = await DraftStore.RegisterHandleAsync(FormKey, key, user, 1, root, Lifetime);
+            if (token.IsCancellationRequested ||
+                (Clean is null || !canWrite) && !registration.Restore.HasDraft && registration.Restore.Operation is null)
+            {
+                await registration.DisposeAsync();
+                return;
+            }
+            _registration = registration;
+            _registrationKey = key;
+            await RestoreDraftAsync(registration, token);
+            if (!token.IsCancellationRequested && !canWrite)
+            {
+                _readOnlyDraft = StorageBlocked = true;
+                if (_unresolvedOperation is null)
+                    Message = "Черновик доступен для просмотра. Сейчас запись запрещена.";
+            }
+        });
+    }
+
+    private async Task RestoreDraftAsync(ClayDraftRegistration registration, CancellationToken token)
+    {
+        var restore = registration.Restore;
+        _draftOriginal = Clean;
+        _originalVersion = _freshVersion;
         if (restore.TypedScopes?.TryGetValue(DraftScope, out var json) == true &&
             JsonSerializer.Deserialize<DraftSnapshot>(json) is { } existing)
         {
+            _draftOriginal = existing.Original;
+            _originalVersion = existing.Version;
             Draft = existing.Current;
-            if (!StatesEqual(existing.Original, Clean))
+            if (!StatesEqual(existing.Original, Clean) || _originalVersion != _freshVersion)
             {
-                StorageBlocked = true;
-                Message = "Карточка изменилась после создания черновика. Перед записью нужна сверка.";
+                _baselineConflict = StorageBlocked = true;
+                Message = "Карточка изменилась после создания черновика. Нажмите «Обновить» для сверки.";
             }
         }
-        if (restore.Operation is not null)
+        else if (restore.HasDraft || restore.Operation is not null)
         {
+            // Старая raw-only запись: исходная версия неизвестна, нельзя принять свежую за исходную.
+            _baselineConflict = StorageBlocked = true;
+            Message = "Исходный снимок отсутствует. Нажмите «Обновить» для сверки.";
+            _draftOriginal = null;
+            _originalVersion = null;
+        }
+        else
+        {
+            await PersistAsync();
+            if (token.IsCancellationRequested) return;
+        }
+        if (restore.OperationSnapshot is { } pending)
+        {
+            _unresolvedOperation = pending;
             StorageBlocked = true;
-            Message = "Обнаружена незавершённая операция. Проверьте запись перед повтором.";
+            Message = "Обнаружена незавершённая операция. Нажмите «Обновить» для сверки.";
         }
         _restoreRaw = restore.HasDraft;
     }
 
-    private Task PersistAsync() => _registration!.SaveTypedScopeAsync(DraftScope, JsonSerializer.Serialize(new DraftSnapshot(Clean!, Draft!)), Lifetime);
+    private Task PersistAsync() => _registration!.SaveTypedScopeAsync(DraftScope, JsonSerializer.Serialize(new DraftSnapshot(_draftOriginal, Draft!, _originalVersion)), Lifetime);
 
     protected async Task<string?> ReadPrincipalAsync()
     {
@@ -298,8 +689,28 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
 
     private async Task ReleaseDraftAsync()
     {
-        if (_registration is not null) await _registration.DisposeAsync();
+        if (_registration is not { } registration || _registrationKey is not { } key) return;
         _registration = null;
+        _registrationKey = null;
+        await WithDraftKeyAsync(key, () => registration.DisposeAsync().AsTask());
+    }
+
+    private async Task WithDraftKeyAsync(string key, Func<Task> work)
+    {
+        // Очередь только по ключу: B может открыться сразу, а возврат к A дождётся освобождения A.
+        _pendingDraftWork.TryGetValue(key, out var previous);
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingDraftWork[key] = completed.Task;
+        try
+        {
+            if (previous is not null) await previous;
+            await work();
+        }
+        finally
+        {
+            if (_pendingDraftWork[key] == completed.Task) _pendingDraftWork.Remove(key);
+            completed.TrySetResult();
+        }
     }
 
     /// <inheritdoc />
@@ -307,9 +718,10 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     {
         _disposed = true;
         await _lifetime.CancelAsync();
+        _routeLoad?.Dispose();
         await ReleaseDraftAsync();
         _lifetime.Dispose();
     }
 
-    private sealed record DraftSnapshot(TState Original, TState Current);
+    private sealed record DraftSnapshot(TState? Original, TState Current, DraftRowVersion? Version = null);
 }

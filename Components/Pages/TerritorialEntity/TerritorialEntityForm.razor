@@ -5,14 +5,14 @@
 @inherits TerritorialEntityCardBase<TerritorialEntityForm.FormState>
 
 <PageTitle>Территория</PageTitle>
-<NavigationLock ConfirmExternalNavigation="@(Dirty || Busy)" OnBeforeInternalNavigation="BeforeNavigationAsync" />
+<NavigationLock ConfirmExternalNavigation="@(Dirty || Busy || ConfirmedCleanupPending)" OnBeforeInternalNavigation="BeforeNavigationAsync" />
 
 <ClayEntityForm Options="FormOptions">
     <Toolbar>
         <ClayToolbar>
             <ClayToolbarButton Options="OkButton" Disabled="@(Busy || Loading || Draft is null || (Dirty && !CanCommit))" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="ApplyButton" Disabled="@(!Editable || !CanCommit || !Dirty)" OnClick="@(() => SaveAsync(false))" />
-            <ClayToolbarButton Options="ReloadButton" Disabled="@(Busy || Loading || StorageBlocked)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="ReloadButton" Disabled="@(!CanRefresh)" OnClick="RefreshAsync" />
             <ClayToolbarButton Options="CancelButton" Disabled="@Busy" OnClick="CancelAsync" />
         </ClayToolbar>
     </Toolbar>
@@ -34,7 +34,7 @@
         }
         @if (Draft is { } draft)
         {
-            <div class="d-flex flex-column gap-2 territorial-form-fields" data-draft-scope="main" inert="@Busy">
+            <div class="d-flex flex-column gap-2 territorial-form-fields" data-draft-scope="main" inert="@DraftInputSuppressed">
                 <ClayDropDownList TItem="TerritorialEntityOption" TValue="int?" Options="_typeOptions"
                                   Items="_types" ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
                                   Value="@((int)draft.Record.Type > 0 ? (int?)draft.Record.Type : null)" ValueChanged="ChangeTypeAsync" />
