@@ -61,6 +61,21 @@
                 <div>
                     <ClayToolbarButton Options="RetryRecoveryButton" Disabled="@(!CanRetryRecovery)" OnClick="RetryRecoveryReadAsync" />
                 </div>
+                @if (HasUnknownSubmittedSnapshot)
+                {
+                    <ClayToolbarButton Options="SubmittedSnapshotButton" Disabled="@Busy" OnClick="ShowSubmittedRecoveryAsync" />
+                    @if (_submittedRecovery is { } submitted && _submittedIdentity == SubmittedSnapshotIdentity)
+                    {
+                        <section aria-label="Снимок незавершённой попытки" data-testid="submitted-attempt">
+                            <div>@(submitted). Значение атрибута скрыто.</div>
+                            <MudText>Журнал не подтверждает отправку или выполнение операции.</MudText>
+                        </section>
+                    }
+                    else if (_submittedUnavailable)
+                    {
+                        <MudText>Не удалось подтвердить доступ к снимку этой попытки.</MudText>
+                    }
+                }
                 @if (_freshRecovery is { } fresh)
                 {
                     @if (fresh.Attribute is { } currentValue)

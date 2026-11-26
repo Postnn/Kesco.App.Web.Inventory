@@ -26,6 +26,7 @@ public partial class PhonePoolAttributeForm
     {
         Text = "Удалить", Title = "Удалить запись со значением атрибута пула", Icon = Icons.Material.Filled.Delete,
     };
+    private static readonly ClayToolbarButtonOptions SubmittedSnapshotButton = new() { Text = "Посмотреть снимок попытки" };
     private static readonly ClayToolbarButtonOptions RetryRecoveryButton = new() { Text = "Повторить чтение атрибута", Icon = Icons.Material.Filled.Refresh };
     private static readonly DraftMergeField[] Fields = [new(nameof(FormState.Value), "Значение", ValueDraftKey)];
 
@@ -53,6 +54,9 @@ public partial class PhonePoolAttributeForm
     private bool _confirmingDelete;
     private string? _freshReadFailure;
     private PhonePoolAttributeCard? _freshRecovery;
+    private string? _submittedRecovery;
+    private bool _submittedUnavailable;
+    private (string Id, long Revision)? _submittedIdentity;
     private bool _retryingRecovery;
     private PhonePoolAttributeKey? RequestedKey => PhonePoolAttributeKey.Parse(Id);
 
@@ -110,6 +114,8 @@ public partial class PhonePoolAttributeForm
         _focus = false;
         _freshReadFailure = null;
         _freshRecovery = null;
+        _submittedRecovery = null;
+        _submittedUnavailable = false;
         _retryingRecovery = false;
         if (RequestedKey is not { } key)
         {
@@ -181,6 +187,22 @@ public partial class PhonePoolAttributeForm
     private Task CancelAttributeAsync() =>
         Loading || Busy || _confirmingDelete || _retryingRecovery ? Task.CompletedTask
             : Editable || ConfirmedCleanupPending ? CancelAsync() : CloseAsync();
+
+    private async Task ShowSubmittedRecoveryAsync()
+    {
+        if (!ShowRecovery || Busy) return;
+        var generation = EditorGeneration;
+        var key = RouteKey;
+        var identity = SubmittedSnapshotIdentity;
+        _submittedRecovery = null;
+        _submittedUnavailable = false;
+        var snapshot = await ReadOwnSubmittedSnapshotAsync<string>((kind, value) =>
+            kind switch { "phone-pool-attribute.update" => "Изменение значения", "phone-pool-attribute.delete" => "Удаление значения", _ => null });
+        if (generation != EditorGeneration || RouteKey != key || !ShowRecovery) return;
+        _submittedIdentity = identity;
+        _submittedRecovery = snapshot;
+        _submittedUnavailable = snapshot is null;
+    }
 
     private Task RefreshAttributeAsync() => CanRefresh ? RefreshAsync() : RetryRecoveryReadAsync();
 

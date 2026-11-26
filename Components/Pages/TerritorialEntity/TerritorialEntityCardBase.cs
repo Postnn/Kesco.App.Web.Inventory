@@ -780,6 +780,55 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         finally { Busy = false; }
     }
 
+    /// <summary>Есть неизвестная попытка в защищённой регистрации этой карточки.</summary>
+    protected bool HasUnknownSubmittedSnapshot =>
+        _unresolvedOperation?.Status == ClayDraftOperationStatus.Unknown &&
+        _registration is not null && _registrationKey == EntityKey;
+
+    /// <summary>Маркер текущего снимка для скрытия устаревшей проекции.</summary>
+    protected (string Id, long Revision)? SubmittedSnapshotIdentity =>
+        HasUnknownSubmittedSnapshot && _unresolvedOperation is { } operation
+            ? (operation.AttemptId, operation.Revision) : null;
+
+    /// <summary>Возвращает разрешённую проекцию собственного снимка после свежей проверки сотрудника.</summary>
+    protected async Task<TResult?> ReadOwnSubmittedSnapshotAsync<TResult>(Func<string, TState, TResult?> projection)
+        where TResult : class
+    {
+        if (Busy || Loading || !HasUnknownSubmittedSnapshot || _registration is not { } registration ||
+            _unresolvedOperation is not { } operation || CurrentUser is not { } openedBy || _routeLoad is not { } route)
+            return null;
+        var generation = EditorGeneration;
+        var routeKey = RouteKey;
+        var entityKey = EntityKey;
+        var token = route.Token;
+        bool Current() => IsCurrentEditor(registration, generation, token) && RouteKey == routeKey &&
+            EntityKey == entityKey && CurrentUser?.Id == openedBy.Id && ReferenceEquals(operation, _unresolvedOperation);
+
+        Busy = true;
+        try
+        {
+            var actor = await Employee.GetCurrentWithRolesAsync(Db, await ReadPrincipalAsync(), token);
+            if (!Current() || actor?.Id != openedBy.Id) return null;
+            var restored = registration.Restore.OperationSnapshot;
+            if (restored is null || restored.Status != ClayDraftOperationStatus.Unknown ||
+                restored.AttemptId != operation.AttemptId || restored.Revision != operation.Revision ||
+                restored.Kind != operation.Kind || restored.Data != operation.Data || operation.Data is not { Length: <= 65536 })
+                return null;
+            var snapshot = JsonSerializer.Deserialize<DraftSnapshot>(operation.Data);
+            return snapshot?.Current is { } proposed && snapshot.Version?.Key == entityKey
+                ? projection(operation.Kind, proposed) : null;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return null; }
+        catch (Exception error) when (error is JsonException or InvalidOperationException or SqlException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+        finally
+        {
+            if (Current()) Busy = false;
+        }
+    }
+
     private async Task CompareUnresolvedAsync(ClayDraftOperation operation, CancellationToken token)
     {
         var guidance = $"Проверьте журнал по идентификатору {operation.AttemptId}. Повтор записи заблокирован.";

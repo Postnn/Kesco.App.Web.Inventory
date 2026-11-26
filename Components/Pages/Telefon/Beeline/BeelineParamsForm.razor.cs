@@ -26,6 +26,7 @@ public partial class BeelineParamsForm
         Text = "OK", Icon = Icons.Material.Filled.Check, Color = Color.Primary, Variant = Variant.Filled,
     };
     private static readonly ClayToolbarButtonOptions SaveButton = new() { Text = "Сохранить", Icon = Icons.Material.Filled.Save };
+    private static readonly ClayToolbarButtonOptions SubmittedSnapshotButton = new() { Text = "Посмотреть снимок попытки" };
     private static readonly ClayToolbarButtonOptions RetryRecoveryButton = new() { Text = "Повторить чтение договора", Icon = Icons.Material.Filled.Refresh };
     private static readonly ClayTextBoxOptions RecoveryZoneOptions = new() { Label = "Time zone, ввод из браузера", ReadOnly = true, DraftKey = ZoneDraftKey };
     private static readonly ClayTextBoxOptions RecoveryEmailOptions = new() { Label = "Email менеджера, ввод из браузера", ReadOnly = true, DraftKey = EmailDraftKey };
@@ -59,6 +60,9 @@ public partial class BeelineParamsForm
     private long _simRevision;
     private string? _freshReadFailure;
     private BeelineDraft? _freshRecovery;
+    private BeelineDraft? _submittedRecovery;
+    private bool _submittedUnavailable;
+    private (string Id, long Revision)? _submittedIdentity;
     private bool _retryingRecovery;
     private bool _choosingRecoveryCancel;
 
@@ -142,6 +146,8 @@ public partial class BeelineParamsForm
         _contract = null;
         _freshReadFailure = null;
         _freshRecovery = null;
+        _submittedRecovery = null;
+        _submittedUnavailable = false;
         _retryingRecovery = false;
         _canUpdate = false;
         ++_simRevision;
@@ -232,6 +238,22 @@ public partial class BeelineParamsForm
             if (Current() && _freshRecovery is not null)
                 Message = "Договор перечитан для сверки. Восстановленный ввод сохранён.";
         }
+    }
+
+    private async Task ShowSubmittedRecoveryAsync()
+    {
+        if (!ShowRecovery || Busy) return;
+        var generation = EditorGeneration;
+        var key = RouteKey;
+        var identity = SubmittedSnapshotIdentity;
+        _submittedRecovery = null;
+        _submittedUnavailable = false;
+        var snapshot = await ReadOwnSubmittedSnapshotAsync<BeelineDraft>((kind, value) =>
+            kind == "beeline.update" && BeelineRules.Validate(value, ReadConfiguredZones()).Count == 0 ? new BeelineDraft(value.TimeZone, value.EmailManager) : null);
+        if (generation != EditorGeneration || RouteKey != key || !ShowRecovery) return;
+        _submittedIdentity = identity;
+        _submittedRecovery = snapshot;
+        _submittedUnavailable = snapshot is null;
     }
 
     private Task RefreshBeelineAsync() => CanRefresh ? RefreshAsync() : RetryRecoveryReadAsync();
