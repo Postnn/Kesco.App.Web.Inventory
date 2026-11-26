@@ -11,7 +11,7 @@
 <ClayEntityForm Options="FormOptions">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="Ok" Disabled="@(Busy || Loading || _openingSim || ConfirmedCleanupPending || Draft is null || Dirty && !CanSave)"
+            <ClayToolbarButton Options="Ok" Disabled="@(Busy || Loading || _openingSim || ConfirmedCleanupPending || _contract is null || Draft is null || Dirty && !CanSave)"
                                OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="SaveButton" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
             <ClayToolbarButton Options="ReloadButton" Disabled="@(!CanRefresh || _openingSim)" OnClick="RefreshAsync" />
@@ -70,6 +70,21 @@
                                   ValueSelector="@Identity" TextSelector="@Identity" />
                 <ClayTextBox Options="_emailOptions" Value="@draft.EmailManager" ValueChanged="ChangeEmailAsync" />
             </div>
+        }
+        else if (!Loading && CanReadMissingDraft && (Draft is not null || StorageBlocked))
+        {
+            <section aria-label="Восстановление параметров договора" class="d-flex flex-column gap-2">
+                @if (_freshReadFailure is { } reason && reason != Message)
+                {
+                    <MudText Typo="Typo.body2">@reason</MudText>
+                }
+                <div>Номер договора: @Id</div>
+                @if (Draft is { } recovered)
+                {
+                    <div>Time zone из черновика: @recovered.TimeZone</div>
+                    <div>Email менеджера из черновика: @recovered.EmailManager</div>
+                }
+            </section>
         }
     </ChildContent>
     <Footer>

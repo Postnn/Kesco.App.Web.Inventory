@@ -43,6 +43,21 @@
                 <ClayTextBox Options="_valueOptions" Value="@draft.Value" ValueChanged="ChangeValueAsync" />
             </div>
         }
+        else if (!Loading && RequestedKey is { } key && (Draft is not null || StorageBlocked))
+        {
+            <section aria-label="Восстановление атрибута пула" class="d-flex flex-column gap-2">
+                @if (_freshReadFailure is { } reason && reason != Message)
+                {
+                    <MudText Typo="Typo.body2">@reason</MudText>
+                }
+                <div>Код пула: @key.PoolId</div>
+                <div>Тип атрибута: @key.Type</div>
+                @if (Draft is { } recovered)
+                {
+                    <div>Значение из черновика: @recovered.Value</div>
+                }
+            </section>
+        }
     </ChildContent>
     <Footer>
         @if (_card?.Attribute is { } audit)

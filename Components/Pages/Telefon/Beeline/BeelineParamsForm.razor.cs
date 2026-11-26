@@ -51,6 +51,7 @@ public partial class BeelineParamsForm
     private bool _canUpdate;
     private bool _openingSim;
     private long _simRevision;
+    private string? _freshReadFailure;
 
     private bool CanSave => !_openingSim && CanCommit && Editable && Dirty;
     private IEnumerable<string> ZoneChoices => Draft?.TimeZone is { Length: > 0 } zone && !_zones.Contains(zone, StringComparer.Ordinal)
@@ -69,6 +70,9 @@ public partial class BeelineParamsForm
     protected override bool Editable => _contract is not null && _canUpdate && _zones.Length > 0;
 
     /// <inheritdoc />
+    protected override bool CanReadMissingDraft => BeelineRules.ValidNumber(Id);
+
+    /// <inheritdoc />
     protected override IReadOnlyList<DraftMergeField> MergeFields => Fields;
 
     /// <inheritdoc />
@@ -85,6 +89,7 @@ public partial class BeelineParamsForm
     protected override async Task<BeelineDraft?> LoadCardAsync(CancellationToken routeToken)
     {
         _contract = null;
+        _freshReadFailure = null;
         _canUpdate = false;
         ++_simRevision;
         _openingSim = false;
@@ -104,7 +109,7 @@ public partial class BeelineParamsForm
             routeToken.ThrowIfCancellationRequested();
             if (result.Contract is not { } contract)
             {
-                Message = "Договор Билайн не найден или недоступен.";
+                Message = _freshReadFailure = "Договор Билайн не найден или недоступен.";
                 return null;
             }
 
@@ -115,16 +120,16 @@ public partial class BeelineParamsForm
                 Message = "Договор открыт для просмотра. Изменение параметров недоступно.";
             return DraftFrom(contract);
         }
-        catch (UnauthorizedAccessException e)
+        catch (Exception e) when (e is UnauthorizedAccessException or SqlException or TimeoutException)
         {
             routeToken.ThrowIfCancellationRequested();
-            Message = e.Message;
-            return null;
-        }
-        catch (SqlException e) when (e.Number == 229)
-        {
-            routeToken.ThrowIfCancellationRequested();
-            Message = "Нет доступа к данным договора Билайн.";
+            _freshReadFailure = e switch
+            {
+                SqlException { Number: 229 } => "Нет доступа к данным договора Билайн.",
+                SqlException or TimeoutException => "Не удалось прочитать актуальные параметры договора Билайн.",
+                _ => e.Message,
+            };
+            Message = _freshReadFailure;
             return null;
         }
     }
@@ -132,8 +137,9 @@ public partial class BeelineParamsForm
     /// <inheritdoc />
     protected override async Task<CompareRead> ReadForComparisonAsync(BeelineDraft proposed, Employee actor, CancellationToken token)
     {
-        if (_contract is not { } original) return new(null);
-        var result = await BeelineData.ReadAsync(Db, actor, original.Number, token);
+        var number = _contract?.Number ?? Id;
+        if (!BeelineRules.ValidNumber(number)) return new(null);
+        var result = await BeelineData.ReadAsync(Db, actor, number!, token);
         return new(result.Contract is { } contract ? DraftFrom(contract) : null);
     }
 

@@ -42,6 +42,8 @@ public partial class PhonePoolAttributeForm
     private bool _deleted;
     private bool _focus;
     private bool _confirmingDelete;
+    private string? _freshReadFailure;
+    private PhonePoolAttributeKey? RequestedKey => PhonePoolAttributeKey.Parse(Id);
 
     /// <inheritdoc />
     protected override string FormKey => "phone-pool-attribute";
@@ -50,7 +52,7 @@ public partial class PhonePoolAttributeForm
     protected override string EntityKey => _card?.Key.RouteId ?? RouteKey;
 
     /// <inheritdoc />
-    protected override string RouteKey => PhonePoolAttributeKey.Parse(Id)?.RouteId ?? "invalid:" + Id;
+    protected override string RouteKey => RequestedKey?.RouteId ?? "invalid:" + Id;
 
     /// <inheritdoc />
     protected override bool Editable => !_deleted && _card is not null &&
@@ -58,6 +60,9 @@ public partial class PhonePoolAttributeForm
 
     /// <inheritdoc />
     protected override bool CanRegisterDraft => Editable || CanDeleteAttribute;
+
+    /// <inheritdoc />
+    protected override bool CanReadMissingDraft => RequestedKey is not null;
 
     /// <inheritdoc />
     protected override IReadOnlyList<DraftMergeField> MergeFields => Fields;
@@ -75,7 +80,7 @@ public partial class PhonePoolAttributeForm
     private bool CanDeleteAttribute => !_deleted && _card?.Attribute is not null && _rights?.CanDelete == true;
     private bool CanApply => !_confirmingDelete && CanCommit && Editable && (_card?.Attribute is null || Dirty);
     private bool CanCloseOrSave => !Loading && !Busy && !_confirmingDelete && !ConfirmedCleanupPending &&
-        Draft is not null && (!Dirty || CanApply);
+        _card is not null && Draft is not null && (!Dirty || CanApply);
 
     /// <inheritdoc />
     protected override async Task<FormState?> LoadCardAsync(CancellationToken routeToken)
@@ -84,7 +89,8 @@ public partial class PhonePoolAttributeForm
         _rights = null;
         _deleted = false;
         _focus = false;
-        if (PhonePoolAttributeKey.Parse(Id) is not { } key)
+        _freshReadFailure = null;
+        if (RequestedKey is not { } key)
         {
             Message = "Не удалось установить идентификатор сущности Атрибут пула.";
             return null;
@@ -100,10 +106,16 @@ public partial class PhonePoolAttributeForm
             UpdateOptions();
             return new(_card.Attribute?.Value ?? "");
         }
-        catch (Exception e) when (e is UnauthorizedAccessException or PhonePoolAttributeRejectedException or SqlException { Number: 229 })
+        catch (Exception e) when (e is UnauthorizedAccessException or PhonePoolAttributeRejectedException or SqlException or TimeoutException)
         {
             routeToken.ThrowIfCancellationRequested();
-            Message = e is SqlException ? "Нет доступа к данным пары атрибута." : e.Message;
+            _freshReadFailure = e switch
+            {
+                SqlException { Number: 229 } => "Нет доступа к данным пары атрибута.",
+                SqlException or TimeoutException => "Не удалось прочитать актуальные данные пары атрибута.",
+                _ => e.Message,
+            };
+            Message = _freshReadFailure;
             return null;
         }
     }
@@ -111,8 +123,8 @@ public partial class PhonePoolAttributeForm
     /// <inheritdoc />
     protected override async Task<CompareRead> ReadForComparisonAsync(FormState proposed, Employee actor, CancellationToken token)
     {
-        if (_card is null) return new(null);
-        var current = await PhonePoolAttributeData.ReadAsync(Db, actor, _card.Key, token);
+        if ((_card?.Key ?? RequestedKey) is not { } key) return new(null);
+        var current = await PhonePoolAttributeData.ReadAsync(Db, actor, key, token);
         return current.Card.Attribute is { } attribute ? new(new FormState(attribute.Value)) : new(null);
     }
 
