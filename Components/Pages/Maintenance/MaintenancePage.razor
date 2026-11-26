@@ -11,7 +11,15 @@
     {
         <MudAlert Severity="@_messageSeverity" Class="mb-2">@_message</MudAlert>
     }
-    @if ((_loadFailed || _uncertain) && !_busy)
+    @if (_confirmedOperation is not null)
+    {
+        <MudButton OnClick="RetryConfirmedCleanupAsync" Disabled="@_busy">Завершить обработку черновика</MudButton>
+    }
+    @if (_notSentAttemptId is not null)
+    {
+        <MudButton OnClick="RetryStorageAsync" Disabled="@_busy">Повторить сохранение черновика</MudButton>
+    }
+    @if ((_loadFailed || _unknownOperation is not null) && !_busy)
     {
         <MudButton OnClick="ReloadAsync">Перечитать список</MudButton>
     }

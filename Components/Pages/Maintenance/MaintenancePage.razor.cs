@@ -65,14 +65,16 @@ public partial class MaintenancePage : IAsyncDisposable
     private string _orderBy = DefaultOrder;
     private bool _restoreFilter;
     private bool _applyingFilter;
-    private bool _completionRecorded;
+    private ClayDraftOperation? _confirmedOperation;
+    private ClayDraftOperation? _unknownOperation;
+    private string? _notSentAttemptId;
     private MaintenanceList? _list;
     private IReadOnlyList<MaintenanceWork> _rows => _list?.Rows ?? [];
     private ClayDraftRegistration? _registration;
     private int? _pendingConfirmation;
     private bool _busy;
     private bool _canComplete;
-    private bool _uncertain;
+    private bool RecoveryRequired => _confirmedOperation is not null || _unknownOperation is not null || _notSentAttemptId is not null;
     private bool _loadFailed;
     private bool _disposed;
     private string? _message;
@@ -118,8 +120,9 @@ public partial class MaintenancePage : IAsyncDisposable
                 await _registration.DisposeAsync();
                 _registration = null;
                 _filter = null;
-                _uncertain = false;
-                _completionRecorded = false;
+                _confirmedOperation = null;
+                _unknownOperation = null;
+                _notSentAttemptId = null;
                 _pendingConfirmation = null;
                 _list = null;
             }
@@ -137,7 +140,7 @@ public partial class MaintenancePage : IAsyncDisposable
 
                 _registration = registration;
                 _registrationEmployee = CurrentUser.Id;
-                _uncertain = registration.Restore.Operation is not null;
+                _unknownOperation = registration.Restore.OperationSnapshot;
                 if (registration.Restore.TypedScopes?.TryGetValue(ConfirmationScope, out var json) == true)
                     _pendingConfirmation = JsonSerializer.Deserialize<int?>(json);
                 if (registration.Restore.TypedScopes?.TryGetValue(FilterScope, out var filterJson) == true)
@@ -151,10 +154,8 @@ public partial class MaintenancePage : IAsyncDisposable
                 }
             }
 
-            if (_uncertain)
-                Report(_completionRecorded
-                    ? "Выполнение записано. Предыдущая попытка сохранения результата в браузере требует проверки."
-                    : "Список перечитан. Исход предыдущей операции требует проверки по журналу выполнения.");
+            if (RecoveryRequired)
+                ReportRecovery();
             else if (!_canComplete)
                 Report("Список доступен для просмотра. Подтверждение выполнения недоступно.", Severity.Info);
             else
@@ -221,8 +222,7 @@ public partial class MaintenancePage : IAsyncDisposable
         _message = null;
         var ct = _lifetime.Token;
         ClayDraftOperation? attempt = null;
-        var beginRequested = false;
-        var completed = false;
+        string? beginAttemptId = null;
         try
         {
             await registration.EnsureCommandAllowedAsync(ct);
@@ -245,54 +245,115 @@ public partial class MaintenancePage : IAsyncDisposable
             ct.ThrowIfCancellationRequested();
             var principal = await PrincipalAsync();
             ct.ThrowIfCancellationRequested();
-            beginRequested = true;
+            beginAttemptId = Guid.NewGuid().ToString("N");
             attempt = await registration.BeginOperationAsync(
-                new ClayDraftOperationIntent(CompletionKind, JsonSerializer.Serialize(id), [ConfirmationScope]), ct);
+                new ClayDraftOperationIntent(CompletionKind, JsonSerializer.Serialize(id), [ConfirmationScope], beginAttemptId), ct);
             await MaintenanceData.CompleteAsync(Db, principal, _registrationEmployee, id, ct);
-            completed = true;
+
+            _confirmedOperation = attempt;
             _pendingConfirmation = null;
-            await registration.CommitOperationAsync(attempt.Revision, cancellationToken: ct);
-            try
-            {
-                _list = await ReadListAsync(ct);
-                Snackbar.Add("Выполнение регламентной работы записано.", Severity.Success);
-            }
-            catch (Exception) when (!ct.IsCancellationRequested)
-            {
-                _loadFailed = true;
-                Report("Выполнение записано, список не обновлён. Перечитайте список перед следующим подтверждением.");
-            }
+            await FinishConfirmedAsync(registration, attempt, ct);
         }
         catch (MaintenanceRejectedException e)
         {
-            if (attempt is not null)
-            {
-                _uncertain = !await UpdateMarkerAsync(() => registration.RejectOperationAsync(attempt.Revision, ct));
-            }
-            Report(_uncertain ? $"{e.Message} Состояние попытки требует проверки." : e.Message, Severity.Error);
+            if (attempt is not null && !await UpdateMarkerAsync(() => registration.RejectOperationAsync(attempt.Revision, ct)))
+                _unknownOperation = attempt;
+            Report(_unknownOperation is null ? e.Message : $"{e.Message} Состояние попытки требует проверки.", Severity.Error);
         }
         catch (Exception) when (!ct.IsCancellationRequested)
         {
-            _uncertain = beginRequested;
-            _completionRecorded = completed;
-            if (!completed && attempt is not null)
-                await UpdateMarkerAsync(() => registration.UnknownOperationAsync(attempt.Revision, ct));
-            _loadFailed = !_uncertain;
-            Report(completed
-                ? "Выполнение записано. Не удалось завершить сохранение результата в браузере."
-                : beginRequested && attempt is null
-                    ? "Команда не отправлена. Хранилище не подтвердило начало операции."
-                    : _uncertain
-                    ? "Исход выполнения требует проверки по журналу. Повтор записи заблокирован."
-                    : "Не удалось открыть или сохранить подтверждение. Перечитайте список.", Severity.Error);
+            if (_confirmedOperation is null)
+            {
+                if (attempt is not null)
+                {
+                    _unknownOperation = attempt;
+                    await UpdateMarkerAsync(() => registration.UnknownOperationAsync(attempt.Revision, ct));
+                }
+                else
+                    _notSentAttemptId = beginAttemptId;
+            }
+
+            if (RecoveryRequired)
+                ReportRecovery();
+            else
+            {
+                _loadFailed = true;
+                Report("Не удалось открыть или сохранить подтверждение. Перечитайте список.", Severity.Error);
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         finally { _busy = false; }
     }
 
+    private async Task RetryConfirmedCleanupAsync()
+    {
+        if (_busy || _disposed || _registration is not { } registration || _confirmedOperation is not { } attempt)
+            return;
+
+        _busy = true;
+        var ct = _lifetime.Token;
+        try { await FinishConfirmedAsync(registration, attempt, ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception) when (!ct.IsCancellationRequested) { ReportRecovery(); }
+        finally { _busy = false; }
+    }
+
+    private async Task FinishConfirmedAsync(ClayDraftRegistration registration, ClayDraftOperation attempt, CancellationToken ct)
+    {
+        await registration.CommitOperationAsync(attempt.Revision, cancellationToken: ct);
+        _confirmedOperation = null;
+        try
+        {
+            _list = await ReadListAsync(ct);
+            _loadFailed = false;
+            _message = null;
+            Snackbar.Add("Выполнение регламентной работы записано.", Severity.Success);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            _loadFailed = true;
+            Report("Выполнение записано, список не обновлён. Перечитайте список перед следующим подтверждением.");
+        }
+    }
+
+    private async Task RetryStorageAsync()
+    {
+        if (_busy || _disposed || _registration is not { } registration || _notSentAttemptId is not { } attemptId)
+            return;
+
+        _busy = true;
+        var ct = _lifetime.Token;
+        try
+        {
+            _unknownOperation = await registration.RetryStorageAsync(attemptId, ct);
+            _notSentAttemptId = null;
+            _message = null;
+            ReportRecovery();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception) when (!ct.IsCancellationRequested) { ReportRecovery(); }
+        finally { _busy = false; }
+    }
+
+    private void ReportRecovery()
+    {
+        if (_confirmedOperation is not null)
+            Report("Выполнение записано. Не удалось завершить сохранение результата в браузере.", Severity.Error);
+        else if (_unknownOperation is { } attempt)
+        {
+            var work = attempt.Kind == CompletionKind &&
+                int.TryParse(attempt.Data, NumberStyles.None, CultureInfo.InvariantCulture, out var id) && id > 0
+                ? $"Работа №{id}. "
+                : "";
+            Report($"Исход выполнения требует проверки по журналу. {work}Попытка {attempt.AttemptId}. Повтор записи заблокирован.", Severity.Error);
+        }
+        else if (_notSentAttemptId is not null)
+            Report("Команда не отправлена. Хранилище не подтвердило начало операции.", Severity.Error);
+    }
+
     private async Task CancelPendingAsync()
     {
-        if (_busy || _uncertain || _registration is not { } registration) return;
+        if (_busy || RecoveryRequired || _registration is not { } registration) return;
         _busy = true;
         try { await ClearPendingAsync(registration, _lifetime.Token); }
         catch (Exception) when (!_disposed) { Report("Не удалось удалить сохранённый вопрос."); }
@@ -314,7 +375,7 @@ public partial class MaintenancePage : IAsyncDisposable
     }
 
     private bool CanConfirm(MaintenanceWork row) =>
-        !_disposed && !_busy && !_uncertain && !_loadFailed && _canComplete && _registration is not null && row.IsApproved;
+        !_disposed && !_busy && !RecoveryRequired && !_loadFailed && _canComplete && _registration is not null && row.IsApproved;
 
     private async Task<string?> PrincipalAsync()
     {
