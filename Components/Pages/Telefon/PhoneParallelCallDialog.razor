@@ -28,10 +28,6 @@
         @if (TelDraft?.Error is { } message)
         {
             <MudAlert Severity="Severity.Error">@message</MudAlert>
-            @if (TelDraft.NeedsRawRestore)
-            {
-                <ClayToolbarButton Options="_restoreOptions" OnClick="TelDraft.RestoreAsync" Disabled="TelDraft.Busy" />
-            }
         }
     </DialogContent>
     <DialogActions>
@@ -45,7 +41,6 @@
     private readonly ClayTextBoxOptions _numberOptions = new() { DraftKey = "parallel.number", Required = true, RequiredError = "Укажите номер", MaxLength = 50 };
     private readonly ClayNumberOptions _delayBeforeOptions = new() { DraftKey = "parallel.delay-before", Min = 0, Max = 255, Precision = 0, HideSpinButtons = true };
     private readonly ClayNumberOptions _delayQuickOptions = new() { DraftKey = "parallel.delay-quick", Min = 0, Max = 255, Precision = 0, HideSpinButtons = true };
-    private readonly ClayToolbarButtonOptions _restoreOptions = new() { Text = "Повторить восстановление ввода" };
     private readonly ClayToolbarButtonOptions _cancelButton = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButton = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
     private string? _errorMessage;
@@ -80,7 +75,15 @@
     /// <inheritdoc />
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (TelDraft is not null && await TelDraft.RenderedAsync(Value.Clone()))
+        if (TelDraft is null)
+            return;
+        var changed = await TelDraft.RenderedAsync(Value.Clone());
+        if (firstRender && TelDraft.NeedsRawRestore)
+        {
+            await TelDraft.RestoreAsync(pendingOnly: true);
+            changed = true;
+        }
+        if (changed)
             StateHasChanged();
     }
 

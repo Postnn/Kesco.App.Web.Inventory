@@ -23,10 +23,6 @@
         @if (TelDraft?.Error is { } message)
         {
             <MudAlert Severity="Severity.Error">@message</MudAlert>
-            @if (TelDraft.NeedsRawRestore)
-            {
-                <ClayToolbarButton Options="_restoreOptions" OnClick="TelDraft.RestoreAsync" Disabled="TelDraft.Busy" />
-            }
         }
     </DialogContent>
     <DialogActions>
@@ -47,7 +43,6 @@
 
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClayToolbarButtonOptions _restoreOptions = new() { Text = "Повторить восстановление ввода" };
     private readonly ClayDatePickerOptions _dateOptions = new() { DraftKey = "phone.return-date" };
     private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300, DraftKey = "phone.notes" };
 

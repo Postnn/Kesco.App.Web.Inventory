@@ -518,11 +518,35 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
 
     private async Task RefreshAsync()
     {
-        if (_model is null || _loading || _saving || _journalBusy)
+        if (_loading || _saving || _journalBusy || _disposed)
             return;
-        if (_journalNotice is not null)
+        if (_localRecovery is { RawPending: true } recovery)
+        {
+            await RestoreReadOnlyRawAsync(recovery);
+            return;
+        }
+        if (_model is null)
+            return;
+        if (_rawPending && _knownWrite is null)
+        {
+            await RetryEditorRawAsync();
+            return;
+        }
+        if (_writeAttempt is not null && _knownWrite is null && _notSentAttempt is null)
         {
             await ObserveWriteAsync();
+            return;
+        }
+        if (_journalNotice is not null)
+        {
+            await RetryJournalAsync();
+            if (_knownWrite is not null && _writeAttempt is null && !_lateInput)
+                await ReadKnownWriteAsync();
+            return;
+        }
+        if (_inputSaveFailed)
+        {
+            await RetryEditorInputAsync();
             return;
         }
         if (await ProtectEditorRefreshAsync())

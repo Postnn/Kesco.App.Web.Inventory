@@ -81,19 +81,21 @@ public sealed class TelRelationDraftSession<T> where T : class
         return true;
     }
 
-    internal async Task RestoreAsync()
+    internal async Task RestoreAsync(bool pendingOnly = false)
     {
         if (_closed || !_current() || Busy || !_restoreRaw)
             return;
         Busy = true;
         try
         {
-            var result = await _registration.ApplyRawWithResultAsync(Scope, _cancellation);
+            var result = pendingOnly
+                ? await _registration.ApplyPendingRawAsync(Scope, _cancellation)
+                : await _registration.ApplyRawWithResultAsync(Scope, _cancellation);
             if (!_current())
                 return;
             _restoreRaw = result is null || result.Pending.Count > 0;
             if (_restoreRaw)
-                Error = "Часть ввода ещё не восстановлена. Повторите восстановление.";
+                Error = "Часть ввода ещё не восстановлена.";
             else if (!Conflicted)
                 Error = null;
         }

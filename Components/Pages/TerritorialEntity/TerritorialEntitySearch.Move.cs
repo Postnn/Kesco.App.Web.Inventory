@@ -55,6 +55,11 @@ public partial class TerritorialEntitySearch
             registration = null;
             RestoreMoveJournal(_moveRegistration, actor.Id, generation);
             await ScanMoveJournalAsync(_moveRegistration, generation);
+            if (IsCurrent(generation) && !_legacyMoveBlocked && _pendingMove is null &&
+                _moveCandidates is [{ CanRecover: true } candidate])
+                await RecoverMoveJournalAsync(candidate);
+            if (_knownMoveCleanup is { } cleanup)
+                await CompleteMoveCleanupAsync(cleanup);
         }
         catch (Exception ex) when (IsMoveStorageError(ex))
         {
@@ -195,7 +200,18 @@ public partial class TerritorialEntitySearch
             }
             return false;
         }
-        finally { _moving = false; if (!_disposed) await InvokeAsync(StateHasChanged); }
+        finally
+        {
+            _moving = false;
+            if (IsCurrent(generation))
+            {
+                if (_knownMoveCleanup is { } cleanup)
+                    await CompleteMoveCleanupAsync(cleanup);
+                else if (_moveNotSentAttemptId is not null)
+                    await RetryMoveJournalAsync();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
     }
 
     private bool CanCompleteMoveCleanup(KnownMoveCleanup cleanup) =>
@@ -235,18 +251,6 @@ public partial class TerritorialEntitySearch
             return true;
         }
         catch (Exception ex) when (IsMoveStorageError(ex)) { return false; }
-    }
-
-    private async Task RetryMoveCleanupAsync()
-    {
-        if (_moving || _knownMoveCleanup is not { } cleanup) return;
-        _moving = true;
-        try
-        {
-            if (await CompleteMoveCleanupAsync(cleanup) && cleanup.Rejection is null)
-                await RefreshViewAsync(cleanup.Generation, reloadTree: true);
-        }
-        finally { _moving = false; }
     }
 
     private async Task RetryMoveJournalAsync()

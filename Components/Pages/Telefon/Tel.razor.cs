@@ -248,14 +248,6 @@ public partial class Tel : IDisposable, IAsyncDisposable
                 _telJournalNotice = "Результат подтверждён. Поздний ввод оставлен в форме для сверки.";
                 return;
             }
-            if (_telAdoptingFingerprint is { } opening && CurrentTelInputFingerprint() != opening)
-            {
-                _loaded = true;
-                _telInputConflict = _telOriginalMissing = true;
-                _telRawRequested = false;
-                _telInputNotice = "Ввод изменился при открытии черновика. Оба снимка оставлены для сверки.";
-                return;
-            }
             if (!publishingResult && _telJournal is { } inputRegistration && (draft is not null || _telOriginalMissing))
                 _appliedTelRestore = inputRegistration.Restore;
             if (draft is null && !_telOriginalMissing)

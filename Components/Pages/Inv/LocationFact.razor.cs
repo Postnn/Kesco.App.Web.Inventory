@@ -84,6 +84,8 @@ public partial class LocationFact : IAsyncDisposable
     private bool _busy;
     private bool _blocked;
     private bool _storageRetryRequired;
+    private bool _automaticStorageRecoveryAttempted;
+    private bool _automaticCleanupAttempted;
     private string? _notSentAttemptId;
     private ClayDraftOperation? _pendingOperation;
     private ConfirmedFact? _confirmedCleanup;
@@ -100,8 +102,8 @@ public partial class LocationFact : IAsyncDisposable
     [Inject] private IConfiguration Config { get; set; } = null!;
     [Inject] private ClayFormWindowService Windows { get; set; } = null!;
     [Inject] private ClayDraftService Drafts { get; set; } = null!;
-    [Inject] private IDialogService Dialogs { get; set; } = null!;
     [Inject] private ISnackbar Snackbar { get; set; } = null!;
+    [Inject] private IDialogService Dialogs { get; set; } = null!;
     [Inject] private IJSRuntime JS { get; set; } = null!;
     [Inject] private LocationSelectDataSource Locations { get; set; } = null!;
     [Inject] private EmployeeSelectDataSource Employees { get; set; } = null!;
@@ -133,7 +135,7 @@ public partial class LocationFact : IAsyncDisposable
                 if (_pendingOperation is { Status: ClayDraftOperationStatus.Confirmed } confirmed && sent is not null)
                 {
                     _confirmedCleanup = new ConfirmedFact(confirmed, sent, CheckedAt: null, Scanner: false, ReceiptRecorded: true);
-                    _message = "Проверка записана. Завершите обработку черновика.";
+                    _message = "Проверка записана. Повторное подтверждение недоступно.";
                 }
                 else if (_pendingOperation is { } operation)
                     _message = $"Исход попытки {operation.AttemptId} требует сверки. Повтор записи заблокирован.";
@@ -177,6 +179,7 @@ public partial class LocationFact : IAsyncDisposable
                     {
                         var readiness = await _registration.GetRestoreReadinessAsync(Token);
                         _legacyRawPending = ScopeNeedsRestore(readiness, DraftScope);
+                        _showLegacyRaw = _restoreLegacyRaw = _legacyRawPending;
                     }
                 }
 
@@ -200,6 +203,19 @@ public partial class LocationFact : IAsyncDisposable
                 if (!_disposed) StateHasChanged();
             }
             return;
+        }
+        if (_disposed) return;
+        if (!_busy && !_automaticCleanupAttempted && _confirmedCleanup is not null)
+        {
+            _automaticCleanupAttempted = true;
+            await RetryConfirmedCleanupAsync();
+            if (!_disposed) StateHasChanged();
+        }
+        if (!_busy && !_automaticStorageRecoveryAttempted && _storageRetryRequired)
+        {
+            _automaticStorageRecoveryAttempted = true;
+            await RetryStorageAsync();
+            if (!_disposed) StateHasChanged();
         }
         if (_showLegacyRaw)
         {
@@ -253,15 +269,6 @@ public partial class LocationFact : IAsyncDisposable
     private static bool ScopeNeedsRestore(ClayDraftRestoreReadiness readiness, string scope) =>
         readiness.PendingScopes.Contains(scope, StringComparer.Ordinal) || readiness.FailedScopes.Contains(scope, StringComparer.Ordinal);
 
-    private void ShowLegacyInputs()
-    {
-        if (_busy || !_legacyRawPending || _registration is null)
-            return;
-
-        _showLegacyRaw = _restoreLegacyRaw = true;
-        _legacyRawIncomplete = false;
-    }
-
     private void ReturnToWorkplace()
     {
         if (_busy)
@@ -311,7 +318,7 @@ public partial class LocationFact : IAsyncDisposable
         try { await PersistWorkplaceAsync(); }
         catch (Exception e) when (e is JSException or InvalidOperationException)
         {
-            BlockStorage(null, "Не удалось сохранить настройки рабочего места. Повторите сохранение черновика.");
+            BlockStorage(null, "Не удалось сохранить настройки рабочего места. Подтверждение приостановлено.");
         }
     }
 
@@ -501,13 +508,13 @@ public partial class LocationFact : IAsyncDisposable
             if (_disposed) return;
             if (_confirmedCleanup is not null)
             {
-                BlockDraft("Проверка записана. Завершите обработку черновика.");
+                BlockDraft("Проверка записана. Повторное подтверждение недоступно.");
                 _dialogVisible = false;
                 return;
             }
 
             if (attempt is null)
-                BlockStorage(requestedAttemptId, "Команда не отправлена. Повторите сохранение черновика.");
+                BlockStorage(requestedAttemptId, "Команда не отправлена. Хранилище недоступно.");
             else
                 await RecordFailureAsync(registration, attempt, e);
 
@@ -539,12 +546,13 @@ public partial class LocationFact : IAsyncDisposable
         }
         catch (Exception) when (!_disposed)
         {
-            BlockDraft("Проверка записана. Завершите обработку черновика.");
+            BlockDraft("Проверка записана. Повторное подтверждение недоступно.");
             _dialogVisible = false;
             return;
         }
 
         _confirmedCleanup = null;
+        _automaticCleanupAttempted = false;
         _pendingOperation = null;
         _blocked = false;
         _message = null;
@@ -583,7 +591,7 @@ public partial class LocationFact : IAsyncDisposable
 
             await PersistWorkplaceAsync();
             if (_pending is not null) await PersistAsync();
-            _storageRetryRequired = false;
+            _storageRetryRequired = _automaticStorageRecoveryAttempted = false;
             _notSentAttemptId = null;
             _blocked = false;
             _dialogError = _message = null;
@@ -591,7 +599,7 @@ public partial class LocationFact : IAsyncDisposable
             if (_pending is not null && !_dialogVisible) ShowDialog();
         }
         catch (OperationCanceledException) when (_disposed) { }
-        catch (Exception) when (!_disposed) { BlockDraft("Хранилище недоступно. Повторите сохранение черновика."); }
+        catch (Exception) when (!_disposed) { BlockDraft("Хранилище недоступно. Подтверждение приостановлено."); }
         finally { _busy = false; }
     }
 
@@ -622,7 +630,7 @@ public partial class LocationFact : IAsyncDisposable
             try { await registration.RejectOperationAsync(attempt.Revision, Token); }
             catch (Exception e) when (e is JSException or InvalidOperationException or OperationCanceledException)
             {
-                BlockStorage(null, "База отклонила команду. Повторите сохранение черновика для проверки маркера.");
+                BlockStorage(null, "База отклонила команду. Повторное подтверждение приостановлено.");
                 return;
             }
 
@@ -633,7 +641,7 @@ public partial class LocationFact : IAsyncDisposable
                 try { await PersistAsync(); }
                 catch (Exception e) when (e is JSException or InvalidOperationException or OperationCanceledException)
                 {
-                    BlockStorage(null, "Команда отклонена. Повторите сохранение черновика для продолжения сверки.");
+                    BlockStorage(null, "Команда отклонена. Повторное подтверждение приостановлено.");
                     return;
                 }
             }

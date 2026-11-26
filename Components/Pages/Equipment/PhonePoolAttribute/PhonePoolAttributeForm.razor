@@ -59,7 +59,6 @@
                 }
                 <ClayTextBox Options="RecoveryValueOptions" Value="@Draft?.Value" />
                 <div>
-                    <ClayToolbarButton Options="RetryRecoveryButton" Disabled="@(!CanRetryRecovery)" OnClick="RetryRecoveryReadAsync" />
                 </div>
                 @if (HasUnknownSubmittedSnapshot)
                 {

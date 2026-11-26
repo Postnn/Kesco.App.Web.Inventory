@@ -2,7 +2,6 @@ using System.Globalization;
 using System.Text.Json;
 using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.Inventory;
-using Clayzor.Lib.Web.Controls.Components.Form;
 using Clayzor.Lib.Web.Controls.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
@@ -13,9 +12,6 @@ public partial class PhoneTemplateForm
 {
     private const string TemplateJournalForm = "inventory.phone-template";
     private const string TemplateWriteKind = "equipment-phone-template.save";
-    private static readonly ClayToolbarButtonOptions RetryJournalOptions = new() { Text = "Проверить журнал сохранения" };
-    private static readonly ClayToolbarButtonOptions ObserveTemplateOptions = new() { Text = "Прочитать состояние шаблона" };
-    private static readonly ClayToolbarButtonOptions AdoptJournalOptions = new() { Text = "Открыть сохранённую попытку" };
 
     private readonly string _journalRoot = $"template-write-{Guid.NewGuid():N}";
     private ClayDraftRegistration? _templateJournal;
@@ -46,7 +42,13 @@ public partial class PhoneTemplateForm
                 return;
             _templateJournal = registration;
             _journalEmployeeId = employeeId;
+            var restoredRegistration = registration;
             registration = null;
+            if (!restoredRegistration.Restore.HasDraft && restoredRegistration.Restore.OperationSnapshot is null)
+                await AdoptSingleTemplateCandidateAsync(restoredRegistration, version);
+            if (_disposed || version != _loadVersion || !ReferenceEquals(_templateJournal, restoredRegistration))
+                return;
+
             RestoreTemplateJournal(_templateJournal);
             if (_model is { } model)
                 await RestoreTemplateInputAsync(_templateJournal, model, version);
@@ -99,6 +101,22 @@ public partial class PhoneTemplateForm
         return data.RootElement.ValueKind == JsonValueKind.Object &&
             data.RootElement.TryGetProperty("Id", out var id) && id.ValueKind == JsonValueKind.Number &&
             id.TryGetInt32(out var modelId) && modelId == Id;
+    }
+
+    private async Task AdoptSingleTemplateCandidateAsync(ClayDraftRegistration registration, int version)
+    {
+        var token = _pageCts.Token;
+        var candidates = await registration.ListRecoveryCandidatesAsync(token)
+            ?? throw new InvalidOperationException("Не удалось проверить предыдущие попытки сохранения.");
+        if (_disposed || version != _loadVersion || !ReferenceEquals(_templateJournal, registration) ||
+            IsModified || candidates is not [{ CanRecover: true } candidate] ||
+            CurrentUser is not { } previousActor)
+            return;
+
+        var actor = await Employee.GetCurrentWithRolesAsync(Db, await ReadPrincipalAsync(), token);
+        if (!_disposed && version == _loadVersion && ReferenceEquals(_templateJournal, registration) &&
+            !IsModified && actor?.Id == previousActor.Id && actor.HasRole(Роли.Дежурный_инженер))
+            await registration.RecoverListedDraftAsync(candidate.DraftId, token);
     }
 
     private async Task ScanTemplateJournalAsync(ClayDraftRegistration registration)
@@ -303,39 +321,6 @@ public partial class PhoneTemplateForm
         finally { _journalBusy = false; }
     }
 
-    private async Task AdoptTemplateJournalAsync(ClayDraftRecoveryCandidate candidate)
-    {
-        if (_loading || _saving || _journalBusy || _disposed || IsModified || _templateAttempt is not null ||
-            _knownWrite || !candidate.CanRecover || !_journalCandidates.Contains(candidate) ||
-            _templateJournal is not { } journal)
-            return;
-        _journalBusy = true;
-        try
-        {
-            if (await journal.RecoverListedDraftAsync(candidate.DraftId, _pageCts.Token) &&
-                ReferenceEquals(_templateJournal, journal))
-            {
-                RestoreTemplateJournal(journal);
-                if (_model is { } model && !IsModified)
-                    await RestoreTemplateInputAsync(journal, model, _loadVersion);
-                else
-                {
-                    _inputMissingOriginal = true;
-                    _inputNotice = "Ввод изменился при открытии черновика. Оба снимка оставлены для сверки.";
-                }
-                await ScanTemplateJournalAsync(journal);
-            }
-        }
-        catch (Exception ex) when (IsJournalError(ex))
-        {
-            _journalReady = false;
-            if (ReferenceEquals(_templateJournal, journal))
-                await ReleaseTemplateJournalAsync();
-            ShowTemplateJournalState();
-        }
-        finally { _journalBusy = false; }
-    }
-
     private async Task ObserveTemplateAsync()
     {
         if (_loading || _saving || _journalBusy || _disposed || _model is not { } model || _templateAttempt is null)
@@ -360,10 +345,10 @@ public partial class PhoneTemplateForm
 
     private void ShowTemplateJournalState()
     {
-        _journalNotice = _knownWrite ? "Запись шаблона подтверждена. Повтор записи не требуется. Проверьте журнал или перечитайте данные."
-            : _notSentAttempt is not null ? "Запись не отправлена. Проверьте журнал перед новой попыткой."
+        _journalNotice = _knownWrite ? "Запись шаблона подтверждена. Повтор записи не требуется. Нажмите «Обновить» для чтения сохранённого шаблона."
+            : _notSentAttempt is not null ? "Запись не отправлена. Нажмите «Обновить» для проверки состояния записи."
             : _templateAttempt is not null ? "Результат предыдущей записи шаблона неизвестен. Повтор записи заблокирован до сверки."
-            : _journalCandidates.Count > 0 ? "Есть сохранённая попытка. Откройте её перед новой записью."
+            : _journalCandidates.Count > 0 ? "Есть сохранённая попытка. Повтор записи заблокирован."
             : !_journalReady ? "Журнал сохранения недоступен. Запись не отправлена." : null;
     }
 

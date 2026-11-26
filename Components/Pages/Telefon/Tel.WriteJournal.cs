@@ -16,9 +16,7 @@ public partial class Tel
     private const string TelProgressScope = "tel-progress";
     private const string TelAttemptKind = "tel.write";
     private static readonly ClayToolbarButtonOptions RetryAtsOptions = new() { Text = "Повторить неотправленные команды АТС" };
-    private static readonly ClayToolbarButtonOptions FinishJournalOptions = new() { Text = "Завершить журнал" };
     private static readonly ClayToolbarButtonOptions InspectTelOptions = new() { Text = "Прочитать состояние номера" };
-    private static readonly ClayToolbarButtonOptions RecoverTelOptions = new() { Text = "Открыть сохранённую попытку" };
 
     private readonly string _telJournalRoot = $"tel-write-{Guid.NewGuid():N}";
     private ClayDraftRegistration? _telJournal;
@@ -37,7 +35,7 @@ public partial class Tel
     [Inject] private ClayDraftService Drafts { get; set; } = null!;
 
     private bool TelWriteBlocked => !_telJournalReady || _telJournalBusy || _telEditorTransition || _telChildOpen || TelInputBlocked || _telMarker is not null ||
-        _telProgress is not null || _notSentAttemptId is not null || _telCandidates.Count > 0;
+        _telProgress is not null || _notSentAttemptId is not null || _telCandidates.Any(candidate => candidate.HasOperation);
 
     private bool CanRetryAts => _telMarker?.Status == ClayDraftOperationStatus.Running &&
         _telProgress is { Stage: TelWriteStage.SqlConfirmed, SqlConfirmed: true, PhoneId: > 0, SqlFingerprint.Length: > 0, Pending.Count: > 0 };
@@ -64,7 +62,7 @@ public partial class Tel
             _telJournalActor = actor.Id;
             _telJournalKey = key;
             RestoreTelJournal();
-            await ScanTelJournalAsync(_telJournal);
+            await ScanTelJournalAsync(_telJournal, recover: true);
         }
         catch (Exception ex) when (IsTelJournalError(ex))
         {
@@ -95,11 +93,20 @@ public partial class Tel
         ShowPendingAts();
     }
 
-    private async Task ScanTelJournalAsync(ClayDraftRegistration registration)
+    private async Task ScanTelJournalAsync(ClayDraftRegistration registration, bool recover = false)
     {
         _telJournalReady = false;
         var candidates = await registration.ListRecoveryCandidatesAsync(_pageCts.Token)
             ?? throw new InvalidOperationException("Журнал телефонного номера не подтвердил поиск попыток.");
+        if (recover && ReferenceEquals(registration, _telJournal) && !registration.Restore.HasDraft &&
+            candidates is [{ CanRecover: true } candidate] &&
+            await registration.RecoverListedDraftAsync(candidate.DraftId, _pageCts.Token) &&
+            ReferenceEquals(registration, _telJournal))
+        {
+            RestoreTelJournal();
+            candidates = await registration.ListRecoveryCandidatesAsync(_pageCts.Token)
+                ?? throw new InvalidOperationException("Журнал телефонного номера не подтвердил поиск попыток.");
+        }
         var health = await registration.GetHealthAsync(_pageCts.Token);
         if (!ReferenceEquals(registration, _telJournal))
             return;
@@ -339,9 +346,15 @@ public partial class Tel
     {
         if (IsTelJournalInteractionBlocked || _telJournal is not { } registration)
             return;
+        var version = _operationVersion;
         _telJournalBusy = true;
         try
         {
+            var actor = await Service.GetCurrentUserAsync(await ReadPrincipalAsync(), _pageCts.Token);
+            if (!IsTelInputCurrent(registration, version) || actor?.Id != _telJournalActor ||
+                !actor.HasRole(Clayzor.Lib.Entities.Роли.Специалист_по_инвентаризации_оборудования))
+                return;
+
             if (_notSentAttemptId is { } notSent)
             {
                 _telMarker = await registration.RetryStorageAsync(notSent, _pageCts.Token);
@@ -367,30 +380,6 @@ public partial class Tel
             UpdateTelJournalNotice();
         }
         finally { _telJournalBusy = false; }
-    }
-
-    private async Task RecoverTelJournalAsync(ClayDraftRecoveryCandidate candidate)
-    {
-        if (IsTelJournalInteractionBlocked || !candidate.CanRecover || !_telCandidates.Contains(candidate) ||
-            _telJournal is not { } registration || _telMarker is not null || _telProgress is not null || HasUnsavedDraft)
-            return;
-        _telJournalBusy = true;
-        _telAdoptingFingerprint = CurrentTelInputFingerprint();
-        try
-        {
-            if (await registration.RecoverListedDraftAsync(candidate.DraftId, _pageCts.Token))
-            {
-                RestoreTelJournal();
-                await LoadCurrentAsync(Id, CopyId, preservePending: true);
-            }
-            await ScanTelJournalAsync(registration);
-        }
-        catch (Exception ex) when (IsTelJournalError(ex))
-        {
-            _telJournalReady = false;
-            UpdateTelJournalNotice();
-        }
-        finally { _telJournalBusy = false; _telAdoptingFingerprint = null; }
     }
 
     private async Task ObserveTelWriteAsync()
@@ -425,9 +414,9 @@ public partial class Tel
     private void UpdateTelJournalNotice()
     {
         _telJournalNotice = _notSentAttemptId is not null
-            ? "Операция не отправлена. Проверьте журнал."
+            ? "Операция не отправлена. Обновите форму, чтобы проверить её состояние."
             : _telProgress?.Stage == TelWriteStage.Complete
-                ? "Результат подтверждён. Можно только завершить журнал и перечитать данные."
+                ? "Результат подтверждён. Для получения актуальных данных обновите форму."
                 : CanRetryAts
                     ? "SQL подтверждён. Можно повторить только неотправленные команды АТС."
                     : _telProgress is { Stage: TelWriteStage.Manual } progress
@@ -440,7 +429,7 @@ public partial class Tel
                             ? "SQL подтверждён. Состояние команды АТС требует сверки, повтор заблокирован."
                             : _telMarker is not null
                             ? "В журнале есть незавершённая попытка. Повтор заблокирован."
-                            : _telCandidates.Count > 0
+                            : _telCandidates.Any(candidate => candidate.HasOperation)
                                 ? "Найдена сохранённая попытка. Новая запись заблокирована."
                                 : !_telJournalReady ? "Журнал записи недоступен." : null;
     }

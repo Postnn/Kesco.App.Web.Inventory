@@ -21,10 +21,6 @@
             <MudAlert Class="mb-2" Severity="Severity.Warning" data-testid="slbl-input-readiness">
                 @(_rawFailed ? "Не удалось восстановить ввод." : "Часть ввода ожидает восстановления.")
             </MudAlert>
-            @if (!_uncertain && !CompletionPending)
-            {
-                <MudButton OnClick="RetryRawAsync" Disabled="@(!CanRetryRaw)">Повторить восстановление</MudButton>
-            }
         }
         @if (_comparison is { } comparison)
         {

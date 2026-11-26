@@ -1,8 +1,8 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.Inventory;
-using Clayzor.Lib.Web.Controls.Components.Form;
 using Clayzor.Lib.Web.Controls.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
@@ -14,10 +14,6 @@ public partial class ModelEquipmentForm
     private const string JournalForm = "inventory.model-equipment";
     private const string JournalReceiptScope = "receipt";
     private const string ModelWriteKind = "equipment-model.save";
-    private static readonly ClayToolbarButtonOptions RetryJournalOptions = new() { Text = "Проверить журнал сохранения" };
-    private static readonly ClayToolbarButtonOptions ReadKnownOptions = new() { Text = "Перечитать сохранённую модель" };
-    private static readonly ClayToolbarButtonOptions ObserveOptions = new() { Text = "Прочитать состояние модели" };
-    private static readonly ClayToolbarButtonOptions AdoptJournalOptions = new() { Text = "Открыть сохранённую попытку" };
 
     private readonly string _journalRoot = $"model-write-{Guid.NewGuid():N}";
     private ClayDraftRegistration? _journal;
@@ -50,8 +46,14 @@ public partial class ModelEquipmentForm
             if (_disposed || _loadVersion != version)
                 return;
             _journal = registration;
+            var restoredRegistration = registration;
             registration = null;
             _journalEmployeeId = actor.Id;
+            if (!restoredRegistration.Restore.HasDraft && restoredRegistration.Restore.OperationSnapshot is null)
+                await AdoptSingleCandidateAsync(restoredRegistration, version);
+            if (_disposed || version != _loadVersion || !ReferenceEquals(_journal, restoredRegistration))
+                return;
+
             RestoreJournal();
             await RestoreEditorInputAsync(_journal, version);
             await ScanJournalAsync(_journal);
@@ -90,6 +92,22 @@ public partial class ModelEquipmentForm
                 fingerprintProperty.GetString() is { Length: > 0 } fingerprint)
                 _knownWrite = new KnownModelWrite(confirmed.AttemptId, id, fingerprint);
         }
+    }
+
+    private async Task AdoptSingleCandidateAsync(ClayDraftRegistration registration, int version)
+    {
+        var token = _pageCts.Token;
+        var candidates = await registration.ListRecoveryCandidatesAsync(token)
+            ?? throw new InvalidOperationException("Не удалось проверить предыдущие попытки сохранения.");
+        if (_disposed || version != _loadVersion || !ReferenceEquals(_journal, registration) ||
+            IsModified || candidates is not [{ CanRecover: true } candidate] ||
+            CurrentUser is not { } previousActor)
+            return;
+
+        var actor = await Employee.GetCurrentWithRolesAsync(Db, await ReadPrincipalAsync(), token);
+        if (!_disposed && version == _loadVersion && ReferenceEquals(_journal, registration) &&
+            !IsModified && actor?.Id == previousActor.Id && actor.HasRole(Роли.Специалист_по_инвентаризации_оборудования))
+            await registration.RecoverListedDraftAsync(candidate.DraftId, token);
     }
 
     private async Task ScanJournalAsync(ClayDraftRegistration registration)
@@ -208,43 +226,6 @@ public partial class ModelEquipmentForm
         finally { _journalBusy = false; }
     }
 
-    private async Task AdoptJournalAsync(ClayDraftRecoveryCandidate candidate)
-    {
-        if (_journalBusy || _loading || _saving || _disposed || !candidate.CanRecover ||
-            !_journalCandidates.Contains(candidate) || IsModified || _writeAttempt is not null ||
-            _knownWrite is not null || _journal is not { } registration)
-            return;
-        var version = _loadVersion;
-        _journalBusy = true;
-        try
-        {
-            if (await registration.RecoverListedDraftAsync(candidate.DraftId, _pageCts.Token))
-            {
-                if (!IsEditorContextCurrent(registration, version))
-                    return;
-                RestoreJournal();
-                if (IsModified)
-                {
-                    _adoptionConflict = true;
-                    _inputConflict = true;
-                    _inputNotice = "Ввод появился при открытии черновика. Оба снимка оставлены для сверки.";
-                    await ScanJournalAsync(registration);
-                    return;
-                }
-                await RestoreEditorInputAsync(registration, _loadVersion);
-                await ScanJournalAsync(registration);
-            }
-            else
-                _journalNotice = "Сохранённая попытка занята или недоступна. Запись заблокирована.";
-        }
-        catch (Exception ex) when (IsJournalError(ex))
-        {
-            _journalReady = false;
-            UpdateJournalNotice();
-        }
-        finally { _journalBusy = false; }
-    }
-
     private async Task ReadKnownWriteAsync()
     {
         if (_journalBusy || _loading || _saving || _disposed || _knownWrite is not { } receipt ||
@@ -324,9 +305,9 @@ public partial class ModelEquipmentForm
         _journalNotice = _knownWrite is not null
             ? _lateInput
                 ? "Сохранение подтверждено. Поздний ввод оставлен в форме для сверки."
-                : "Сохранение подтверждено. Можно завершить журнал или перечитать сохранённую модель."
+                : "Сохранение подтверждено. Нажмите «Обновить» для чтения сохранённой модели."
             : _notSentAttempt is not null
-                ? "Запись не отправлена. Проверьте состояние журнала."
+                ? "Запись не отправлена. Нажмите «Обновить» для проверки состояния записи."
                 : _writeAttempt?.Status == ClayDraftOperationStatus.Confirmed
                     ? "Сохранение подтверждено, но идентификатор результата не восстановлен. Повтор заблокирован."
                     : _writeAttempt is not null

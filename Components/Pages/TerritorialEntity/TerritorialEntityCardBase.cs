@@ -330,7 +330,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         }
         var token = _routeLoad?.Token ?? Lifetime;
         if (ConfirmedCleanupPending &&
-            !await ConfirmAsync("Закрытие формы", "База подтвердила операцию. Закрыть форму, не завершив обработку черновика?")) return;
+            !await ConfirmAsync("Закрытие формы", "База подтвердила операцию. Закрыть форму?")) return;
         if ((Dirty || _restoreRaw || _restoreIncomplete || _applyingRaw) &&
             !await ConfirmAsync("Закрытие формы", "Закрыть форму без сохранения изменений?")) return;
         if (token.IsCancellationRequested) return;
@@ -350,7 +350,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
                 if (!token.IsCancellationRequested)
                 {
                     StorageBlocked = true;
-                    Message = "Не удалось завершить отмену. Откройте карточку повторно для сверки черновика.";
+                    Message = "Не удалось завершить отмену. Ввод сохранён.";
                 }
                 return;
             }
@@ -450,7 +450,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
                 Message = "Не удалось прочитать актуальную территорию. Черновик сохранён.";
                 return;
             }
-            if (!Dirty && !scope.HasRaw && !_baselineConflict)
+            if (!Dirty && !scope.HasRaw && !_baselineConflict && !_restoreIncomplete)
             {
                 await AcceptFreshEditorAsync(registration, generation, scope.Revision, fresh, token);
                 return;
@@ -468,10 +468,10 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             ApplyFreshMetadata(fresh);
             _baselineConflict = !StatesEqual(_draftOriginal, Clean) || _originalVersion != _freshVersion;
             _readOnlyDraft = !CanRegisterDraft;
-            StorageBlocked = _readOnlyDraft || _baselineConflict;
+            StorageBlocked = _readOnlyDraft || _baselineConflict || _restoreIncomplete;
             Message = _baselineConflict ? "Карточка изменилась. Проверьте различия с локальным вводом."
                 : "Данные перечитаны. Ваш ввод сохранён.";
-            showMerge = _baselineConflict && Editable && MergeFields.Count > 0;
+            showMerge = _baselineConflict && Editable && MergeFields.Count > 0 && !_restoreIncomplete;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception e) when (e is JSException or SqlException or InvalidOperationException)
@@ -532,12 +532,9 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             context.PreventNavigation();
             return;
         }
-        if (!Dirty && !ConfirmedCleanupPending) return;
+        if (!Dirty) return;
         context.PreventNavigation();
-        var message = ConfirmedCleanupPending
-            ? "База подтвердила операцию. Покинуть форму, не завершив обработку черновика?"
-            : "Покинуть форму с несохранёнными изменениями?";
-        if (!await ConfirmAsync("Закрытие формы", message)) return;
+        if (!await ConfirmAsync("Закрытие формы", "Покинуть форму с несохранёнными изменениями?")) return;
         _navigationApproved = true;
         Navigation.NavigateTo(context.TargetLocation);
     }
@@ -626,7 +623,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             {
                 _confirmedCleanupRevision = attempt!.Revision;
                 StorageBlocked = true;
-                Message = "База подтвердила операцию. Нажмите «Обновить», чтобы завершить обработку черновика.";
+                Message = "База подтвердила операцию. Повторная запись недоступна.";
                 return true;
             }
             var rejected = exception is UnauthorizedAccessException || IsDomainRejection(exception) ||
@@ -660,7 +657,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             }
             if (StorageBlocked && attempt is not null) _unresolvedOperation = attempt;
             Message = _unresolvedOperation is not null ? "Исход операции требует сверки. Нажмите «Обновить»."
-                : StorageBlocked ? "Команда не отправлена. Нажмите «Обновить» после восстановления хранилища."
+                : StorageBlocked ? "Команда не отправлена. Хранилище недоступно."
                 : exception is SqlException ? "База отклонила операцию. Проверьте данные или связанность записи." : exception.Message;
             return false;
         }
@@ -707,21 +704,18 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             if (!readiness.Complete)
             {
                 _restoreIncomplete = true;
-                Message = "Сначала полностью восстановите ввод. Нажмите «Обновить».";
+                Message = "Ввод восстановлен частично. Сохранение приостановлено.";
                 return;
             }
             var state = await registration.ReadRebaseStateAsync(DraftScope, token);
             token.ThrowIfCancellationRequested();
             var plan = new DraftFieldMerge<TState>(_draftOriginal, local, fresh, MergeFields, state.RawKeys);
             IReadOnlyDictionary<string, bool> choice = new Dictionary<string, bool>();
-            if (plan.Conflicts.Count == 0)
-            {
-                if (!await ConfirmAsync("Сверка карточки", "Объединить независимые изменения и принять текущую версию за исходную?")) return;
-            }
-            else
+            if (plan.Conflicts.Count != 0)
             {
                 var parameters = new DialogParameters<DraftConflictDialog> { { d => d.Conflicts, plan.Conflicts } };
-                var dialog = await Dialogs.ShowAsync<DraftConflictDialog>("Сверка карточки", parameters);
+                var dialog = await Dialogs.ShowExAsync<DraftConflictDialog>("Сверка карточки", parameters,
+                    new DialogOptionsEx { DragMode = MudDialogDragMode.Simple, CloseOnEscapeKey = true, CloseButton = true });
                 if (await dialog.Result is not { Canceled: false, Data: IReadOnlyDictionary<string, bool> selected }) return;
                 choice = selected;
             }
@@ -736,7 +730,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             Draft = resolved.State;
             _baselineConflict = false;
             _storageRetryRequired = StorageBlocked = !persisted;
-            Message = persisted ? "Выбор сохранён в черновике." : "Выбор сделан. Для сохранения черновика нажмите «Обновить».";
+            Message = persisted ? "Данные сверены." : "Не удалось завершить сверку. Сохранение приостановлено.";
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception e) when (e is JSException or InvalidOperationException or JsonException)
@@ -760,7 +754,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
                 var unresolved = await registration.RetryStorageAsync(_notSentAttemptId, token);
                 token.ThrowIfCancellationRequested();
                 _unresolvedOperation = unresolved;
-                if (Draft is not null) await PersistAsync();
+                if (unresolved is null && Draft is not null) await PersistAsync();
             }
             token.ThrowIfCancellationRequested();
             _notSentAttemptId = null;
@@ -775,7 +769,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         catch (Exception e) when (e is JSException or InvalidOperationException or JsonException)
         {
             if (!token.IsCancellationRequested)
-                Message = "Хранилище черновика пока недоступно. Повторите «Обновить».";
+                Message = "Хранилище недоступно. Сохранение приостановлено.";
         }
         finally { Busy = false; }
     }
@@ -929,7 +923,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         catch (Exception e) when (e is JSException or InvalidOperationException or OperationCanceledException)
         {
             if (!token.IsCancellationRequested)
-                Message = "База подтвердила операцию. Хранилище черновика пока недоступно. Повторите «Обновить».";
+                Message = "База подтвердила операцию. Повторная запись недоступна.";
             return;
         }
         finally { Busy = false; }
@@ -988,7 +982,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             _storageRetryRequired = _initialStorageFailed = openingDraft && exception is JSException or InvalidOperationException;
             StorageBlocked = openingDraft;
             if (_storageRetryRequired)
-                Message = "Хранилище черновика недоступно. Для повтора нажмите «Обновить».";
+                Message = "Хранилище недоступно. Сохранение приостановлено.";
         }
         finally
         {
@@ -1083,7 +1077,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
                 _confirmedWriteMarkerSaved = StorageBlocked = true;
                 _confirmedCleanupRevision = pending.Revision;
                 _afterConfirmedCleanup = complete;
-                Message = "Результат подтверждён. Нажмите «Обновить», чтобы завершить обработку журнала.";
+                Message = "Результат подтверждён. Повторная запись недоступна.";
                 return;
             }
             _unresolvedOperation = pending;

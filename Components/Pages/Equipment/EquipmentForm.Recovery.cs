@@ -1,5 +1,4 @@
 using Clayzor.Lib.Entities;
-using Clayzor.Lib.Web.Controls.Components.Form;
 using Clayzor.Lib.Web.Controls.Services;
 using Microsoft.Data.SqlClient;
 using Microsoft.JSInterop;
@@ -8,8 +7,6 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
 
 public partial class EquipmentForm
 {
-    private static readonly ClayToolbarButtonOptions CheckRecoveryOptions = new() { Text = "Проверить сохранённые черновики" };
-    private static readonly ClayToolbarButtonOptions OpenRecoveryOptions = new() { Text = "Открыть черновик" };
     private IReadOnlyList<ClayDraftRecoveryCandidate> _equipmentRecoveryCandidates = [];
     private bool _recoveryScanReady;
     private bool _checkingEquipmentRecovery;
@@ -38,7 +35,7 @@ public partial class EquipmentForm
             _recoveryScanReady = true;
             if (!_orphanAdoptionConflicted)
                 _equipmentRecoveryNotice = candidates.Any(item => item.HasOperation)
-                    ? "В другом черновике оборудования есть незавершённая операция. Повтор записи заблокирован."
+                    ? "С оборудованием связана незавершённая операция из другого сеанса. Повтор записи заблокирован."
                     : null;
         }
         catch (Exception error) when (IsEquipmentRecoveryError(error))
@@ -46,7 +43,7 @@ public partial class EquipmentForm
             if (IsEquipmentRecoveryCurrent(registration, version, id, employeeId))
             {
                 _recoveryScanReady = false;
-                _equipmentRecoveryNotice = "Не удалось проверить другие черновики оборудования. Запись заблокирована.";
+                _equipmentRecoveryNotice = "Не удалось проверить незавершённые операции оборудования. Запись заблокирована.";
             }
         }
         finally
@@ -59,11 +56,14 @@ public partial class EquipmentForm
         }
     }
 
-    private Task CheckEquipmentRecoveryAsync() =>
-        _draftRegistration is { } registration && _model is { } model && CurrentUser is { } actor &&
-        !_recoveringEquipmentDraft && !_saving && !_loading
-            ? ScanEquipmentRecoveryAsync(registration, _operationVersion, model.Id, actor.Id)
-            : Task.CompletedTask;
+    private async Task<bool> TryRestoreSingleEquipmentDraftAsync()
+    {
+        if (_equipmentRecoveryCandidates is not [var candidate] || !CanOpenEquipmentRecovery(candidate))
+            return false;
+
+        await OpenEquipmentRecoveryAsync(candidate);
+        return true;
+    }
 
     private bool CanOpenEquipmentRecovery(ClayDraftRecoveryCandidate candidate) =>
         candidate.CanRecover && _equipmentRecoveryCandidates.Contains(candidate) && _recoveryScanReady &&
@@ -107,7 +107,8 @@ public partial class EquipmentForm
             }
 
             await ScanEquipmentRecoveryAsync(registration, version, id, openedBy.Id);
-            if (!Pristine() || !_recoveryScanReady || !_equipmentRecoveryCandidates.Contains(candidate)) return;
+            if (!Pristine() || !_recoveryScanReady || _equipmentRecoveryCandidates is not [var current] || current != candidate)
+                return;
             actor = await Service.GetCurrentUserWithRolesAsync();
             if (!Pristine()) return;
             if (actor?.Id != openedBy.Id || !actor.HasRole(Роли.Специалист_по_инвентаризации_оборудования))

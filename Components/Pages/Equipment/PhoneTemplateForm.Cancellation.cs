@@ -18,7 +18,32 @@ public partial class PhoneTemplateForm
 
     private Task CancelAsync() => ChangeTemplateEditorAsync(refresh: false);
 
-    private Task RefreshAsync() => ChangeTemplateEditorAsync(refresh: true);
+    private async Task RefreshAsync()
+    {
+        if (_disposed || _loading || _saving || _journalBusy)
+            return;
+        if (_rawPending && !_editorWatchFailed && !_knownWrite)
+        {
+            await RetryTemplateRawAsync();
+            return;
+        }
+        if (_templateAttempt is not null && !_knownWrite && _notSentAttempt is null)
+        {
+            await ObserveTemplateAsync();
+            return;
+        }
+        if (_journalNotice is not null)
+        {
+            await RetryTemplateJournalAsync();
+            return;
+        }
+        if (_inputSaveFailed || _editorWatchFailed)
+        {
+            await RetryTemplateInputAsync();
+            return;
+        }
+        await ChangeTemplateEditorAsync(refresh: true);
+    }
 
     private async Task BeforeInternalNavigationAsync(LocationChangingContext context)
     {

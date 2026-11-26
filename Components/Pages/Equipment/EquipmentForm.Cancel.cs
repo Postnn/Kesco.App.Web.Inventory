@@ -30,7 +30,29 @@ public partial class EquipmentForm
 
     private Task CancelAsync() => RunMainTransitionAsync(false, CloseAsync, _pageCts.Token);
 
-    private Task RefreshAsync() => RunMainTransitionAsync(true, CloseAsync, _pageCts.Token);
+    private async Task RefreshAsync()
+    {
+        if (_mainRawRestorePending && CanRetryMainRaw && _canEdit)
+        {
+            await RetryMainDraftRawAsync();
+            return;
+        }
+
+        if (_checkingEquipmentRecovery || _recoveringEquipmentDraft)
+            return;
+        if (_recoveryPristine && !HasUnsavedDraft && !PreserveMainOutcome &&
+            !_loading && !_saving && !_mainTransition && !_draftRestoring &&
+            _draftRegistration is { } registration && _model is { } model && CurrentUser is { } actor)
+        {
+            var version = _operationVersion;
+            await ScanEquipmentRecoveryAsync(registration, version, model.Id, actor.Id);
+            if (!IsEquipmentRecoveryCurrent(registration, version, model.Id, actor.Id) ||
+                await TryRestoreSingleEquipmentDraftAsync() || EquipmentRecoveryWriteBlocked)
+                return;
+        }
+
+        await RunMainTransitionAsync(true, CloseAsync, _pageCts.Token);
+    }
 
     private async Task BeforeInternalNavigationAsync(LocationChangingContext context)
     {
@@ -53,7 +75,8 @@ public partial class EquipmentForm
 
     private async Task RunMainTransitionAsync(bool refresh, Func<Task> exit, CancellationToken token)
     {
-        if (_disposed || _saving || _mainTransition || _loading || _draftRestoring || _restoringMainRaw || token.IsCancellationRequested)
+        if (_disposed || _saving || _mainTransition || _loading || _draftRestoring || _restoringMainRaw ||
+            _recoveringEquipmentDraft || token.IsCancellationRequested)
             return;
 
         if (_model is not { } model)

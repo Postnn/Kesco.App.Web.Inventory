@@ -10,8 +10,6 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Telefon;
 public partial class Tel
 {
     private const string TelInputScope = "tel-input";
-    private static readonly ClayToolbarButtonOptions RestoreTelInputOptions = new() { Text = "Повторить восстановление ввода" };
-    private static readonly ClayToolbarButtonOptions RetryTelStorageOptions = new() { Text = "Повторить сохранение черновика" };
     private ClayDraftRestore? _appliedTelRestore;
     private string? _scheduledTelInput;
     private string? _telInputNotice;
@@ -22,7 +20,6 @@ public partial class Tel
     private bool _telRestoringRaw => _telRawInFlight is not null;
     private bool _telRawPending;
     private bool _telInputSaveFailed;
-    private string? _telAdoptingFingerprint;
 
     private bool TelInputBlocked => _telInputConflict || _telRawRequested || _telRestoringRaw || _telRawPending || _telInputSaveFailed;
 
@@ -103,7 +100,7 @@ public partial class Tel
             }
             if (input != CurrentTelInputFingerprint())
             {
-                KeepTelRawPending("Ввод изменился перед восстановлением. Повторите восстановление оставшихся полей.");
+                KeepTelRawPending("Ввод изменился перед восстановлением. Оставшиеся поля сохранены.");
                 return;
             }
 
@@ -118,7 +115,7 @@ public partial class Tel
 
             _telRawPending = result is null || result.Pending.Count != 0 || !TelScopeRestored(readiness);
             _telInputNotice = _telRawPending ? "Часть ввода ещё не восстановлена. Запись заблокирована."
-                : _telInputSaveFailed ? "Не удалось сохранить черновик номера. Повторите сохранение."
+                : _telInputSaveFailed ? "Не удалось сохранить введённые данные номера."
                 : _telInputConflict ? "Ввод восстановлен. Запись требует сверки исходной версии." : null;
         }
         catch (Exception error) when (IsTelJournalError(error) || error is Microsoft.Data.SqlClient.SqlException or UnauthorizedAccessException)
@@ -256,7 +253,6 @@ public partial class Tel
         _telRawInFlight = null;
         _telRawPending = false;
         _telInputSaveFailed = false;
-        _telAdoptingFingerprint = null;
     }
 
     private sealed record TelEditorDraft(int Version, int Id, int CopyId, Phone Original, TelDraftRelations OriginalRelations,

@@ -140,6 +140,7 @@ public partial class DutyEditor : IAsyncDisposable
         if (_restoreRaw)
         {
             await ApplyDutyRawAsync(pendingOnly: false);
+            if (_retryRaw) await ApplyDutyRawAsync(pendingOnly: true);
             if (!_disposed) StateHasChanged();
         }
         if (_restoreReadOnlyRaw)
@@ -391,8 +392,6 @@ public partial class DutyEditor : IAsyncDisposable
         return !_retryRaw;
     }
 
-    private Task RetryRawAsync() => ApplyDutyRawAsync(pendingOnly: true);
-
     private async Task ApplyDutyRawAsync(bool pendingOnly)
     {
         if (!CanRetryRaw || _registration is not { } registration) return;
@@ -597,6 +596,9 @@ public partial class DutyEditor : IAsyncDisposable
             _busy = false;
             UpdateOptions();
         }
+
+        if (!_disposed && !_unknown && !_conflict && (_storageError || _confirmedRevision is not null))
+            await RetryStorageAsync();
     }
 
     private async Task RetryStorageAsync()

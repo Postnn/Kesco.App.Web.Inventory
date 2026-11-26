@@ -38,33 +38,12 @@
     {
         <section aria-label="Журнал сохранения модели" data-testid="model-save-journal">
             <MudAlert Severity="Severity.Warning">@_journalNotice</MudAlert>
-            <ClayToolbarButton Options="RetryJournalOptions" Disabled="@(_saving || _loading || _journalBusy)" OnClick="RetryJournalAsync" />
-            @foreach (var candidate in _journalCandidates.Where(candidate => candidate.CanRecover))
-            {
-                <ClayToolbarButton Options="AdoptJournalOptions" Disabled="@(_saving || _loading || _journalBusy || IsModified)"
-                                   OnClick="() => AdoptJournalAsync(candidate)" />
-            }
-            @if (_knownWrite is not null && _writeAttempt is null && !_lateInput)
-            {
-                <ClayToolbarButton Options="ReadKnownOptions" Disabled="@(_saving || _loading || _journalBusy)" OnClick="ReadKnownWriteAsync" />
-            }
-            <ClayToolbarButton Options="ObserveOptions" Disabled="@(_saving || _loading || _journalBusy)" OnClick="ObserveWriteAsync" />
         </section>
     }
     @if (_inputNotice is not null)
     {
-        <section aria-label="Черновик ввода модели" data-testid="model-editor-draft">
+        <section aria-label="Состояние ввода модели" data-testid="model-editor-draft">
             <MudAlert Severity="Severity.Warning">@_inputNotice</MudAlert>
-            @if (_rawPending)
-            {
-                <ClayToolbarButton Options="RetryInputOptions" Disabled="@(_saving || _loading || _restoringRaw || _journalBusy)"
-                                   OnClick="RetryEditorRawAsync" />
-            }
-            else if (_inputSaveFailed)
-            {
-                <ClayToolbarButton Options="RetryInputStorageOptions" Disabled="@(_saving || _loading || _restoringRaw || _journalBusy)"
-                                   OnClick="RetryEditorInputAsync" />
-            }
         </section>
     }
     <div @key="_loadVersion" class="@ReadOnlyRecoveryClass(_loadVersion)">
@@ -81,8 +60,6 @@
                 @if (localRecovery.RawPending)
                 {
                     <p>Часть исходного ввода осталась в защищённом черновике.</p>
-                    <ClayToolbarButton Options="RetryInputOptions" Disabled="@localRecovery.ApplyingRaw"
-                                       OnClick="@(() => RestoreReadOnlyRawAsync(localRecovery))" />
                 }
             </MudAlert>
             @if (localRecovery.Fields is { } typed)

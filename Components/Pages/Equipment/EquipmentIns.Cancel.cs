@@ -18,7 +18,7 @@ public partial class EquipmentIns
     private bool HasUnacceptedCreationInput =>
         IsModified || _draftNeedsReview || _creationRawPending || _restoreCreationRaw || _editorSaveFailed;
 
-    private bool ConfirmExternalExit => _saving || _creationRecoveryBusy || HasUnacceptedCreationInput || PreservesCreationOutcome;
+    private bool ConfirmExternalExit => _saving || HasUnacceptedCreationInput || PreservesCreationOutcome;
 
     private async Task CancelAsync()
     {
@@ -43,12 +43,12 @@ public partial class EquipmentIns
 
     private async Task<bool> PrepareEditorExitAsync(CancellationToken token)
     {
-        if (_disposed || _loading || _saving || _applyingCreationRaw || _creationRecoveryBusy || token.IsCancellationRequested)
+        if (_disposed || _loading || _saving || _applyingCreationRaw || token.IsCancellationRequested)
             return false;
 
         if (_creationResult is not null && !_receiptPersisted)
         {
-            _validationMessage = "Сначала завершите обработку черновика, чтобы сохранить номер созданного оборудования.";
+            _validationMessage = "Нажмите «Обновить», чтобы проверить результат создания оборудования.";
             return false;
         }
 

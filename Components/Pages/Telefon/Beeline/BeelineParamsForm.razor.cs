@@ -9,8 +9,6 @@ using Microsoft.AspNetCore.Components;
 using Microsoft.Data.SqlClient;
 using Microsoft.JSInterop;
 using MudBlazor;
-using MudBlazor.Extensions;
-using MudBlazor.Extensions.Options;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Telefon.Beeline;
 
@@ -27,7 +25,6 @@ public partial class BeelineParamsForm
     };
     private static readonly ClayToolbarButtonOptions SaveButton = new() { Text = "Сохранить", Icon = Icons.Material.Filled.Save };
     private static readonly ClayToolbarButtonOptions SubmittedSnapshotButton = new() { Text = "Посмотреть снимок попытки" };
-    private static readonly ClayToolbarButtonOptions RetryRecoveryButton = new() { Text = "Повторить чтение договора", Icon = Icons.Material.Filled.Refresh };
     private static readonly ClayTextBoxOptions RecoveryZoneOptions = new() { Label = "Time zone, ввод из браузера", ReadOnly = true, DraftKey = ZoneDraftKey };
     private static readonly ClayTextBoxOptions RecoveryEmailOptions = new() { Label = "Email менеджера, ввод из браузера", ReadOnly = true, DraftKey = EmailDraftKey };
     private static readonly ClayTextBoxOptions BaseNumberOptions = new() { Label = "Договор основной:", ReadOnly = true };
@@ -64,12 +61,11 @@ public partial class BeelineParamsForm
     private bool _submittedUnavailable;
     private (string Id, long Revision)? _submittedIdentity;
     private bool _retryingRecovery;
-    private bool _choosingRecoveryCancel;
 
     private bool ShowRecovery => !Loading && CurrentUser is not null && CanReadMissingDraft &&
         (Draft is not null || StorageBlocked) && (_contract is null || !Editable && StorageBlocked);
 
-    private bool CanRetryRecovery => ShowRecovery && !Busy && !_retryingRecovery && !_choosingRecoveryCancel && !ConfirmedCleanupPending;
+    private bool CanRetryRecovery => ShowRecovery && !Busy && !_retryingRecovery && !ConfirmedCleanupPending;
 
     private bool CanSave => !_openingSim && CanCommit && Editable && Dirty;
     private IEnumerable<string> ZoneChoices => Draft?.TimeZone is { Length: > 0 } zone && !_zones.Contains(zone, StringComparer.Ordinal)
@@ -199,47 +195,9 @@ public partial class BeelineParamsForm
         .Select(entry => entry.Value).OfType<string>().Where(zone => !string.IsNullOrWhiteSpace(zone))
         .Distinct(StringComparer.Ordinal).OrderByDescending(zone => zone, StringComparer.Ordinal).ToArray();
 
-    private async Task CancelBeelineAsync()
-    {
-        if (Busy || Loading || _openingSim || _retryingRecovery || _choosingRecoveryCancel) return;
-        if (!ShowRecovery || ConfirmedCleanupPending)
-        {
-            await CancelAsync();
-            return;
-        }
-
-        var generation = EditorGeneration;
-        var route = RouteKey;
-        var registration = EditorDraftRegistration;
-        var token = Lifetime;
-        bool Current() => generation == EditorGeneration && route == RouteKey &&
-            ReferenceEquals(registration, EditorDraftRegistration) && !token.IsCancellationRequested;
-
-        _choosingRecoveryCancel = true;
-        ClayEditorCancelChoice? choice = null;
-        try
-        {
-            var dialog = await Dialogs.ShowExAsync<ClayEditorCancelDialog>("Отмена изменений",
-                new DialogParameters(), new DialogOptionsEx
-                {
-                    DragMode = MudDialogDragMode.Simple, CloseOnEscapeKey = true, CloseButton = true,
-                });
-            if (await dialog.Result is { Canceled: false, Data: ClayEditorCancelChoice selected })
-                choice = selected;
-        }
-        finally { _choosingRecoveryCancel = false; }
-
-        if (!Current()) return;
-        if (choice == ClayEditorCancelChoice.CloseWithoutSaving)
-            await CloseAsync();
-        else if (choice == ClayEditorCancelChoice.ResetAndStay)
-        {
-            await RetryRecoveryReadAsync();
-            if (Current() && _freshRecovery is not null)
-                Message = "Договор перечитан для сверки. Восстановленный ввод сохранён.";
-        }
-    }
-
+    private Task CancelBeelineAsync() => Busy || Loading || _openingSim || _retryingRecovery
+        ? Task.CompletedTask
+        : ShowRecovery && !ConfirmedCleanupPending ? CloseAsync() : CancelAsync();
     private async Task ShowSubmittedRecoveryAsync()
     {
         if (!ShowRecovery || Busy) return;

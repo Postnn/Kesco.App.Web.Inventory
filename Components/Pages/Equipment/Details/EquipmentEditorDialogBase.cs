@@ -1,11 +1,10 @@
-using Clayzor.Lib.Web.Controls.Components.Form;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 using MudBlazor;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Equipment.Details;
 
-/// <summary>Редактор восстанавливает raw после рендера и сам предлагает повтор ожидающего восстановления.</summary>
+/// <summary>Редактор автоматически восстанавливает ввод после рендера.</summary>
 public interface IEquipmentDeferredRawRestore { }
 
 /// <summary>Общий жизненный цикл дочернего редактора с сохранением ввода до подтверждённой записи.</summary>
@@ -17,7 +16,6 @@ public abstract class EquipmentEditorDialogBase<TDraft> : ComponentBase, IDispos
     private string? _lastPublishedDraftState;
     private EquipmentEditorContext? _rawRestoreContext;
     private EquipmentEditorReadiness _rawRestoreReadiness;
-    private static readonly ClayToolbarButtonOptions RetryRawRestoreOptions = new() { Text = "Повторить восстановление" };
 
     private bool HasDeferredRawRestore => this is IEquipmentDeferredRawRestore && EditorContext?.RawRestore is not null;
 
@@ -25,7 +23,7 @@ public abstract class EquipmentEditorDialogBase<TDraft> : ComponentBase, IDispos
     protected bool RawRestoreBlocked => HasDeferredRawRestore &&
         (!ReferenceEquals(_rawRestoreContext, EditorContext) || _rawRestoreReadiness != EquipmentEditorReadiness.Ready);
 
-    /// <summary>Показывает ход восстановления и повтор для текущей области редактора.</summary>
+    /// <summary>Показывает состояние автоматического восстановления в текущей области редактора.</summary>
     protected RenderFragment RawRestoreNotice => builder =>
     {
         if (!RawRestoreBlocked)
@@ -36,12 +34,6 @@ public abstract class EquipmentEditorDialogBase<TDraft> : ComponentBase, IDispos
         builder.AddAttribute(2, nameof(MudAlert.ChildContent), (RenderFragment)(content =>
         {
             content.AddContent(0, failed ? "Не все поля восстановлены. Сохранение заблокировано." : "Восстановление полей…");
-            if (!failed)
-                return;
-            content.OpenComponent<ClayToolbarButton>(1);
-            content.AddAttribute(2, nameof(ClayToolbarButton.Options), RetryRawRestoreOptions);
-            content.AddAttribute(3, nameof(ClayToolbarButton.OnClick), EventCallback.Factory.Create(this, RestoreRawAsync));
-            content.CloseComponent();
         }));
         builder.CloseComponent();
     };
@@ -101,7 +93,11 @@ public abstract class EquipmentEditorDialogBase<TDraft> : ComponentBase, IDispos
             return;
         var context = EditorContext;
         if (HasDeferredRawRestore && !ReferenceEquals(_rawRestoreContext, context))
+        {
             await RestoreRawAsync();
+            if (ReferenceEquals(EditorContext, context) && _rawRestoreReadiness == EquipmentEditorReadiness.Failed)
+                await RestoreRawAsync();
+        }
         if (_disposed || !ReferenceEquals(EditorContext, context) || !context.IsCurrent)
             return;
         var state = EditorContext.CaptureDraftState();
