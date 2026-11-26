@@ -7,30 +7,34 @@
 
 <div class="inventory-list-page @_draftRoot">
     <MudText Typo="Typo.h5" Class="clay-page-title mb-2">Регламентные работы</MudText>
+    @if (_sourceTimeZone is null)
+    {
+        <MudAlert Severity="Severity.Warning" Class="mb-2">Укажите часовой пояс источника, чтобы показать даты и включить фильтры по ним.</MudAlert>
+    }
     @if (_message is not null)
     {
         <MudAlert Severity="@_messageSeverity" Class="mb-2">@_message</MudAlert>
     }
     @if (_confirmedOperation is not null)
     {
-        <MudButton OnClick="RetryConfirmedCleanupAsync" Disabled="@_busy">Завершить обработку черновика</MudButton>
+        <MudButton OnClick="RetryConfirmedCleanupAsync" Disabled="@IsBusy">Завершить обработку черновика</MudButton>
     }
     @if (_notSentAttemptId is not null)
     {
-        <MudButton OnClick="RetryStorageAsync" Disabled="@_busy">Повторить сохранение черновика</MudButton>
+        <MudButton OnClick="RetryStorageAsync" Disabled="@IsBusy">Повторить сохранение черновика</MudButton>
     }
-    @if ((_loadFailed || _unknownOperation is not null) && !_busy)
+    @if ((_loadFailed || _unknownOperation is not null) && !IsBusy)
     {
         <MudButton OnClick="ReloadAsync">Перечитать список</MudButton>
     }
-    @if (_pendingConfirmation is { } id && !_busy && _rows.FirstOrDefault(row => row.Id == id && CanConfirm(row)) is { } pending)
+    @if (_pendingConfirmation is { } id && !IsBusy && _rows.FirstOrDefault(row => row.Id == id && CanConfirm(row)) is { } pending)
     {
         <MudButton OnClick="@(() => ConfirmAsync(pending.Id))">Продолжить подтверждение</MudButton>
         <MudButton OnClick="CancelPendingAsync">Отменить вопрос</MudButton>
     }
     @if (_list is { } list)
     {
-        <ClayGrid TEntity="MaintenanceWork" Options="_options" Items="@_rows" Loading="@_busy"
+        <ClayGrid TEntity="MaintenanceWork" Options="_options" Items="@_rows" Loading="@IsBusy"
                   TotalCount="@_rows.Count" @ref="_grid" OnQueryChanged="OnFilterChangedAsync"
                   DistinctValuesLoader="LoadFilterValuesAsync">
             <RowActions>
@@ -38,17 +42,17 @@
                             Disabled="@(!CanConfirm(context))" OnClick="@(() => ConfirmAsync(context.Id))" />
             </RowActions>
             <ColumnDefs>
-                <ClayColumnDef Filterable="true" AllowValueFilter="true" ColumnId="1" SqlName="@MaintenanceColumns.Deadline" DisplayName="Выполнить до" />
+                <ClayColumnDef Filterable="@(_sourceTimeZone is not null)" AllowValueFilter="@(_sourceTimeZone is not null)" ColumnId="1" SqlName="@MaintenanceColumns.Deadline" DisplayName="Выполнить до" />
                 <ClayColumnDef Filterable="true" AllowValueFilter="true" ColumnId="2" SqlName="@MaintenanceColumns.Name" DisplayName="Регламентная работа" />
                 <ClayColumnDef Filterable="true" AllowValueFilter="true" ColumnId="3" SqlName="@MaintenanceColumns.Responsible" DisplayName="Ответственный" />
                 <ClayColumnDef Filterable="true" AllowValueFilter="true" ColumnId="4" SqlName="@MaintenanceColumns.Instruction" DisplayName="Ссылка" />
-                <ClayColumnDef Filterable="true" AllowValueFilter="true" ColumnId="5" SqlName="@MaintenanceColumns.LastCompleted" DisplayName="Последнее выполнение" />
+                <ClayColumnDef Filterable="@(_sourceTimeZone is not null)" AllowValueFilter="@(_sourceTimeZone is not null)" ColumnId="5" SqlName="@MaintenanceColumns.LastCompleted" DisplayName="Последнее выполнение" />
                 <ClayColumnDef Filterable="true" AllowValueFilter="true" ColumnId="6" SqlName="@MaintenanceColumns.EmployeeName" DisplayName="Сотрудник" />
             </ColumnDefs>
             <Columns>
                 <ClayColumn TEntity="MaintenanceWork" ColumnId="1">
                     <CellTemplate>
-                        @if (context.Item.Deadline is { } deadline)
+                        @if (MaintenanceTime.ToUtc(context.Item.Deadline, _sourceTimeZone) is { } deadline)
                         {
                             <MudText Color="@DeadlineColor(deadline, list.ServerNow)" Typo="Typo.body2">
                                 <ClayLocalTime Value="deadline" />
@@ -75,7 +79,7 @@
                     </CellTemplate>
                 </ClayColumn>
                 <ClayColumn TEntity="MaintenanceWork" ColumnId="5">
-                    <CellTemplate><ClayLocalTime Value="context.Item.LastCompleted" /></CellTemplate>
+                    <CellTemplate><ClayLocalTime Value="@MaintenanceTime.ToUtc(context.Item.LastCompleted, _sourceTimeZone)" /></CellTemplate>
                 </ClayColumn>
                 <ClayColumn TEntity="MaintenanceWork" ColumnId="6">
                     <CellTemplate>
@@ -93,7 +97,7 @@
             </Columns>
         </ClayGrid>
     }
-    else if (_busy)
+    else if (IsBusy)
     {
         <MudProgressLinear Indeterminate="true" />
     }

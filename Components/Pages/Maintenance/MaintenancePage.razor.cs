@@ -54,6 +54,7 @@ public partial class MaintenancePage : IAsyncDisposable
     [Inject] private IDialogService Dialogs { get; set; } = null!;
     [Inject] private ClayFormWindowService Windows { get; set; } = null!;
     [Inject] private IConfiguration Config { get; set; } = null!;
+    [Inject] private IJSRuntime JS { get; set; } = null!;
     [Inject] private NavigationManager Navigation { get; set; } = null!;
     [Inject] private ISnackbar Snackbar { get; set; } = null!;
 
@@ -65,6 +66,9 @@ public partial class MaintenancePage : IAsyncDisposable
     private string _orderBy = DefaultOrder;
     private bool _restoreFilter;
     private bool _applyingFilter;
+    private bool _readingFilter;
+    private ListQuery? _pendingQuery;
+    private sealed record ListQuery(ClayFilterGroupNode? Filter, string OrderBy);
     private ClayDraftOperation? _confirmedOperation;
     private ClayDraftOperation? _unknownOperation;
     private string? _notSentAttemptId;
@@ -73,12 +77,22 @@ public partial class MaintenancePage : IAsyncDisposable
     private ClayDraftRegistration? _registration;
     private int? _pendingConfirmation;
     private bool _busy;
+    private bool IsBusy => _busy || _readingFilter;
     private bool _canComplete;
     private bool RecoveryRequired => _confirmedOperation is not null || _unknownOperation is not null || _notSentAttemptId is not null;
     private bool _loadFailed;
     private bool _disposed;
+    private TimeZoneInfo? _sourceTimeZone;
     private string? _message;
     private Severity _messageSeverity = Severity.Warning;
+
+    /// <inheritdoc />
+    protected override void OnInitialized()
+    {
+        if (Config["Maintenance:SourceTimeZoneId"] is { Length: > 0 } zoneId &&
+            TimeZoneInfo.TryFindSystemTimeZoneById(zoneId, out var zone))
+            _sourceTimeZone = zone;
+    }
 
     /// <inheritdoc />
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -92,7 +106,7 @@ public partial class MaintenancePage : IAsyncDisposable
         {
             _restoreFilter = false;
             _applyingFilter = true;
-            try { _grid.RestoreFilter(_filter); }
+            try { _grid.RestoreFilter((ClayFilterGroupNode)_filter.Clone()); }
             finally { _applyingFilter = false; }
             StateHasChanged();
         }
@@ -100,7 +114,7 @@ public partial class MaintenancePage : IAsyncDisposable
 
     private async Task ReloadAsync()
     {
-        if (_busy || _disposed) return;
+        if (IsBusy || _disposed) return;
         _busy = true;
         _loadFailed = false;
         var ct = _lifetime.Token;
@@ -120,6 +134,8 @@ public partial class MaintenancePage : IAsyncDisposable
                 await _registration.DisposeAsync();
                 _registration = null;
                 _filter = null;
+                _orderBy = DefaultOrder;
+                _pendingQuery = null;
                 _confirmedOperation = null;
                 _unknownOperation = null;
                 _notSentAttemptId = null;
@@ -148,8 +164,8 @@ public partial class MaintenancePage : IAsyncDisposable
                     _filter = JsonSerializer.Deserialize<IClayFilterNode>(filterJson) as ClayFilterGroupNode;
                     if (_filter is not null)
                     {
-                        _list = await ReadListAsync(ct);
                         _restoreFilter = true;
+                        _list = await ReadListAsync(ct);
                     }
                 }
             }
@@ -168,48 +184,91 @@ public partial class MaintenancePage : IAsyncDisposable
             _loadFailed = true;
             Report("Не удалось загрузить регламентные работы или восстановить состояние подтверждения.", Severity.Error);
         }
-        finally { _busy = false; }
+        finally
+        {
+            _busy = false;
+            await ApplyPendingQueryAsync();
+        }
     }
 
-    private Task<MaintenanceList> ReadListAsync(CancellationToken ct)
+    private Task<MaintenanceList> ReadListAsync(CancellationToken ct) =>
+        ReadListAsync(new ListQuery(_filter, _orderBy), ct);
+
+    private async Task<MaintenanceList> ReadListAsync(ListQuery query, CancellationToken ct)
     {
+        var filter = await MaintenanceTime.ToSqlFilterAsync(query.Filter, _sourceTimeZone, JS, ct);
         var parameters = new DynamicParameters();
-        var predicate = ClayCompositeSqlBuilder.Build(_filter, parameters, FilterColumns);
-        return MaintenanceData.ReadAsync(Db, ct, predicate, parameters, _orderBy);
+        var predicate = ClayCompositeSqlBuilder.Build(filter, parameters, FilterColumns);
+        return await MaintenanceData.ReadAsync(Db, ct, predicate, parameters, query.OrderBy);
     }
 
-    private async Task OnFilterChangedAsync(ClayDataQuery query)
+    private Task OnFilterChangedAsync(ClayDataQuery query)
     {
-        if (_busy || _disposed || _applyingFilter) return;
+        if (_disposed || _applyingFilter) return Task.CompletedTask;
+        _restoreFilter = false;
+        _pendingQuery = new ListQuery((ClayFilterGroupNode?)query.CompositeFilter?.Clone(),
+            query.BuildOrderBy(DefaultOrder, FilterColumns));
+        return ApplyPendingQueryAsync();
+    }
+
+    private async Task ApplyPendingQueryAsync()
+    {
+        if (IsBusy || _disposed || _pendingQuery is null) return;
+
         var ct = _lifetime.Token;
-        _busy = true;
+        _readingFilter = true;
         try
         {
-            _filter = query.CompositeFilter;
-            _orderBy = query.BuildOrderBy(DefaultOrder, FilterColumns);
-            _list = await ReadListAsync(ct);
-            _loadFailed = false;
-            if (_registration is { } registration)
-                await registration.SaveTypedScopeAsync(FilterScope, JsonSerializer.Serialize<IClayFilterNode?>(_filter), ct);
+            while (!_disposed && _pendingQuery is { } query)
+            {
+                _pendingQuery = null;
+                try
+                {
+                    var list = await ReadListAsync(query, ct);
+                    if (_disposed || _pendingQuery is not null) continue;
+
+                    if (_registration is { } registration)
+                        await registration.SaveTypedScopeAsync(FilterScope, JsonSerializer.Serialize<IClayFilterNode?>(query.Filter), ct);
+                    if (_disposed) break;
+
+                    _filter = query.Filter;
+                    _orderBy = query.OrderBy;
+                    _list = list;
+                    if (_loadFailed && _canComplete && !RecoveryRequired) _message = null;
+                    _loadFailed = false;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+                catch (Exception) when (!ct.IsCancellationRequested)
+                {
+                    if (_pendingQuery is not null) continue;
+                    _loadFailed = true;
+                    Report("Не удалось применить или сохранить фильтр. Перечитайте список.", Severity.Error);
+                }
+            }
         }
-        catch (Exception) when (!ct.IsCancellationRequested)
-        {
-            _loadFailed = true;
-            Report("Не удалось применить или сохранить фильтр. Перечитайте список.", Severity.Error);
-        }
-        finally { _busy = false; }
+        finally { _readingFilter = false; }
     }
 
     private async Task<DistinctValuesResult> LoadFilterValuesAsync(string column, ClayDataQuery _, int limit)
     {
-        var values = await MaintenanceData.ReadFilterValuesAsync(Db, column, limit, _lifetime.Token);
-        var nonBlank = values.Where(value => value is not null and not "").ToArray();
+        var ct = _lifetime.Token;
+        var values = await MaintenanceData.ReadFilterValuesAsync(Db, column, limit, ct);
+        var nonBlank = new List<object?>();
+        var hasBlanks = false;
+        foreach (var rawValue in values)
+        {
+            var value = MaintenanceTime.IsTimeColumn(column) && rawValue is DateTime sourceDate
+                ? await MaintenanceTime.FormatDistinctAsync(sourceDate, _sourceTimeZone, JS, ct)
+                : rawValue;
+            if (value is null or "") hasBlanks = true;
+            else nonBlank.Add(value);
+        }
         return new DistinctValuesResult
         {
-            Values = nonBlank.Length > limit ? [] : nonBlank,
-            HasBlanks = nonBlank.Length != values.Count,
-            Capped = nonBlank.Length > limit,
-            TotalDistinct = nonBlank.Length,
+            Values = nonBlank.Count > limit ? [] : nonBlank,
+            HasBlanks = hasBlanks,
+            Capped = nonBlank.Count > limit,
+            TotalDistinct = nonBlank.Count,
         };
     }
 
@@ -282,12 +341,16 @@ public partial class MaintenancePage : IAsyncDisposable
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        finally { _busy = false; }
+        finally
+        {
+            _busy = false;
+            await ApplyPendingQueryAsync();
+        }
     }
 
     private async Task RetryConfirmedCleanupAsync()
     {
-        if (_busy || _disposed || _registration is not { } registration || _confirmedOperation is not { } attempt)
+        if (IsBusy || _disposed || _registration is not { } registration || _confirmedOperation is not { } attempt)
             return;
 
         _busy = true;
@@ -295,7 +358,11 @@ public partial class MaintenancePage : IAsyncDisposable
         try { await FinishConfirmedAsync(registration, attempt, ct); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception) when (!ct.IsCancellationRequested) { ReportRecovery(); }
-        finally { _busy = false; }
+        finally
+        {
+            _busy = false;
+            await ApplyPendingQueryAsync();
+        }
     }
 
     private async Task FinishConfirmedAsync(ClayDraftRegistration registration, ClayDraftOperation attempt, CancellationToken ct)
@@ -318,7 +385,7 @@ public partial class MaintenancePage : IAsyncDisposable
 
     private async Task RetryStorageAsync()
     {
-        if (_busy || _disposed || _registration is not { } registration || _notSentAttemptId is not { } attemptId)
+        if (IsBusy || _disposed || _registration is not { } registration || _notSentAttemptId is not { } attemptId)
             return;
 
         _busy = true;
@@ -332,7 +399,11 @@ public partial class MaintenancePage : IAsyncDisposable
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception) when (!ct.IsCancellationRequested) { ReportRecovery(); }
-        finally { _busy = false; }
+        finally
+        {
+            _busy = false;
+            await ApplyPendingQueryAsync();
+        }
     }
 
     private void ReportRecovery()
@@ -353,11 +424,15 @@ public partial class MaintenancePage : IAsyncDisposable
 
     private async Task CancelPendingAsync()
     {
-        if (_busy || RecoveryRequired || _registration is not { } registration) return;
+        if (IsBusy || RecoveryRequired || _registration is not { } registration) return;
         _busy = true;
         try { await ClearPendingAsync(registration, _lifetime.Token); }
         catch (Exception) when (!_disposed) { Report("Не удалось удалить сохранённый вопрос."); }
-        finally { _busy = false; }
+        finally
+        {
+            _busy = false;
+            await ApplyPendingQueryAsync();
+        }
     }
 
     private async Task ClearPendingAsync(ClayDraftRegistration registration, CancellationToken ct)
@@ -375,7 +450,7 @@ public partial class MaintenancePage : IAsyncDisposable
     }
 
     private bool CanConfirm(MaintenanceWork row) =>
-        !_disposed && !_busy && !RecoveryRequired && !_loadFailed && _canComplete && _registration is not null && row.IsApproved;
+        !_disposed && !IsBusy && !RecoveryRequired && !_loadFailed && _canComplete && _registration is not null && row.IsApproved;
 
     private async Task<string?> PrincipalAsync()
     {
@@ -414,6 +489,7 @@ public partial class MaintenancePage : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
+        _pendingQuery = null;
         await _lifetime.CancelAsync();
         if (_registration is not null) await _registration.DisposeAsync();
         _lifetime.Dispose();
