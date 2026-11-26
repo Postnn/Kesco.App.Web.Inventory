@@ -9,7 +9,9 @@
 
 <MudLayout>
     <MudMainContent Class="pa-6 inventory-layout-content">
-        <ClayFormActions Form="@InventoryFormHelp.Find(Navigation.ToBaseRelativePath(Navigation.Uri))" />
+        <div class="inventory-layout-actions">
+            <ClayFormActions Form="@InventoryFormHelp.Find(Navigation.ToBaseRelativePath(Navigation.Uri))" />
+        </div>
         <ClayErrorBar />
         <ClayDbReconnectOverlay />
         @Body

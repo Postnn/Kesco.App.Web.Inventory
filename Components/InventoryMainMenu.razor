@@ -1,5 +1,6 @@
 @namespace Kesco.App.Web.Inventory.Components
 @using Clayzor.Lib.Web.Controls.Components.Navigation
+@using Kesco.App.Web.Inventory.Components.Layout
 
 <div class="inventory-main-menu">
     @if (!string.IsNullOrWhiteSpace(_error))
@@ -20,6 +21,11 @@
     }
     else if (_items.Count > 0)
     {
-        <ClayNavigationMenu Items="_items" Options="_options" AdditionalContent="Actions" />
+        <ClayNavigationMenu Items="_items" Options="_options">
+            <AdditionalContent>
+                @Actions
+                <ClayFormActions Form="@InventoryFormHelp.Find(Navigation.ToBaseRelativePath(Navigation.Uri))" />
+            </AdditionalContent>
+        </ClayNavigationMenu>
     }
 </div>

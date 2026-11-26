@@ -8,11 +8,19 @@
 
 <MudLayout>
     <MudMainContent Class="pa-2 entity-form-main">
-        <div class="entity-form-theme inventory-theme-toggle">
-            <ClayFormActions Form="@InventoryFormHelp.Find(Navigation.ToBaseRelativePath(Navigation.Uri))" />
-        </div>
         <ClayErrorBar />
         <ClayDbReconnectOverlay />
-        @Body
+        <CascadingValue Name="EntityFormActions" Value="@EntityFormActions">
+            @Body
+        </CascadingValue>
     </MudMainContent>
 </MudLayout>
+
+@code {
+    private RenderFragment EntityFormActions => builder =>
+    {
+        builder.OpenComponent<ClayFormActions>(0);
+        builder.AddAttribute(1, nameof(ClayFormActions.Form), InventoryFormHelp.Find(Navigation.ToBaseRelativePath(Navigation.Uri)));
+        builder.CloseComponent();
+    };
+}

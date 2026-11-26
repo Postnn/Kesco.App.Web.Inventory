@@ -26,7 +26,8 @@ public partial class TypeEquipmentMenu : IDisposable
         ShowAddButton = false,
         ShowPagination = false,
         AllowSorting = true,
-        AllowColumnReorder = false,
+        AllowColumnReorder = true,
+        SearchColumns = [EquipmentType.NameColumnName],
         ColumnMenuMode = ColumnMenuMode.Hidden,
         FilterTrayExpandedByDefault = true,
         FillAvailableHeight = true,
@@ -90,7 +91,10 @@ public partial class TypeEquipmentMenu : IDisposable
         try
         {
             var parameters = new DynamicParameters();
-            var predicate = ClayCompositeSqlBuilder.Build(query.CompositeFilter, parameters, TypeFilterColumns);
+            parameters.Add("search", $"%{query.SearchText}%");
+            var searchPredicate = query.BuildWhereClause(_typesOptions.SearchColumns);
+            var filterPredicate = ClayCompositeSqlBuilder.Build(query.CompositeFilter, parameters, TypeFilterColumns);
+            var predicate = ClayDataQuery.CombineWhere(searchPredicate, filterPredicate);
             var orderBy = query.BuildOrderBy(DefaultTypeOrder, TypeFilterColumns);
             _types = (await EquipmentType.ReadMenuAsync(Db, _lifetime.Token, predicate, parameters, orderBy)).ToArray();
             _typesOptions.PageSize = Math.Max(1000, _types.Length);
