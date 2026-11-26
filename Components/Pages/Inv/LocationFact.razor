@@ -31,7 +31,16 @@
     </div>
     @if (_busy || !_ready && _message is null) { <MudProgressLinear Class="my-2" Indeterminate="true" /> }
     @if (_message is not null) { <MudAlert Severity="Severity.Warning" Class="my-2">@_message</MudAlert> }
-    @if (_blocked && !_dialogVisible && _pending is not null)
+    @if (_confirmedCleanup is { } receipt)
+    {
+        <ClayLocalTime Value="@receipt.CheckedAt" />
+        <MudButton OnClick="RetryConfirmedCleanupAsync" Disabled="@_busy">Завершить обработку черновика</MudButton>
+    }
+    @if (_storageRetryRequired && !_dialogVisible)
+    {
+        <MudButton OnClick="RetryStorageAsync" Disabled="@_busy">Повторить сохранение черновика</MudButton>
+    }
+    @if (_blocked && !_dialogVisible && _pending is not null && _confirmedCleanup is null && !_storageRetryRequired)
     {
         <MudButton OnClick="ShowDialog" Disabled="@_busy">Вернуться к сверке</MudButton>
     }
@@ -74,7 +83,11 @@
                DefaultFocus="@(_askRelocation ? DefaultFocus.Element : DefaultFocus.None)">
         <TitleContent>Подтверждение нахождения оборудования на расположении</TitleContent>
         <DialogContent>
-            @if (_blocked || _conflict)
+            @if (_storageRetryRequired)
+            {
+                <MudButton OnClick="RetryStorageAsync" Disabled="@_busy">Повторить сохранение черновика</MudButton>
+            }
+            @if ((_blocked && !_storageRetryRequired && _confirmedCleanup is null) || _conflict)
             {
                 <MudButton Disabled="@_busy" OnClick="CompareAsync">Сверить с базой</MudButton>
                 @if (_comparison is { } fresh)
@@ -96,6 +109,7 @@
             @if (_dialogError is not null) { <MudAlert Severity="Severity.Warning" Class="mb-2">@_dialogError</MudAlert> }
             @if (_pending is { } pending)
             {
+            var editorVersion = _dialogVersion;
             <div class="d-flex flex-column gap-2" data-draft-scope="main" data-location-fact-dialog="@_dialogVersion" inert="@_busy">
                 <div>Код оборудования @pending.Equipment.EquipmentId</div>
                 <div>Оборудование <a href="@EquipmentUrl(pending.Equipment.EquipmentId)" @onclick:preventDefault @onclick="@(() => OpenAsync(EquipmentUrl(pending.Equipment.EquipmentId)))">@pending.Equipment.FactName</a></div>
@@ -108,8 +122,10 @@
                 @if (pending.Equipment.InventoryNumber.Length != 0) { <div>Инвентарный номер @pending.Equipment.InventoryNumber</div> }
                 @if (!_askRelocation)
                 {
-                    <ClayCheckbox Label="Сломано, ремонту не подлежит" State="_broken" StateChanged="ChangeBrokenAsync" />
-                    <ClayTextArea Options="NotesOptions" Value="@_notes" ValueChanged="ChangeNotesAsync" />
+                    <ClayCheckbox Label="Сломано, ремонту не подлежит" State="_broken" Disabled="@(!CanEditPending)"
+                                  StateChanged="@(value => ChangeBrokenAsync(editorVersion, value))" />
+                    <ClayTextArea Options="@(CanEditPending ? NotesOptions : ReadOnlyNotesOptions)" Value="@_notes"
+                                  ValueChanged="@(value => ChangeNotesAsync(editorVersion, value))" />
                     <div>
                         Подтвердите, что оборудование находится на расположении
                         @if (GetLocationUrl(pending.Site.Id) is { } siteUrl)

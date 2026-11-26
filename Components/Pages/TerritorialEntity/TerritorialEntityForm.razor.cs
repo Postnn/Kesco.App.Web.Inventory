@@ -73,18 +73,23 @@ public partial class TerritorialEntityForm
             Message = QueryId is null ? "Код территории не передан." : "Некорректный код территории.";
             return null;
         }
-        if (id == 0 && queryParent is not null &&
-            (!TerritorialEntityRoutes.TryPositiveId(queryParent, out var parent) ||
-             await TerritorialEntityData.FindTerritoryAsync(Db, parent, routeToken) is null))
+        if (id == 0)
         {
+            if (queryParent is not null &&
+                (!TerritorialEntityRoutes.TryPositiveId(queryParent, out var parent) ||
+                 await TerritorialEntityData.FindTerritoryAsync(Db, parent, routeToken) is null))
+            {
+                routeToken.ThrowIfCancellationRequested();
+                Message = "Родительская территория не найдена или недоступна.";
+                return null;
+            }
             routeToken.ThrowIfCancellationRequested();
-            Message = "Родительская территория не найдена или недоступна.";
+            Message = "Создание территории пока недоступно.";
             return null;
         }
         routeToken.ThrowIfCancellationRequested();
         _id = id;
-        var record = id == 0 ? new TerritorialEntityRecord { ParentId = int.TryParse(queryParent, out var parentId) ? parentId : null }
-            : await TerritorialEntityData.ReadTerritoryAsync(Db, id, routeToken);
+        var record = await TerritorialEntityData.ReadTerritoryAsync(Db, id, routeToken);
         routeToken.ThrowIfCancellationRequested();
         if (record is null)
         {
@@ -98,8 +103,7 @@ public partial class TerritorialEntityForm
         foreach (var option in new ClayInputOptions[] { _typeOptions, _classificationOptions, _nameOptions, _alternateNameOptions,
             _captionOptions, _alternateCaptionOptions, _abbreviationOptions, _countryOptions, _directionOptions })
             option.ReadOnly = !Editable;
-        if (_id == 0) Message = "Создание территории пока недоступно: штатная вставка не возвращает её идентификатор.";
-        else if (!Editable) Message = "Карточка открыта для просмотра.";
+        if (!Editable) Message = "Карточка открыта для просмотра.";
         return new(record, record.CountryClassification?.ToString(CultureInfo.InvariantCulture));
     }
 
