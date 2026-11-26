@@ -1,6 +1,7 @@
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
 @using Kesco.App.Web.Inventory.Services
+@using Kesco.App.Web.Inventory.Components.Layout
 
 <MudDialog>
     <TitleContent>@(IsEdit ? "Параллельный вызов" : "Новый параллельный вызов")</TitleContent>
@@ -28,6 +29,7 @@
     <DialogActions>
         <ClayToolbarButton Options="_cancelButton" OnClick="Cancel" />
         <ClayToolbarButton Options="_okButton" OnClick="Apply" />
+        <ClayFormActions Form="InventoryFormHelp.Tel" />
     </DialogActions>
 </MudDialog>
 

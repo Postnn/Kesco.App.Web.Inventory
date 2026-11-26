@@ -9,11 +9,7 @@
 <MudLayout>
     <MudMainContent Class="pa-2 entity-form-main">
         <div class="entity-form-theme inventory-theme-toggle">
-            @if (InventoryFormHelp.Find(Navigation.ToBaseRelativePath(Navigation.Uri)) is { } help)
-            {
-                <ClayFormHelpButton Form="help" />
-            }
-            <ClayThemeSelector />
+            <ClayFormActions Form="@InventoryFormHelp.Find(Navigation.ToBaseRelativePath(Navigation.Uri))" />
         </div>
         <ClayErrorBar />
         <ClayDbReconnectOverlay />

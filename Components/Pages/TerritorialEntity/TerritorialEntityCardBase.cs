@@ -68,8 +68,11 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected Employee? CurrentUser { get; private set; }
     protected TerritorialEntityAccess Access { get; private set; } = new();
     protected TState? Clean { get; private set; }
+    /// <summary>Принятая исходная версия черновика для сравнения с текущим вводом.</summary>
+    protected TState? AcceptedDraftBaseline => _draftOriginal;
     protected TState? Draft { get; private set; }
-    protected bool Dirty => Draft is not null && !StatesEqual(Draft, Clean);
+    protected bool Dirty => Draft is not null && !StatesEqual(Draft,
+        SupportsEditorCancellation ? _draftOriginal : Clean);
     protected bool Busy { get; private set; }
     protected bool Loading { get; private set; } = true;
     protected bool StorageBlocked { get; private set; }
@@ -565,6 +568,12 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
                     StorageBlocked = true;
                 }
             }
+            if (!StorageBlocked && SupportsEditorCancellation &&
+                exception is TerritorialEntityRuleException { BaselineConflict: true })
+            {
+                await ReadAfterWriteConflictAsync();
+                return false;
+            }
             if (StorageBlocked && attempt is not null) _unresolvedOperation = attempt;
             Message = _unresolvedOperation is not null ? "Исход операции требует сверки. Нажмите «Обновить»."
                 : StorageBlocked ? "Команда не отправлена. Нажмите «Обновить» после восстановления хранилища."
@@ -572,6 +581,35 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             return false;
         }
         finally { Busy = false; }
+    }
+
+    private async Task ReadAfterWriteConflictAsync()
+    {
+        if (_registration is not { } registration || _routeLoad is not { } route) return;
+        var token = route.Token;
+        var generation = EditorGeneration;
+        _baselineConflict = StorageBlocked = true;
+        try
+        {
+            var fresh = await ReadEditorForTransitionAsync(token);
+            if (!IsCurrentEditor(registration, generation, token)) return;
+            if (fresh is null)
+            {
+                Message = "Запись недоступна для сверки. Ваш ввод сохранён.";
+                return;
+            }
+            Clean = fresh.Data;
+            _freshVersion = fresh.Version;
+            ApplyFreshMetadata(fresh);
+            _readOnlyDraft = !CanRegisterDraft;
+            Message = "Карточка изменилась. Нажмите «Обновить», чтобы сверить изменения.";
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception e) when (e is SqlException or InvalidOperationException or JSException)
+        {
+            if (IsCurrentEditor(registration, generation, token))
+                Message = "Не удалось перечитать карточку для сверки. Ваш ввод сохранён.";
+        }
     }
 
     private async Task ResolveFieldConflictsAsync(CancellationToken token)

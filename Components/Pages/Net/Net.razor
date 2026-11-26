@@ -11,7 +11,7 @@
 <ClayEntityForm Options="_entityFormOptions">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || _poeRunning || !_loaded || CurrentUser is null)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || _poeRunning || !_loaded || CurrentUser is null || _requiresReconciliation)" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
             @if (_model?.Poe == 1)
             {

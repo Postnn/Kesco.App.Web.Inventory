@@ -1420,18 +1420,12 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             { dialog => dialog.Notes, latest?.Notes ?? string.Empty },
             { dialog => dialog.Configurations, _standardConfigurations },
             { dialog => dialog.Save, (Func<EquipmentComputerSnapshot, Task<EquipmentEditorSaveResult>>)(snapshot => SaveComputerDraftAsync(snapshot, opening)) },
-            { dialog => dialog.RejectUnknownOperation, RejectUnknownComputerOperationAsync },
+            { dialog => dialog.HasUnresolvedComputerOperation,
+                _draftOperationUnresolved && _draftOperation?.Kind == "Сохранение конфигурации компьютера" },
         };
         await ShowDialogAsync<EquipmentComputerDialog>(
             "Компьютер", parameters, new DialogOptionsEx { MaxWidth = MaxWidth.Medium, FullWidth = true },
             openingContext: opening);
-    }
-
-    private async Task RejectUnknownComputerOperationAsync()
-    {
-        if (_draftOperation?.Kind != "Сохранение конфигурации компьютера" || !_draftOperationUnresolved)
-            return;
-        await RejectDraftOperationAsync(_draftOperation.Revision);
     }
 
     private async Task<EquipmentEditorSaveResult> SaveComputerDraftAsync(

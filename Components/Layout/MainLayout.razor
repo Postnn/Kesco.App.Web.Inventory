@@ -1,18 +1,17 @@
 @inherits LayoutComponentBase
 @using Clayzor.Lib.Web.Controls.Themes
-@inject ClayThemeState ThemeState
+@inject NavigationManager Navigation
 
 <ClayThemeHost />
 <MudPopoverProvider />
 <MudDialogProvider />
 <MudSnackbarProvider />
 
-<CascadingValue Value="ThemeState" IsFixed="true">
-    <MudLayout>
-        <MudMainContent Class="pa-6 inventory-layout-content">
-            <ClayErrorBar />
-            <ClayDbReconnectOverlay />
-            @Body
-        </MudMainContent>
-    </MudLayout>
-</CascadingValue>
+<MudLayout>
+    <MudMainContent Class="pa-6 inventory-layout-content">
+        <ClayFormActions Form="@InventoryFormHelp.Find(Navigation.ToBaseRelativePath(Navigation.Uri))" />
+        <ClayErrorBar />
+        <ClayDbReconnectOverlay />
+        @Body
+    </MudMainContent>
+</MudLayout>

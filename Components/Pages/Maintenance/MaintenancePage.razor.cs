@@ -75,11 +75,13 @@ public partial class MaintenancePage : IAsyncDisposable
     private MaintenanceList? _list;
     private IReadOnlyList<MaintenanceWork> _rows => _list?.Rows ?? [];
     private ClayDraftRegistration? _registration;
+    private IReadOnlyList<ClayDraftRecoveryCandidate> _recoverableDrafts = [];
+    private bool _recoveryScanned;
     private int? _pendingConfirmation;
     private bool _busy;
     private bool IsBusy => _busy || _readingFilter;
     private bool _canComplete;
-    private bool RecoveryRequired => _confirmedOperation is not null || _unknownOperation is not null || _notSentAttemptId is not null;
+    private bool RecoveryRequired => !_recoveryScanned || _recoverableDrafts.Count > 0 || _confirmedOperation is not null || _unknownOperation is not null || _notSentAttemptId is not null;
     private bool _loadFailed;
     private bool _disposed;
     private TimeZoneInfo? _sourceTimeZone;
@@ -133,6 +135,8 @@ public partial class MaintenancePage : IAsyncDisposable
             {
                 await _registration.DisposeAsync();
                 _registration = null;
+                _recoverableDrafts = [];
+                _recoveryScanned = false;
                 _filter = null;
                 _orderBy = DefaultOrder;
                 _pendingQuery = null;
@@ -156,18 +160,18 @@ public partial class MaintenancePage : IAsyncDisposable
 
                 _registration = registration;
                 _registrationEmployee = CurrentUser.Id;
-                _unknownOperation = registration.Restore.OperationSnapshot;
-                if (registration.Restore.TypedScopes?.TryGetValue(ConfirmationScope, out var json) == true)
-                    _pendingConfirmation = JsonSerializer.Deserialize<int?>(json);
-                if (registration.Restore.TypedScopes?.TryGetValue(FilterScope, out var filterJson) == true)
+                if (registration.Restore.HasDraft)
                 {
-                    _filter = JsonSerializer.Deserialize<IClayFilterNode>(filterJson) as ClayFilterGroupNode;
-                    if (_filter is not null)
-                    {
-                        _restoreFilter = true;
-                        _list = await ReadListAsync(ct);
-                    }
+                    _recoveryScanned = true;
+                    await ApplyRestoredDraftAsync(registration.Restore, ct);
                 }
+            }
+
+            if (!_recoveryScanned && _registration is { } current)
+            {
+                _recoverableDrafts = await current.ListRecoveryCandidatesAsync(ct)
+                    ?? throw new InvalidOperationException("Не удалось прочитать список черновиков.");
+                _recoveryScanned = true;
             }
 
             if (RecoveryRequired)
@@ -191,6 +195,62 @@ public partial class MaintenancePage : IAsyncDisposable
         }
     }
 
+    private async Task ApplyRestoredDraftAsync(ClayDraftRestore restore, CancellationToken ct)
+    {
+        _pendingConfirmation = restore.TypedScopes?.TryGetValue(ConfirmationScope, out var json) == true
+            ? JsonSerializer.Deserialize<int?>(json) : null;
+        RestoreOperation(restore.OperationSnapshot);
+        _filter = restore.TypedScopes?.TryGetValue(FilterScope, out var filterJson) == true
+            ? JsonSerializer.Deserialize<IClayFilterNode>(filterJson) as ClayFilterGroupNode : null;
+        _restoreFilter = _filter is not null;
+        if (_restoreFilter) _list = await ReadListAsync(ct);
+    }
+
+    private void ContinueWithSeparateDraft()
+    {
+        if (!IsBusy && _recoverableDrafts.Count > 0 && !_recoverableDrafts.Any(candidate => candidate.HasOperation))
+        {
+            _recoverableDrafts = [];
+            _message = null;
+        }
+    }
+
+    private async Task RecoverDraftAsync(ClayDraftRecoveryCandidate candidate)
+    {
+        if (IsBusy || _disposed || _registration is not { } registration ||
+            !candidate.CanRecover || !_recoverableDrafts.Contains(candidate))
+            return;
+
+        _busy = true;
+        var ct = _lifetime.Token;
+        try
+        {
+            var actor = await Employee.GetCurrentWithRolesAsync(Db, await PrincipalAsync(), ct);
+            if (actor is null || actor.Id != _registrationEmployee)
+            {
+                Report("Не удалось подтвердить владельца черновика.", Severity.Error);
+                return;
+            }
+            if (!await registration.RecoverListedDraftAsync(candidate.DraftId, ct))
+            {
+                Report("Черновик занят в другой вкладке или больше недоступен.");
+                return;
+            }
+
+            _recoverableDrafts = [];
+            await ApplyRestoredDraftAsync(registration.Restore, ct);
+            _message = null;
+            ReportRecovery();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            _loadFailed = true;
+            Report("Не удалось открыть сохранённый черновик.", Severity.Error);
+        }
+        finally { _busy = false; }
+    }
+
     private Task<MaintenanceList> ReadListAsync(CancellationToken ct) =>
         ReadListAsync(new ListQuery(_filter, _orderBy), ct);
 
@@ -204,7 +264,7 @@ public partial class MaintenancePage : IAsyncDisposable
 
     private Task OnFilterChangedAsync(ClayDataQuery query)
     {
-        if (_disposed || _applyingFilter) return Task.CompletedTask;
+        if (_disposed || _applyingFilter || _recoverableDrafts.Count > 0) return Task.CompletedTask;
         _restoreFilter = false;
         _pendingQuery = new ListQuery((ClayFilterGroupNode?)query.CompositeFilter?.Clone(),
             query.BuildOrderBy(DefaultOrder, FilterColumns));
@@ -213,7 +273,7 @@ public partial class MaintenancePage : IAsyncDisposable
 
     private async Task ApplyPendingQueryAsync()
     {
-        if (IsBusy || _disposed || _pendingQuery is null) return;
+        if (IsBusy || _disposed || _recoverableDrafts.Count > 0 || _pendingQuery is null) return;
 
         var ct = _lifetime.Token;
         _readingFilter = true;
@@ -284,7 +344,7 @@ public partial class MaintenancePage : IAsyncDisposable
         string? beginAttemptId = null;
         try
         {
-            await registration.EnsureCommandAllowedAsync(ct);
+            await registration.EnsureScopesCanBeAcceptedAsync([ConfirmationScope], ct);
             _pendingConfirmation = id;
             await registration.SaveTypedScopeAsync(ConfirmationScope, JsonSerializer.Serialize(id), ct);
             var parameters = new DialogParameters<ConfirmDialog>
@@ -367,6 +427,7 @@ public partial class MaintenancePage : IAsyncDisposable
 
     private async Task FinishConfirmedAsync(ClayDraftRegistration registration, ClayDraftOperation attempt, CancellationToken ct)
     {
+        await registration.RecordConfirmedOperationAsync(attempt.Revision, ct);
         await registration.CommitOperationAsync(attempt.Revision, cancellationToken: ct);
         _confirmedOperation = null;
         try
@@ -392,7 +453,7 @@ public partial class MaintenancePage : IAsyncDisposable
         var ct = _lifetime.Token;
         try
         {
-            _unknownOperation = await registration.RetryStorageAsync(attemptId, ct);
+            RestoreOperation(await registration.RetryStorageAsync(attemptId, ct));
             _notSentAttemptId = null;
             _message = null;
             ReportRecovery();
@@ -404,6 +465,18 @@ public partial class MaintenancePage : IAsyncDisposable
             _busy = false;
             await ApplyPendingQueryAsync();
         }
+    }
+
+    private void RestoreOperation(ClayDraftOperation? operation)
+    {
+        if (operation is { Kind: CompletionKind, Status: ClayDraftOperationStatus.Confirmed })
+        {
+            _confirmedOperation = operation;
+            _unknownOperation = null;
+            _pendingConfirmation = null;
+        }
+        else
+            _unknownOperation = operation;
     }
 
     private void ReportRecovery()

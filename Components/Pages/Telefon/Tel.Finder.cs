@@ -25,17 +25,55 @@ public partial class Tel
             ["telid"] = PhoneFinderRoutes.Id(snapshot.PhoneId),
         }, excluded, search.SearchText ?? "");
         var ct = _pageCts.Token;
-        bool Current() => !_disposed && !_saving && _canEdit && _availability.Equipment.IsEditable && ReferenceEquals(model, _model) &&
-            snapshot == EquipmentFinderContext() && excluded.SequenceEqual(_relations.Equipment.Select(item => item.EquipmentId).Distinct().Order());
+        bool Current() => !ct.IsCancellationRequested && !_disposed && !_saving && _canEdit &&
+            _availability.Equipment.IsEditable && ReferenceEquals(model, _model) && snapshot == EquipmentFinderContext() &&
+            excluded.SequenceEqual(_relations.Equipment.Select(item => item.EquipmentId).Distinct().Order());
         try
         {
-            var result = await Services.GetRequiredService<ClaySelectAdvancedSearchService>()
-                .OpenAsync<PhoneEquipmentLookup, PhoneEquipmentKey>(Navigation.ToAbsoluteUri(address).AbsoluteUri, ct);
-            if (result?.Value is not { } key) return null;
-            if (Current() && await PhoneFinderData.ResolveEquipmentAsync(Services.GetRequiredService<DbManager>(), snapshot, excluded, key, ct) is { } item && Current())
-                return ClaySelectExternalResult<PhoneEquipmentLookup, PhoneEquipmentKey>.FromItem(item);
-            if (!_disposed) _warningMessage = "Контекст номера или доступность оборудования изменились. Откройте поиск ещё раз.";
+            await Services.GetRequiredService<ClaySelectAdvancedSearchService>()
+                .OpenAcknowledgedAsync<PhoneEquipmentLookup, PhoneEquipmentKey>(
+                    Navigation.ToAbsoluteUri(address).AbsoluteUri, async (result, token) =>
+                    {
+                        if (!Current() || token.IsCancellationRequested) return ClaySelectReturnDecision.Stale;
+                        PhoneEquipmentLookup? item;
+                        try
+                        {
+                            item = result.Value is { } key
+                                ? await PhoneFinderData.ResolveEquipmentAsync(
+                                    Services.GetRequiredService<DbManager>(), snapshot, excluded, key, token)
+                                : null;
+                        }
+                        catch (Exception error) when (error is Microsoft.Data.SqlClient.SqlException or TimeoutException)
+                        {
+                            if (!Current() || token.IsCancellationRequested) return ClaySelectReturnDecision.Stale;
+                            _warningMessage = "Не удалось проверить оборудование. Повторите выбор в окне поиска.";
+                            StateHasChanged();
+                            return ClaySelectReturnDecision.Rejected;
+                        }
+
+                        var decision = ClaySelectReturnDecision.Stale;
+                        await InvokeAsync(() =>
+                        {
+                            if (!Current() || token.IsCancellationRequested) return;
+                            if (item is null)
+                            {
+                                _warningMessage = "Выбранное оборудование больше недоступно. Повторите поиск.";
+                                decision = ClaySelectReturnDecision.Rejected;
+                            }
+                            else
+                            {
+                                // Выбор добавляет строку и пересоздаёт ClaySelect. Подтверждаем добавленную связь.
+                                OnEquipmentSelected(item);
+                                decision = _relations.Equipment.Any(link => link.EquipmentId == item.EquipmentId &&
+                                    link.ConnectionEquipmentId == item.ConnectionEquipmentId)
+                                    ? ClaySelectReturnDecision.Accepted : ClaySelectReturnDecision.Indeterminate;
+                            }
+                            StateHasChanged();
+                        });
+                        return decision;
+                    }, ct);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception error) when (error is JSException or System.Text.Json.JsonException or ArgumentException or
             InvalidOperationException or Microsoft.Data.SqlClient.SqlException)
         {

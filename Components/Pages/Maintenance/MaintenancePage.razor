@@ -15,6 +15,22 @@
     {
         <MudAlert Severity="@_messageSeverity" Class="mb-2">@_message</MudAlert>
     }
+    @if (_recoverableDrafts.Count > 0)
+    {
+        <MudAlert Severity="Severity.Info">Найдены сохранённые черновики. Выберите черновик для восстановления.</MudAlert>
+        @foreach (var candidate in _recoverableDrafts)
+        {
+            <MudButton @key="candidate.DraftId" OnClick="@(() => RecoverDraftAsync(candidate))" Disabled="@(IsBusy || !candidate.CanRecover)">
+                Восстановить черновик @candidate.DraftId[..8] · ревизия @candidate.Revision
+                @if (candidate.HasOperation) { <span> · есть операция</span> }
+                @if (!candidate.CanRecover) { <span> · другая версия</span> }
+            </MudButton>
+        }
+        @if (!_recoverableDrafts.Any(candidate => candidate.HasOperation))
+        {
+            <MudButton OnClick="ContinueWithSeparateDraft" Disabled="@IsBusy">Начать отдельный черновик</MudButton>
+        }
+    }
     @if (_confirmedOperation is not null)
     {
         <MudButton OnClick="RetryConfirmedCleanupAsync" Disabled="@IsBusy">Завершить обработку черновика</MudButton>
@@ -32,7 +48,7 @@
         <MudButton OnClick="@(() => ConfirmAsync(pending.Id))">Продолжить подтверждение</MudButton>
         <MudButton OnClick="CancelPendingAsync">Отменить вопрос</MudButton>
     }
-    @if (_list is { } list)
+    @if (_list is { } list && _recoverableDrafts.Count == 0)
     {
         <ClayGrid TEntity="MaintenanceWork" Options="_options" Items="@_rows" Loading="@IsBusy"
                   TotalCount="@_rows.Count" @ref="_grid" OnQueryChanged="OnFilterChangedAsync"

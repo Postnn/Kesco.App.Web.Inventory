@@ -149,18 +149,36 @@ public partial class PhoneCodeEntityForm
         var route = RouteKey;
         var source = _territorySource;
         var previous = Draft.TerritoryId;
-        bool Current() => !ct.IsCancellationRequested && Editable && !Busy && !Loading && route == RouteKey &&
-            ReferenceEquals(source, _territorySource) && Draft?.TerritoryId == previous;
+        bool Current() => !ct.IsCancellationRequested && Editable && !Busy && !Loading && !DraftInputSuppressed &&
+            route == RouteKey && ReferenceEquals(source, _territorySource) && Draft?.TerritoryId == previous;
         try
         {
-            var result = await TerritorySearch.OpenAsync<TerritorialEntityLookup, int?>(
-                Navigation.ToAbsoluteUri(TerritorialEntityRoutes.Search).AbsoluteUri, ct);
-            if (result?.Value is not int id || !Current()) return null;
-            var item = id > 0 ? await source.GetByIdAsync(id, ct) : null;
-            if (!Current()) return null;
-            if (item?.IsPhoneCodeTerritory == true) return ClaySelectExternalResult<TerritorialEntityLookup, int?>.FromItem(item);
-            Message = "Выбранная территория недоступна или не подходит для телефонного кода.";
-            StateHasChanged();
+            await TerritorySearch.OpenAcknowledgedAsync<TerritorialEntityLookup, int?>(
+                Navigation.ToAbsoluteUri(TerritorialEntityRoutes.Search).AbsoluteUri, async (result, token) =>
+                {
+                    if (!Current()) return ClaySelectReturnDecision.Stale;
+                    TerritorialEntityLookup? item;
+                    try { item = result.Value is int id && id > 0 ? await source.GetByIdAsync(id, token) : null; }
+                    catch (Exception) when (!token.IsCancellationRequested)
+                    {
+                        Message = "Не удалось проверить выбранную территорию. Повторите выбор в окне поиска.";
+                        StateHasChanged();
+                        return ClaySelectReturnDecision.Rejected;
+                    }
+
+                    if (!Current()) return ClaySelectReturnDecision.Stale;
+                    if (item?.IsPhoneCodeTerritory != true)
+                    {
+                        Message = "Выбранная территория недоступна или не подходит для телефонного кода.";
+                        StateHasChanged();
+                        return ClaySelectReturnDecision.Rejected;
+                    }
+
+                    var decision = await context.ApplyAsync(
+                        ClaySelectExternalResult<TerritorialEntityLookup, int?>.FromItem(item), token);
+                    return decision == ClaySelectReturnDecision.Accepted && Draft?.TerritoryId != item.Id
+                        ? ClaySelectReturnDecision.Indeterminate : decision;
+                }, ct);
         }
         catch (OperationCanceledException) { }
         catch (Exception) when (!ct.IsCancellationRequested) { Message = "Не удалось завершить поиск территории."; StateHasChanged(); }

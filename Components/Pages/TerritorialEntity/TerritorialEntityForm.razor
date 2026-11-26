@@ -35,18 +35,37 @@
         @if (Draft is { } draft)
         {
             var generation = EditorGeneration;
+            var baseline = AcceptedDraftBaseline;
             <div @key="generation" class="d-flex flex-column gap-2 territorial-form-fields" data-draft-scope="main" inert="@DraftInputSuppressed">
-                <ClayDropDownList TItem="TerritorialEntityOption" TValue="int?" Options="_typeOptions"
-                                  Items="_types" ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
-                                  Value="@((int)draft.Record.Type > 0 ? (int?)draft.Record.Type : null)" ValueChanged="@(value => ChangeTypeAsync(generation, value))" />
-                <ClayTextBox Options="_classificationOptions" Value="@draft.Classification" ValueChanged="@(value => ChangeClassificationAsync(generation, value))" />
-                <ClayTextBox Options="_nameOptions" Value="@draft.Record.Name" ValueChanged="@(value => ChangeAsync(generation, record => record with { Name = value ?? "" }))" />
-                <ClayTextBox Options="_alternateNameOptions" Value="@draft.Record.AlternateName" ValueChanged="@(value => ChangeAsync(generation, record => record with { AlternateName = value ?? "" }))" />
-                <ClayTextBox Options="_captionOptions" Value="@draft.Record.Caption" ValueChanged="@(value => ChangeAsync(generation, record => record with { Caption = value ?? "" }))" />
-                <ClayTextBox Options="_alternateCaptionOptions" Value="@draft.Record.AlternateCaption" ValueChanged="@(value => ChangeAsync(generation, record => record with { AlternateCaption = value ?? "" }))" />
-                <ClayTextBox Options="_abbreviationOptions" Value="@draft.Record.Abbreviation" ValueChanged="@(value => ChangeAsync(generation, record => record with { Abbreviation = value ?? "" }))" />
-                <ClayTextBox Options="_countryOptions" Value="@draft.Record.CountryCode" ValueChanged="@(value => ChangeAsync(generation, record => record with { CountryCode = value ?? "" }))" />
-                <ClayTextBox Options="_directionOptions" Value="@draft.Record.Direction" ValueChanged="@(value => ChangeAsync(generation, record => record with { Direction = value ?? "" }))" />
+                <ClayFieldChange Changed="@(baseline is not null && draft.Record.Type != baseline.Record.Type)">
+                    <ClayDropDownList TItem="TerritorialEntityOption" TValue="int?" Options="_typeOptions"
+                                      Items="_types" ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                      Value="@((int)draft.Record.Type > 0 ? (int?)draft.Record.Type : null)" ValueChanged="@(value => ChangeTypeAsync(generation, value))" />
+                </ClayFieldChange>
+                <ClayFieldChange Changed="@(baseline is not null && draft.Classification != baseline.Classification)">
+                    <ClayTextBox Options="_classificationOptions" Value="@draft.Classification" ValueChanged="@(value => ChangeClassificationAsync(generation, value))" />
+                </ClayFieldChange>
+                <ClayFieldChange Changed="@(baseline is not null && draft.Record.Name != baseline.Record.Name)">
+                    <ClayTextBox Options="_nameOptions" Value="@draft.Record.Name" ValueChanged="@(value => ChangeAsync(generation, record => record with { Name = value ?? "" }))" />
+                </ClayFieldChange>
+                <ClayFieldChange Changed="@(baseline is not null && draft.Record.AlternateName != baseline.Record.AlternateName)">
+                    <ClayTextBox Options="_alternateNameOptions" Value="@draft.Record.AlternateName" ValueChanged="@(value => ChangeAsync(generation, record => record with { AlternateName = value ?? "" }))" />
+                </ClayFieldChange>
+                <ClayFieldChange Changed="@(baseline is not null && draft.Record.Caption != baseline.Record.Caption)">
+                    <ClayTextBox Options="_captionOptions" Value="@draft.Record.Caption" ValueChanged="@(value => ChangeAsync(generation, record => record with { Caption = value ?? "" }))" />
+                </ClayFieldChange>
+                <ClayFieldChange Changed="@(baseline is not null && draft.Record.AlternateCaption != baseline.Record.AlternateCaption)">
+                    <ClayTextBox Options="_alternateCaptionOptions" Value="@draft.Record.AlternateCaption" ValueChanged="@(value => ChangeAsync(generation, record => record with { AlternateCaption = value ?? "" }))" />
+                </ClayFieldChange>
+                <ClayFieldChange Changed="@(baseline is not null && draft.Record.Abbreviation != baseline.Record.Abbreviation)">
+                    <ClayTextBox Options="_abbreviationOptions" Value="@draft.Record.Abbreviation" ValueChanged="@(value => ChangeAsync(generation, record => record with { Abbreviation = value ?? "" }))" />
+                </ClayFieldChange>
+                <ClayFieldChange Changed="@(baseline is not null && draft.Record.CountryCode != baseline.Record.CountryCode)">
+                    <ClayTextBox Options="_countryOptions" Value="@draft.Record.CountryCode" ValueChanged="@(value => ChangeAsync(generation, record => record with { CountryCode = value ?? "" }))" />
+                </ClayFieldChange>
+                <ClayFieldChange Changed="@(baseline is not null && draft.Record.Direction != baseline.Record.Direction)">
+                    <ClayTextBox Options="_directionOptions" Value="@draft.Record.Direction" ValueChanged="@(value => ChangeAsync(generation, record => record with { Direction = value ?? "" }))" />
+                </ClayFieldChange>
             </div>
             @if (draft.Record.Id > 0)
             {

@@ -12,10 +12,6 @@
         @if (!string.IsNullOrWhiteSpace(_error))
         {
             <MudAlert Severity="Severity.Error">@_error</MudAlert>
-            @if (RejectUnknownOperation is not null && _error.Contains("Предыдущая команда не сверена", StringComparison.Ordinal))
-            {
-                <MudButton OnClick="RejectUnknownAsync">Отклонить предыдущую команду</MudButton>
-            }
         }
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">RAM, Мб:</span>
@@ -132,8 +128,8 @@
 
     [Inject] private ILogger<EquipmentComputerDialog> Logger { get; set; } = default!;
 
-    /// <summary>Явно отклоняет сохранённую Unknown только для операции конфигурации компьютера.</summary>
-    [Parameter] public Func<Task>? RejectUnknownOperation { get; set; }
+    /// <summary>Карточка хранит предыдущую операцию компьютера без подтверждённого результата.</summary>
+    [Parameter] public bool HasUnresolvedComputerOperation { get; set; }
 
     /// <summary>Идентификатор оборудования.</summary>
     [Parameter] public int EquipmentId { get; set; }
@@ -208,6 +204,11 @@
         if (_initialized)
             return;
         _initialized = true;
+        if (HasUnresolvedComputerOperation)
+        {
+            _saveBlocked = true;
+            _error = "Результат предыдущего сохранения конфигурации не подтверждён. Повторная запись заблокирована.";
+        }
         try
         {
             var ram = EquipmentComputerDetail.Parse(RamDetail);
@@ -226,18 +227,9 @@
         }
     }
 
-    private async Task RejectUnknownAsync()
-    {
-        if (RejectUnknownOperation is null)
-            return;
-        await RejectUnknownOperation();
-        _saveBlocked = false;
-        _error = "Предыдущая команда отклонена. Повторите сохранение конфигурации.";
-    }
-
     private async Task Apply()
     {
-        if (_loadError is not null)
+        if (_saveBlocked || _loadError is not null)
             return;
         var today = GetToday is null ? Today : (await GetToday()).Date;
         if (!IsEditorCurrent())

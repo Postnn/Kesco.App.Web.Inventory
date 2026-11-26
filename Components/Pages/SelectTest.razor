@@ -138,14 +138,15 @@
         return Task.CompletedTask;
     }
 
-    private Task<ClaySelectExternalResult<Employee, int?>?> OpenEmployeeSearchAsync(
+    private async Task<ClaySelectExternalResult<Employee, int?>?> OpenEmployeeSearchAsync(
         ClaySelectAdvancedSearchContext context)
     {
         var searchUrl = Configuration["URI_user_search"]
                         ?? throw new InvalidOperationException("Не задан URI_user_search");
         var separator = searchUrl.Contains('?') ? '&' : '?';
         var url = $"{searchUrl}{separator}search={Uri.EscapeDataString(context.SearchText)}";
-        return AdvancedSearchService.OpenAsync<Employee, int?>(url, _pageCts.Token);
+        await AdvancedSearchService.OpenAcknowledgedAsync<Employee, int?>(url, context.ApplyAsync, _pageCts.Token);
+        return null;
     }
 
     private async Task OpenEmployeeViewAsync(Employee employee)

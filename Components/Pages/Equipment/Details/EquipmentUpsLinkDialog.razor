@@ -27,7 +27,7 @@
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "Подключить", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClaySelectOptions _upsOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите UPS" };
+    private readonly ClaySelectOptions _upsOptions = new() { AutoSelectSingle = true, Required = true, Placeholder = "Выберите UPS" };
 
     /// <summary>Выбранный идентификатор UPS.</summary>
     [Parameter] public int? Value { get; set; }
