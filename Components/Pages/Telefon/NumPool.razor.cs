@@ -56,7 +56,7 @@ public partial class NumPool
         new("Data.Phones", "Телефонные номера"),
         new("EmployeePrivate", "Признак личного номера при добавлении сотрудника"),
     ];
-    protected override bool CanReadMissingDraft => _access.CanRead && (_access.CanUpdate || _access.CanDelete) && NumPoolData.ValidNumber(Id);
+    protected override bool CanReadMissingDraft => _access.CanRead && NumPoolData.ValidNumber(Id);
 
     protected override async Task<CompareRead> ReadForComparisonAsync(FormState proposed, Employee actor, CancellationToken token)
     {

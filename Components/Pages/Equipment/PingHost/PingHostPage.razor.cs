@@ -50,8 +50,13 @@ public partial class PingHostPage : IAsyncDisposable
     private bool _disposed;
     private bool _hasError;
     private bool _scrollPending;
+    private bool _journalSaveFailed;
+    private int? _journalRetryRevision;
 
-    private bool CanStart => _interactive && !_initializing && !_stopping && !_closing && !_disposed && _run is null && CurrentUser is not null;
+    private bool RetryingCurrentJournal => _journalRetryRevision == _hostRevision;
+    private bool CanStart => _interactive && !_initializing && !_stopping && !_closing && !_disposed &&
+        !RetryingCurrentJournal && _run is null && CurrentUser is not null;
+    private bool CanRetryJournal => _journalSaveFailed && CanStart && _registration is not null;
 
     /// <inheritdoc />
     protected override Task OnParametersSetAsync() =>
@@ -102,6 +107,7 @@ public partial class PingHostPage : IAsyncDisposable
             _heading = TitleText;
             _status = null;
             _hasError = false;
+            _journalSaveFailed = false;
             CurrentUser = null;
 
             var actor = await ReadEmployeeAsync(ct);
@@ -276,17 +282,52 @@ public partial class PingHostPage : IAsyncDisposable
         return identity?.IsAuthenticated == true ? await Employee.GetCurrentAsync(Db, identity.Name, ct) : null;
     }
 
+    private bool IsCurrentJournal(ClayDraftRegistration registration, int revision) =>
+        !_disposed && revision == _hostRevision && ReferenceEquals(registration, _registration);
+
     private async Task SaveJournalAsync(bool running, CancellationToken ct)
     {
         if (_registration is not { } registration || ct.IsCancellationRequested) return;
+        var revision = _hostRevision;
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
         budget.CancelAfter(TimeSpan.FromSeconds(2));
         try
         {
             await registration.SaveTypedScopeAsync(Scope,
                 JsonSerializer.Serialize(new Journal(_heading, _status, _hasError, running, _lines.ToArray())), budget.Token);
+            SetJournalSaveFailed(registration, revision, false);
+        }
+        catch (Exception e) when (e is JSException or OperationCanceledException or InvalidOperationException)
+        {
+            if (!ct.IsCancellationRequested) SetJournalSaveFailed(registration, revision, true);
+        }
+    }
+
+    private async Task RetryJournalAsync()
+    {
+        if (!CanRetryJournal || _registration is not { } registration) return;
+        var revision = _hostRevision;
+        _journalRetryRevision = revision;
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        budget.CancelAfter(TimeSpan.FromSeconds(2));
+        try
+        {
+            var remaining = await registration.RetryStorageAsync(null, budget.Token);
+            if (remaining is null && IsCurrentJournal(registration, revision))
+                await SaveJournalAsync(false, budget.Token);
         }
         catch (Exception e) when (e is JSException or OperationCanceledException or InvalidOperationException) { }
+        finally
+        {
+            if (_journalRetryRevision == revision) _journalRetryRevision = null;
+        }
+    }
+
+    private void SetJournalSaveFailed(ClayDraftRegistration registration, int revision, bool failed)
+    {
+        if (!IsCurrentJournal(registration, revision) || _journalSaveFailed == failed) return;
+        _journalSaveFailed = failed;
+        StateHasChanged();
     }
 
     /// <inheritdoc />

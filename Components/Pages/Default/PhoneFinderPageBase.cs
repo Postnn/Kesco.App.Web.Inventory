@@ -198,13 +198,19 @@ public abstract class PhoneFinderPageBase<TRow, TKey> : ComponentBase, IDisposab
         try
         {
             var key = GetKey(row);
-            if (!await IsAvailableAsync(key, ct)) { Error = "Выбранная запись стала недоступна. Повторите поиск."; return; }
+            var available = await IsAvailableAsync(key, ct);
             if (ct.IsCancellationRequested) return;
-            _sent = await JS.InvokeAsync<bool>("claySelectAdvancedSearch.returnValue", ct, request, key);
-            if (!_sent) ReturnMessage = "Вызывающее окно недоступно. Откройте поиск из поля формы.";
+            if (!available) { Error = "Выбранная запись стала недоступна. Повторите поиск."; return; }
+
+            var posted = await JS.InvokeAsync<bool>("claySelectAdvancedSearch.returnValue", ct, request, key);
+            if (ct.IsCancellationRequested) return;
+            _sent = posted;
+            if (!posted) ReturnMessage = "Вызывающее окно недоступно. Откройте поиск из поля формы.";
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception) when (!ct.IsCancellationRequested) { Error = "Не удалось проверить или вернуть выбранную запись."; }
+        catch (Exception)
+        {
+            if (!ct.IsCancellationRequested) Error = "Не удалось проверить или вернуть выбранную запись.";
+        }
         finally { if (!ct.IsCancellationRequested) _returning = false; }
     }
 

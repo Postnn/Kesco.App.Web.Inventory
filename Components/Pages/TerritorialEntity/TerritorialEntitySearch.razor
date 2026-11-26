@@ -23,7 +23,14 @@
 {
     <MudAlert Severity="Severity.Warning" Class="mb-2">@_treeRefreshError</MudAlert>
 }
-@if (_pendingMove is not null)
+@if (_knownMoveCleanup is { } cleanup)
+{
+    <MudAlert Severity="Severity.Warning">
+        @(cleanup.Rejection is null ? "Перенос подтверждён. Требуется завершить очистку в браузере." : "Перенос отклонён. Требуется завершить очистку в браузере.")
+        <MudButton Disabled="@_moving" OnClick="RetryMoveCleanupAsync">Повторить очистку</MudButton>
+    </MudAlert>
+}
+else if (_pendingMove is not null)
 {
     <MudAlert Severity="Severity.Warning">Результат переноса не подтверждён. <MudButton Disabled="@_moving" OnClick="CompareMoveAsync">Сверить родителя</MudButton>
         @if (_moveComparison is not null) { <div>@_moveComparison</div> }

@@ -77,6 +77,7 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
         _clid = 0;
         _viewState = null;
         _pendingMove = null;
+        _knownMoveCleanup = null;
         _moveComparison = null;
         _checked.Clear();
         _selectionStorageKey = null;
@@ -280,14 +281,16 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
             _message = "Браузер заблокировал окно территории.";
     }
 
-    private sealed record PendingMove(TerritorialEntityData.MoveNode From, TerritorialEntityData.MoveNode? To);
+    private sealed record PendingMove(TerritorialEntityData.MoveNode From, TerritorialEntityData.MoveNode? To, Guid? AttemptId = null);
+    private sealed record KnownMoveCleanup(long Generation, int EmployeeId, string StorageKey, string Marker, string? Rejection);
     private PendingMove? _pendingMove;
+    private KnownMoveCleanup? _knownMoveCleanup;
     private string? _moveComparison;
     private bool _moving;
 
     private async Task CompareMoveAsync()
     {
-        if (_moving || _pendingMove is not { } attempt || CurrentUser is null) return;
+        if (_moving || _knownMoveCleanup is not null || _pendingMove is not { } attempt || CurrentUser is null) return;
         _moving = true;
         var generation = _generation;
         try
@@ -304,13 +307,17 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
 
     private async Task<bool> ReparentNodeAsync(ClayTreeNode source, ClayTreeNode? target)
     {
-        if (_moving || CurrentUser is null || ReturnMode is not null || RootIds is not null || Root is not null || Parent is not null || _total.HasValue) return false;
+        if (_moving || _pendingMove is not null || CurrentUser is not { } actor || ReturnMode is not null ||
+            RootIds is not null || Root is not null || Parent is not null || _total.HasValue) return false;
         _moving = true;
         var generation = _generation;
-        var storageKey = $"territory-move:{CurrentUser.Id}";
+        var storageKey = $"territory-move:{actor.Id}";
+        var dispatched = false;
         try
         {
-            if (await JS.InvokeAsync<string?>("sessionStorage.getItem", _lifetime.Token, storageKey) is not null)
+            var previousMarker = await JS.InvokeAsync<string?>("sessionStorage.getItem", _lifetime.Token, storageKey);
+            if (!IsCurrent(generation)) return false;
+            if (previousMarker is not null)
             {
                 _message = "Исход предыдущего переноса требует сверки.";
                 return false;
@@ -320,32 +327,76 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
             var from = Snapshot(source);
             var to = target is null ? null : Snapshot(target);
             var identity = (await Authentication.GetAuthenticationStateAsync()).User.Identity;
-            var attempt = new PendingMove(from, to);
-            await JS.InvokeVoidAsync("sessionStorage.setItem", _lifetime.Token, storageKey,
-                System.Text.Json.JsonSerializer.Serialize(attempt));
+            if (!IsCurrent(generation)) return false;
+            var attempt = new PendingMove(from, to, Guid.NewGuid());
+            var marker = System.Text.Json.JsonSerializer.Serialize(attempt);
+            await JS.InvokeVoidAsync("sessionStorage.setItem", _lifetime.Token, storageKey, marker);
+            if (!IsCurrent(generation)) return false;
             _pendingMove = attempt;
+            dispatched = true;
+            string? rejection = null;
             try
             {
                 await TerritorialEntityData.ReparentAsync(Db, identity?.IsAuthenticated == true ? identity.Name : null, from, to, _lifetime.Token);
             }
             catch (Exception error) when (error is TerritorialEntityRuleException or UnauthorizedAccessException)
             {
-                await JS.InvokeVoidAsync("sessionStorage.removeItem", _lifetime.Token, storageKey);
-                _pendingMove = null;
-                _message = error.Message;
-                return false;
+                rejection = error.Message;
             }
-            await JS.InvokeVoidAsync("sessionStorage.removeItem", _lifetime.Token, storageKey);
-            if (generation == _generation) _pendingMove = null;
-            await RefreshViewAsync(generation, reloadTree: false);
-            return true;
+            if (IsCurrent(generation))
+            {
+                var cleanup = new KnownMoveCleanup(generation, actor.Id, storageKey, marker, rejection);
+                _knownMoveCleanup = cleanup;
+                _message = rejection;
+                await CompleteMoveCleanupAsync(cleanup);
+                if (rejection is null) await RefreshViewAsync(generation, reloadTree: false);
+            }
+            return rejection is null;
         }
-        catch (Exception) when (!_disposed)
+        catch (Exception)
         {
-            _message = "Перенос не подтверждён. Обновите дерево и сверьте расположение узла.";
+            if (IsCurrent(generation))
+                _message = dispatched ? "Перенос не подтверждён. Обновите дерево и сверьте расположение узла."
+                    : "Не удалось подготовить перенос территории. Запись не начата.";
             return false;
         }
         finally { _moving = false; if (!_disposed) await InvokeAsync(StateHasChanged); }
+    }
+
+    private bool CanCompleteMoveCleanup(KnownMoveCleanup cleanup) =>
+        IsCurrent(cleanup.Generation) && CurrentUser?.Id == cleanup.EmployeeId &&
+        ReferenceEquals(_knownMoveCleanup, cleanup);
+
+    private async Task<bool> CompleteMoveCleanupAsync(KnownMoveCleanup cleanup)
+    {
+        if (!CanCompleteMoveCleanup(cleanup)) return false;
+        try
+        {
+            await using (var module = await JS.InvokeAsync<IJSObjectReference>("import", _lifetime.Token,
+                "./js/territorialEntitySearch.js"))
+            {
+                if (!CanCompleteMoveCleanup(cleanup) ||
+                    !await module.InvokeAsync<bool>("clearMoveMarker", _lifetime.Token, cleanup.StorageKey, cleanup.Marker))
+                    return false;
+            }
+            if (!CanCompleteMoveCleanup(cleanup)) return false;
+            _knownMoveCleanup = null;
+            _pendingMove = null;
+            return true;
+        }
+        catch (Exception) { return false; }
+    }
+
+    private async Task RetryMoveCleanupAsync()
+    {
+        if (_moving || _knownMoveCleanup is not { } cleanup) return;
+        _moving = true;
+        try
+        {
+            if (await CompleteMoveCleanupAsync(cleanup) && cleanup.Rejection is null)
+                await RefreshViewAsync(cleanup.Generation, reloadTree: true);
+        }
+        finally { _moving = false; }
     }
 
     private async Task ToggleCheckedAsync(ClayTreeNode node)

@@ -18,6 +18,13 @@
         {
             <MudText Typo="Typo.body2" Color="@(_hasError ? Color.Error : Color.Default)">@_status</MudText>
         }
+        @if (_journalSaveFailed)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-2">
+                Не удалось сохранить журнал. Текущие результаты видны в этом окне.
+                <MudButton OnClick="RetryJournalAsync" Disabled="@(!CanRetryJournal)">Повторить сохранение журнала</MudButton>
+            </MudAlert>
+        }
         <div @ref="_journal" role="log" aria-label="Результаты проверки" aria-live="polite" tabindex="0" class="overflow-auto">
             @foreach (var line in _lines)
             {
