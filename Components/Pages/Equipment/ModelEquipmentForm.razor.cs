@@ -18,7 +18,7 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
     private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "model-equipment-form" };
     private readonly ClaySelectOptions _typeOptions = new()
     {
-        DraftKey = "model.type",
+        DraftKey = "model.type", AdvanceFocusOnSelection = true,
         Required = true,
         RequiredError = "Выберите тип оборудования",
         AutoSelectSingle = true,
@@ -27,7 +27,7 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
     };
     private readonly ClaySelectOptions _resourceOptions = new()
     {
-        DraftKey = "model.resource",
+        DraftKey = "model.resource", AdvanceFocusOnSelection = true,
         AutoSelectSingle = true,
         AlwaysShowAdvancedSearch = true,
         Placeholder = "Выберите название ресурса",
@@ -113,6 +113,7 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
 
     private string Title => Id > 0 ? $"Модель оборудования #{Id}" : "Новая модель оборудования";
     private int InitialTypeId => LegacyCodeType ?? CodeType ?? 0;
+    private (int Id, int InitialType) CurrentLoadKey => (Id, Id > 0 ? 0 : InitialTypeId);
     private bool ShowMonitor => _selectedType?.HasMonitorCharacteristics > 0;
     private bool ShowMultimedia => ShowMonitor || _selectedType?.HasComputerCharacteristics > 0;
     private bool ShowComputer => _selectedType?.HasComputerCharacteristics > 0;
@@ -120,6 +121,8 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
     private bool ShowPhoneTemplate => _model?.Id > 0 && _selectedType?.Id == (int)ТипыОборудования.IP_телефон && _isDutyEngineer;
     private bool IsModified => _loaded && _model is not null && _editorOriginal is not null && _editorOriginal.Fields != ModelEditorFields.From(_model);
     private bool CanSave => IsModified && _canEdit && !_loading && !_saving && !WriteBlocked;
+    private bool ModelFocusReady => !_disposed && _loaded && _canEdit && !_loading && !_saving &&
+        !WriteBlocked && _loadedKey == CurrentLoadKey;
     private decimal? MonitorSize => _model is null || _model.MonitorSize == 0 ? null : (decimal)_model.MonitorSize;
     private string EquipmentUsageUrl(int modelId) => Navigation.GetUriWithQueryParameters(Navigation.BaseUri,
         new Dictionary<string, object?> { ["id"] = (int)Запросы.Оборудование, ["modelId"] = modelId });
@@ -140,7 +143,7 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
     /// <summary>Загружает запись после рендера и повторно загружает её при смене параметров URL.</summary>
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        var key = (Id: Id, InitialType: Id > 0 ? 0 : InitialTypeId);
+        var key = CurrentLoadKey;
         if (_loadedKey != key)
         {
             if (_saving || _journalBusy)

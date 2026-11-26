@@ -114,6 +114,8 @@
 
         <MudForm @key="_editorRenderVersion" @ref="_form">
             <div class="model-equipment-fields" data-draft-scope="@EditorScope" inert="@(_loading || _journalBusy || _restoringRaw)">
+                <ClayEditorFocusScope Label="Поля модели оборудования" Ready="@ModelFocusReady" AdvanceOnEnter="true">
+                <div class="model-equipment-fields">
                 <div class="model-equipment-row">
                     <span class="model-equipment-label">Тип оборудования:</span>
                     <div>
@@ -226,6 +228,8 @@
                     <span class="model-equipment-label">Примечания:</span>
                     <ClayTextArea @bind-Value="_model.Description" Options="_descriptionOptions" />
                 </div>
+                </div>
+                </ClayEditorFocusScope>
 
                 @if (ShowPhoneTemplate)
                 {
