@@ -621,8 +621,21 @@
 }
 
 .inventory-layout-content {
+    position: relative;
     margin-top: 0;
     padding-top: 0 !important;
+}
+
+.inventory-layout-actions {
+    position: absolute;
+    top: 0;
+    right: 16px;
+    z-index: 10;
+    background: var(--mud-palette-surface);
+}
+
+.mud-main-content:has(.clay-navigation-menu) > .inventory-layout-actions {
+    display: none;
 }
 
 .mud-main-content:has(.inventory-home) {
@@ -631,14 +644,6 @@
 
 .entity-form-main {
     position: relative;
-}
-
-.entity-form-theme {
-    position: absolute;
-    top: 8px;
-    right: 16px;
-    z-index: 10;
-    background: var(--mud-palette-surface);
 }
 
 .mud-layout:has(.inventory-list-page) {
