@@ -2,6 +2,7 @@
 @page "/Equipment/PhonePoolAtribute_form.aspx"
 @layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
 @using Kesco.App.Web.Inventory.Components.Pages.TerritorialEntity
+@using Clayzor.Lib.Web.Controls.Components.Presence
 @inherits TerritorialEntityCardBase<PhonePoolAttributeForm.FormState>
 
 <PageTitle>Значение атрибута пула</PageTitle>
@@ -60,6 +61,10 @@
         }
     </ChildContent>
     <Footer>
+        @if (!Loading && _presenceTarget is { } presenceTarget)
+        {
+            <ClayPresencePanel Target="presenceTarget" />
+        }
         @if (_card?.Attribute is { } audit)
         {
             <ClayChanged ChangedById="@audit.ChangedBy" ChangedByName="@audit.ChangedByName"

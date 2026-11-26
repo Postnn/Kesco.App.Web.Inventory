@@ -1,5 +1,6 @@
 @inherits LayoutComponentBase
 @using Clayzor.Lib.Web.Controls.Themes
+@inject NavigationManager Navigation
 <ClayThemeHost />
 <MudPopoverProvider />
 <MudDialogProvider />
@@ -7,7 +8,13 @@
 
 <MudLayout>
     <MudMainContent Class="pa-2 entity-form-main">
-        <div class="entity-form-theme inventory-theme-toggle"><ClayThemeSelector /></div>
+        <div class="entity-form-theme inventory-theme-toggle">
+            @if (InventoryFormHelp.Find(Navigation.ToBaseRelativePath(Navigation.Uri)) is { } help)
+            {
+                <ClayFormHelpButton Form="help" />
+            }
+            <ClayThemeSelector />
+        </div>
         <ClayErrorBar />
         <ClayDbReconnectOverlay />
         @Body

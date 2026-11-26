@@ -12,6 +12,8 @@ using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.Data.SqlClient;
 using Microsoft.JSInterop;
 using MudBlazor;
+using MudBlazor.Extensions;
+using MudBlazor.Extensions.Options;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.TerritorialEntity;
 
@@ -85,6 +87,20 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected abstract bool Editable { get; }
     protected virtual bool CanRegisterDraft => Editable;
     protected virtual bool CanReadMissingDraft => false;
+
+    /// <summary>Редактор предоставляет свежее чтение для безопасных команд отмены и обновления.</summary>
+    protected virtual bool SupportsEditorCancellation => false;
+
+    /// <summary>Поколение полей редактора, меняющееся при принятии нового снимка или отказе от ввода.</summary>
+    protected int EditorGeneration { get; private set; }
+
+    /// <summary>Данные и метаданные, полученные без изменения отображаемого состояния.</summary>
+    protected sealed record FreshEditorState(TState Data, TerritorialEntityAccess Access, DraftRowVersion? Version,
+        Action? ApplyMetadata = null);
+
+    /// <summary>Читает карточку и её зависимости во временный контейнер.</summary>
+    protected virtual Task<FreshEditorState?> ReadFreshEditorAsync(Employee actor, CancellationToken token) =>
+        Task.FromResult<FreshEditorState?>(null);
     protected virtual IReadOnlyList<DraftMergeField> MergeFields => [];
     protected virtual DraftRowVersion? ReadDraftRowVersion() => null;
 
@@ -124,6 +140,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     {
         if (string.Equals(_routeKey, RouteKey, StringComparison.Ordinal)) return;
         _routeKey = RouteKey;
+        EditorGeneration++;
         _routeLoad?.Cancel();
         _routeLoad?.Dispose();
         _routeLoad = CancellationTokenSource.CreateLinkedTokenSource(Lifetime);
@@ -224,6 +241,11 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             return;
         }
         if (_restoreIncomplete) { await RetryRawAsync(); return; }
+        if (SupportsEditorCancellation && _registration is not null)
+        {
+            await RefreshEditorAsync(token);
+            return;
+        }
         if (_baselineConflict)
         {
             await ResolveFieldConflictsAsync(token);
@@ -244,6 +266,11 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected async Task CancelAsync()
     {
         if (Busy) return;
+        if (SupportsEditorCancellation && !ConfirmedCleanupPending && _unresolvedOperation is null)
+        {
+            await CancelEditorAsync();
+            return;
+        }
         var token = _routeLoad?.Token ?? Lifetime;
         if (ConfirmedCleanupPending &&
             !await ConfirmAsync("Закрытие формы", "База подтвердила операцию. Закрыть форму, не завершив обработку черновика?")) return;
@@ -273,6 +300,167 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             finally { Busy = false; }
         }
         if (!token.IsCancellationRequested) await CloseAsync();
+    }
+
+    private async Task CancelEditorAsync()
+    {
+        if (Loading || _routeLoad is not { } route) return;
+        var token = route.Token;
+        var registration = _registration;
+        var currentGeneration = EditorGeneration;
+        if (registration is null)
+        {
+            if (!Dirty && !Loading) await CloseAsync();
+            else Message = "Хранилище черновика недоступно. Ввод сохранён на форме.";
+            return;
+        }
+
+        Busy = true;
+        try
+        {
+            var scope = await registration.ReadEditorScopeAsync(DraftScope, token);
+            if (!IsCurrentEditor(registration, currentGeneration, token)) return;
+            if (scope.HasOperation)
+            {
+                Message = "Сначала завершите сверку предыдущей операции.";
+                return;
+            }
+            if (!Dirty && !scope.HasRaw && !_restoreRaw && !_restoreIncomplete && !_applyingRaw)
+            {
+                await CloseAsync();
+                return;
+            }
+
+            var dialog = await Dialogs.ShowExAsync<ClayEditorCancelDialog>("Отмена изменений",
+                new DialogParameters(), new DialogOptionsEx
+                {
+                    DragMode = MudDialogDragMode.Simple, CloseOnEscapeKey = true, CloseButton = true,
+                });
+            var result = await dialog.Result;
+            if (!IsCurrentEditor(registration, currentGeneration, token) ||
+                result is not { Canceled: false, Data: ClayEditorCancelChoice choice } ||
+                choice == ClayEditorCancelChoice.Continue) return;
+
+            if (choice == ClayEditorCancelChoice.ResetAndStay)
+            {
+                var fresh = await ReadEditorForTransitionAsync(token);
+                if (!IsCurrentEditor(registration, currentGeneration, token)) return;
+                if (fresh is null)
+                {
+                    Message = "Не удалось прочитать актуальную территорию. Ввод сохранён.";
+                    return;
+                }
+                await AcceptFreshEditorAsync(registration, currentGeneration, scope.Revision, fresh, token);
+                return;
+            }
+
+            if (!await registration.ReplaceEditorScopeAsync(DraftScope, scope.Revision, null, token))
+            {
+                if (!token.IsCancellationRequested) Message = "Ввод изменился. Подтвердите отмену ещё раз.";
+                return;
+            }
+            if (!IsCurrentEditor(registration, currentGeneration, token)) return;
+            EditorGeneration++;
+            Draft = Clean = _draftOriginal = null;
+            Validation = [];
+            _restoreRaw = _restoreIncomplete = _applyingRaw = false;
+            Message = "Ввод отменён. Если вкладка осталась открытой, закройте её или обновите страницу.";
+            await CloseAsync();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception e) when (e is JSException or SqlException or InvalidOperationException)
+        {
+            if (!token.IsCancellationRequested) Message = "Не удалось завершить отмену. Ввод сохранён на форме.";
+        }
+        finally { Busy = false; }
+    }
+
+    private async Task RefreshEditorAsync(CancellationToken token)
+    {
+        if (_registration is not { } registration) return;
+        var generation = EditorGeneration;
+        var showMerge = false;
+        Busy = true;
+        try
+        {
+            var scope = await registration.ReadEditorScopeAsync(DraftScope, token);
+            if (!IsCurrentEditor(registration, generation, token) || scope.HasOperation) return;
+
+            var fresh = await ReadEditorForTransitionAsync(token);
+            if (!IsCurrentEditor(registration, generation, token)) return;
+            if (fresh is null)
+            {
+                Message = "Не удалось прочитать актуальную территорию. Черновик сохранён.";
+                return;
+            }
+            if (!Dirty && !scope.HasRaw && !_baselineConflict)
+            {
+                await AcceptFreshEditorAsync(registration, generation, scope.Revision, fresh, token);
+                return;
+            }
+
+            var latest = await registration.ReadEditorScopeAsync(DraftScope, token);
+            if (!IsCurrentEditor(registration, generation, token)) return;
+            if (latest.Revision != scope.Revision || latest.HasOperation)
+            {
+                Message = "Ввод изменился во время обновления. Повторите чтение для сверки.";
+                return;
+            }
+            Clean = fresh.Data;
+            _freshVersion = fresh.Version;
+            ApplyFreshMetadata(fresh);
+            _baselineConflict = !StatesEqual(_draftOriginal, Clean) || _originalVersion != _freshVersion;
+            _readOnlyDraft = !CanRegisterDraft;
+            StorageBlocked = _readOnlyDraft || _baselineConflict;
+            Message = _baselineConflict ? "Карточка изменилась. Проверьте различия с локальным вводом."
+                : "Данные перечитаны. Ваш ввод сохранён.";
+            showMerge = _baselineConflict && Editable && MergeFields.Count > 0;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception e) when (e is JSException or SqlException or InvalidOperationException)
+        {
+            if (!token.IsCancellationRequested) Message = "Не удалось обновить данные для сверки. Черновик сохранён.";
+        }
+        finally { Busy = false; }
+        if (showMerge && IsCurrentEditor(registration, generation, token))
+            await ResolveFieldConflictsAsync(token);
+    }
+
+    private bool IsCurrentEditor(ClayDraftRegistration registration, int generation, CancellationToken token) =>
+        !_disposed && !token.IsCancellationRequested && generation == EditorGeneration &&
+        ReferenceEquals(_registration, registration);
+
+    private async Task<FreshEditorState?> ReadEditorForTransitionAsync(CancellationToken token)
+    {
+        var actor = await Employee.GetCurrentWithRolesAsync(Db, await ReadPrincipalAsync(), token);
+        if (actor is null || actor.Id != CurrentUser?.Id) return null;
+        return await ReadFreshEditorAsync(actor, token);
+    }
+
+    private void ApplyFreshMetadata(FreshEditorState fresh)
+    {
+        Access = fresh.Access;
+        fresh.ApplyMetadata?.Invoke();
+    }
+
+    private async Task AcceptFreshEditorAsync(ClayDraftRegistration registration, int generation, long revision,
+        FreshEditorState fresh, CancellationToken token)
+    {
+        var snapshot = JsonSerializer.Serialize(new DraftSnapshot(fresh.Data, fresh.Data, fresh.Version));
+        if (!await registration.ReplaceEditorScopeAsync(DraftScope, revision, snapshot, token))
+        {
+            if (!token.IsCancellationRequested) Message = "Ввод изменился. Повторите команду.";
+            return;
+        }
+        if (!IsCurrentEditor(registration, generation, token)) return;
+        EditorGeneration++;
+        Draft = Clean = _draftOriginal = fresh.Data;
+        _originalVersion = _freshVersion = fresh.Version;
+        ApplyFreshMetadata(fresh);
+        _restoreRaw = _restoreIncomplete = _applyingRaw = _baselineConflict = false;
+        _readOnlyDraft = StorageBlocked = !CanRegisterDraft;
+        Validation = [];
+        Message = Editable ? null : "Данные обновлены. Карточка открыта для просмотра.";
     }
 
     protected async Task BeforeNavigationAsync(LocationChangingContext context)
@@ -645,13 +833,24 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         var restore = registration.Restore;
         _draftOriginal = Clean;
         _originalVersion = _freshVersion;
+        if (SupportsEditorCancellation && restore.Operation is null && restore.CancelledScopes?.Contains(DraftScope) == true)
+        {
+            if (Clean is not null && CanRegisterDraft)
+            {
+                await registration.OpenScopeAsync(DraftScope, token);
+                token.ThrowIfCancellationRequested();
+                await PersistAsync();
+            }
+            return;
+        }
         if (restore.TypedScopes?.TryGetValue(DraftScope, out var json) == true &&
             JsonSerializer.Deserialize<DraftSnapshot>(json) is { } existing)
         {
             _draftOriginal = existing.Original;
-            _originalVersion = existing.Version;
+            var sameBaseline = StatesEqual(existing.Original, Clean);
+            _originalVersion = existing.Version ?? (SupportsEditorCancellation && sameBaseline ? _freshVersion : null);
             Draft = existing.Current;
-            if (!StatesEqual(existing.Original, Clean) || _originalVersion != _freshVersion)
+            if (!sameBaseline || _originalVersion != _freshVersion)
             {
                 _baselineConflict = StorageBlocked = true;
                 Message = "Карточка изменилась после создания черновика. Нажмите «Обновить» для сверки.";

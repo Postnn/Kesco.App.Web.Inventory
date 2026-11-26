@@ -42,6 +42,26 @@ public partial class TerritorialEntityForm
     protected override string EntityKey => _id.ToString(CultureInfo.InvariantCulture);
     protected override string RouteKey => $"{QueryId}:{QueryParent}";
     protected override bool Editable => _recordAvailable && _id > 0 && Access.TerritoryUpdate;
+    protected override bool SupportsEditorCancellation => true;
+    protected override DraftRowVersion? ReadDraftRowVersion() => Clean is { } current ? VersionOf(current.Record) : null;
+
+    protected override async Task<FreshEditorState?> ReadFreshEditorAsync(
+        Clayzor.Lib.Entities.Inventory.Employee actor, CancellationToken token)
+    {
+        if (!TerritorialEntityRoutes.TryPositiveId(QueryId, out var id) || id != _id) return null;
+        var access = await TerritorialEntityData.ReadAccessAsync(Db, actor, token);
+        var record = await TerritorialEntityData.ReadTerritoryAsync(Db, id, token);
+        if (record is null) return null;
+        var types = (await TerritorialEntityData.ReadTerritoryTypesAsync(Db, token)).ToArray();
+        token.ThrowIfCancellationRequested();
+        return new FreshEditorState(ToFormState(record), access, VersionOf(record), () => ApplyTypes(types));
+    }
+
+    private static FormState ToFormState(TerritorialEntityRecord record) =>
+        new(record, record.CountryClassification?.ToString(CultureInfo.InvariantCulture));
+
+    private static DraftRowVersion VersionOf(TerritorialEntityRecord record) =>
+        new(record.Id.ToString(CultureInfo.InvariantCulture), record.ChangedBy, record.ChangedByName, record.ChangedAt);
     protected override IReadOnlyList<DraftMergeField> MergeFields =>
     [
         new("Record.Type", "Тип", "territory.type"),
@@ -98,18 +118,32 @@ public partial class TerritorialEntityForm
         }
         var types = await TerritorialEntityData.ReadTerritoryTypesAsync(Db, routeToken);
         routeToken.ThrowIfCancellationRequested();
+        ApplyTypes(types.ToArray());
+        if (!Editable) Message = "Карточка открыта для просмотра.";
+        return ToFormState(record);
+    }
+
+    private void ApplyTypes(TerritorialEntityOption[] types)
+    {
         _recordAvailable = true;
-        _types = types.ToArray();
+        _types = types;
         foreach (var option in new ClayInputOptions[] { _typeOptions, _classificationOptions, _nameOptions, _alternateNameOptions,
             _captionOptions, _alternateCaptionOptions, _abbreviationOptions, _countryOptions, _directionOptions })
             option.ReadOnly = !Editable;
-        if (!Editable) Message = "Карточка открыта для просмотра.";
-        return new(record, record.CountryClassification?.ToString(CultureInfo.InvariantCulture));
     }
 
-    private Task ChangeAsync(TerritorialEntityRecord value) => UpdateDraftAsync(Draft! with { Record = value });
-    private Task ChangeTypeAsync(int? value) => ChangeAsync(Draft!.Record with { Type = (ТипыТерриитории)(value ?? 0) });
-    private Task ChangeClassificationAsync(string? value) => UpdateDraftAsync(Draft! with { Classification = value });
+    private Task ChangeAsync(int generation, Func<TerritorialEntityRecord, TerritorialEntityRecord> update) =>
+        generation == EditorGeneration && Draft is { } current
+            ? UpdateDraftAsync(current with { Record = update(current.Record) })
+            : Task.CompletedTask;
+
+    private Task ChangeTypeAsync(int generation, int? value) =>
+        ChangeAsync(generation, record => record with { Type = (ТипыТерриитории)(value ?? 0) });
+
+    private Task ChangeClassificationAsync(int generation, string? value) =>
+        generation == EditorGeneration && Draft is { } current
+            ? UpdateDraftAsync(current with { Classification = value })
+            : Task.CompletedTask;
 
     private async Task SaveAsync(bool close)
     {

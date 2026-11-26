@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Components.Server.Circuits;
 using Kesco.App.Web.Inventory.Components.Pages.Equipment;
 using Clayzor.Lib.DALC;
 using Clayzor.Lib.Web.Controls;
+using Clayzor.Lib.Web.Controls.Components.Presence;
 using Clayzor.Lib.Web.Controls.Components.Tree;
 using Clayzor.Lib.Web.Controls.Components.Tree.State;
 using Clayzor.Lib.Web.Controls.Services;
@@ -148,6 +149,7 @@ builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.PhoneFormService>();
 // Сервис авто-переподключения к БД (оверлей при потере соединения)
 builder.Services.AddScoped<ClayDbReconnectService>();
 builder.Services.AddScoped<ClayDraftService>();
+builder.Services.AddClayEntityPresence(options => builder.Configuration.GetSection("ClayPresence").Bind(options));
 builder.Services.AddScoped<ClaySelectAdvancedSearchService>();
 
 // Аутентификация: Windows (Kerberos/NTLM)

@@ -1,7 +1,10 @@
 using System.Globalization;
+using System.Text.Json;
+using Clayzor.Lib.DALC;
 using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Web.Controls.Components;
 using Clayzor.Lib.Web.Controls.Components.Form;
+using Clayzor.Lib.Web.Controls.Components.Presence;
 using Kesco.App.Web.Inventory.Components.Pages.TerritorialEntity;
 using Kesco.App.Web.Inventory.Services;
 using Microsoft.AspNetCore.Components;
@@ -37,6 +40,7 @@ public partial class PhonePoolAttributeForm
     /// <summary>Единственное редактируемое поле черновика.</summary>
     public sealed record FormState(string Value);
 
+    private ClayPresenceTarget? _presenceTarget;
     private PhonePoolAttributeCard? _card;
     private PhonePoolAttributeRights? _rights;
     private bool _deleted;
@@ -85,6 +89,7 @@ public partial class PhonePoolAttributeForm
     /// <inheritdoc />
     protected override async Task<FormState?> LoadCardAsync(CancellationToken routeToken)
     {
+        _presenceTarget = null;
         _card = null;
         _rights = null;
         _deleted = false;
@@ -217,7 +222,53 @@ public partial class PhonePoolAttributeForm
         return Task.CompletedTask;
     }
 
-    private void UpdateOptions() => _valueOptions.ReadOnly = !Editable;
+    private void UpdateOptions()
+    {
+        _valueOptions.ReadOnly = !Editable;
+        _presenceTarget = CreatePresenceTarget();
+    }
+
+    private ClayPresenceTarget? CreatePresenceTarget()
+    {
+        if (_deleted || _card is not { Attribute: not null, Key.IsValid: true } card ||
+            _rights?.CanRead != true || CurrentUser is not { Id: > 0 } employee)
+            return null;
+
+        var connectionString = Db.ConnectionString;
+        SqlConnectionStringBuilder connection;
+        try { connection = new SqlConnectionStringBuilder(connectionString); }
+        catch (ArgumentException) { return null; }
+        if (string.IsNullOrWhiteSpace(connection.DataSource) || string.IsNullOrWhiteSpace(connection.InitialCatalog))
+            return null;
+
+        var scope = JsonSerializer.Serialize(new[]
+        {
+            connection.DataSource.ToUpperInvariant(),
+            connection.InitialCatalog
+        });
+        var entityKey = card.Key;
+        var key = ClayPresenceKey.Create(scope, "inventory.phone-pool-attribute", entityKey.PoolId, entityKey.Type);
+        if (_presenceTarget?.Key == key)
+            return _presenceTarget;
+
+        var expectedEmployeeId = employee.Id;
+        return new(key, async (principal, token) =>
+        {
+            // Независимое чтение presence не включает UI-обработчик ошибок бизнес-операций.
+            using var db = new DbManager(connectionString);
+            var actor = await Employee.GetCurrentWithRolesAsync(db, principal.Identity?.Name, token);
+            if (actor is null || actor.Id != expectedEmployeeId)
+                return null;
+
+            var current = await PhonePoolAttributeData.ReadAsync(db, actor, entityKey, token);
+            if (!current.Rights.CanRead || current.Card.Key != entityKey || current.Card.Attribute is null)
+                return null;
+
+            return new(actor.Id, actor.Name, current.Rights.CanUpdate
+                ? ClayPresenceActivity.Editing
+                : ClayPresenceActivity.Viewing);
+        });
+    }
 
     private string? AuthorUrl(int id) => id > 0
         ? InventoryMenuUrlBuilder.BuildCardLink("@URI_user_form", id.ToString(CultureInfo.InvariantCulture), Config, Navigation.Uri).Href
