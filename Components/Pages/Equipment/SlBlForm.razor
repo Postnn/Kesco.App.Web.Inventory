@@ -2,24 +2,29 @@
 @using Clayzor.Lib.Web.DBSelect.Equipment
 
 <PageTitle>Список безопасных и заблокированных адресов</PageTitle>
-<NavigationLock ConfirmExternalNavigation="@Dirty" OnBeforeInternalNavigation="BeforeNavigationAsync" />
+<NavigationLock ConfirmExternalNavigation="@NeedsLeaveConfirmation" OnBeforeInternalNavigation="BeforeNavigationAsync" />
 
 <ClayEntityForm Options="_formOptions">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="SaveButton" Disabled="@(_busy || _uncertain || !_available || !Dirty)" OnClick="SaveAsync" />
-            <ClayToolbarButton Options="RefreshButton" OnClick="RefreshAsync" Disabled="@_busy" />
-            <ClayToolbarButton Options="CloseButton" OnClick="CloseAsync" Disabled="@_busy" />
+            <ClayToolbarButton Options="SaveButton" Disabled="@(!CanSave)" OnClick="SaveAsync" />
+            <ClayToolbarButton Options="RefreshButton" OnClick="RefreshAsync" Disabled="@(_busy || _applyingRaw)" />
+            <ClayToolbarButton Options="CloseButton" OnClick="CloseAsync" Disabled="@(_busy || _applyingRaw)" />
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
         <MudText Typo="Typo.h6" HtmlTag="h1" Class="mb-2">Список безопасных и заблокированных адресов</MudText>
         @if (_busy) { <MudProgressLinear Indeterminate="true" /> }
         @if (_error is not null) { <MudAlert Class="mb-2" Severity="Severity.Warning">@_error</MudAlert> }
+        @if (_rawPending)
+        {
+            <MudAlert Class="mb-2" Severity="Severity.Warning">Сохранение станет доступно после восстановления ввода.</MudAlert>
+            <MudButton OnClick="RestoreRawAsync" Disabled="@(_busy || _applyingRaw)">Повторить восстановление</MudButton>
+        }
         @if (CurrentUser is not null && _source is not null)
         {
             @if (_kind.HasValue && !_available) { <MudAlert Class="mb-2" Severity="Severity.Info">Для выбранного списка доступна подготовка черновика. Право синхронизации не подтверждено.</MudAlert> }
-            <div class="d-flex flex-column gap-2" inert="@(_busy || _uncertain)" data-draft-scope="main">
+            <div class="d-flex flex-column gap-2" inert="@(_busy || _uncertain || CompletionPending)" data-draft-scope="main" @ref="_editorScope">
                 <ClaySelect TItem="SlBlAddress" TValue="string" DataSource="_source" Options="AddressOptions"
                             ValueSelector="@(x => x.Address)" TextSelector="@(x => x.Address)"
                             Value="@_address" ValueChanged="ChangeAddressAsync" />
