@@ -37,6 +37,7 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
     [Inject] private IJSRuntime JS { get; set; } = null!;
 
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly SemaphoreSlim _viewRefresh = new(1, 1);
     private readonly string _registrationId = Guid.NewGuid().ToString("N");
     private DotNetObjectReference<TerritorialEntitySearch>? _reference;
     private Employee? CurrentUser { get; set; }
@@ -45,7 +46,10 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
     private TerritorialEntityTreeSource? _source;
     private ClayTreeNode? _active;
     private string? _gridUrl;
+    private ElementReference _gridFrame;
     private string? _message;
+    private string? _treeRefreshError;
+    private string? _paneRefreshError;
     private int? _total;
     private bool _loading = true;
     private bool _phoneCodes;
@@ -79,6 +83,8 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
         _loadPending = true;
         _loading = true;
         _message = null;
+        _treeRefreshError = null;
+        _paneRefreshError = null;
         _total = null;
         _treeOptions = null;
         _source = null;
@@ -154,6 +160,7 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
             {
                 if (_disposed || generation != _generation) return;
                 _total = total;
+                _treeRefreshError = null;
                 if (total is not null) ResetNode();
                 StateHasChanged();
             }));
@@ -180,8 +187,7 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
                     _viewState = state;
                     if (item is not null)
                     {
-                        _active = new ClayTreeNode { Id = item.Id.ToString(), RawId = item.Id, Text = item.Name,
-                            Raw = new Dictionary<string, object?> { ["Type"] = item.Type } };
+                        _active = ToPaneNode(item);
                         _phoneCodes = IsCity(_active) || state.PhoneCodes;
                         UpdateGrid(item.Id);
                     }
@@ -226,10 +232,19 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
     private static bool IsCity(ClayTreeNode node) => node.Raw.TryGetValue("Type", out var type) &&
         type is ТипыТерриитории.Населённые_пункты;
 
+    private static ClayTreeNode ToPaneNode(TerritorialEntityLookup item) => new()
+    {
+        Id = item.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        RawId = item.Id,
+        Text = item.Name,
+        Raw = new Dictionary<string, object?> { ["Type"] = item.Type },
+    };
+
     private Task SelectNodeAsync(ClayTreeNode node)
     {
         if (node.RawId is not int id || id <= 0) return Task.CompletedTask;
         _active = node;
+        _paneRefreshError = null;
         if (IsCity(node)) _phoneCodes = true;
         UpdateGrid(id);
         return SavePaneAsync();
@@ -240,14 +255,16 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
         _active = null;
         _gridUrl = null;
         _phoneCodes = false;
+        _paneRefreshError = null;
     }
 
     private async Task ShowPhoneCodes(bool enabled)
     {
         if (_active?.RawId is not int id) return;
         _phoneCodes = enabled;
-        await SavePaneAsync();
+        _paneRefreshError = null;
         UpdateGrid(id);
+        await SavePaneAsync();
     }
 
     private void UpdateGrid(int id) => _gridUrl = Navigation.ToAbsoluteUri(TerritorialEntityRoutes.Grid(
@@ -289,6 +306,7 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
     {
         if (_moving || CurrentUser is null || ReturnMode is not null || RootIds is not null || Root is not null || Parent is not null || _total.HasValue) return false;
         _moving = true;
+        var generation = _generation;
         var storageKey = $"territory-move:{CurrentUser.Id}";
         try
         {
@@ -318,7 +336,8 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
                 return false;
             }
             await JS.InvokeVoidAsync("sessionStorage.removeItem", _lifetime.Token, storageKey);
-            _pendingMove = null;
+            if (generation == _generation) _pendingMove = null;
+            await RefreshViewAsync(generation, reloadTree: false);
             return true;
         }
         catch (Exception) when (!_disposed)
@@ -433,16 +452,91 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
 
     private Task CloseAsync() => JS.InvokeVoidAsync("clayModelEquipmentForm.close", _lifetime.Token).AsTask();
 
-    private async Task ReloadTreeAsync()
+    private Task ReloadTreeAsync() => RefreshViewAsync(_generation, reloadTree: true);
+
+    private bool IsCurrent(long generation) => !_disposed && generation == _generation;
+
+    private async Task RefreshViewAsync(long generation, bool reloadTree)
     {
-        if (_tree is not IClayTreeView tree) return;
-        await tree.ReloadAsync();
-        if (_active is not null && !tree.SelectedIds.Contains(_active.Id)) ResetNode();
+        await _viewRefresh.WaitAsync();
+        try
+        {
+            if (!IsCurrent(generation)) return;
+            await RefreshActivePaneAsync(generation);
+            if (!reloadTree || !IsCurrent(generation) || _tree is not IClayTreeView tree) return;
+
+            // ReloadAsync reloads roots and would replace the current filtered projection.
+            _treeRefreshError = _total.HasValue
+                ? "Чтобы обновить отфильтрованное дерево, примените фильтр повторно."
+                : null;
+            if (_treeRefreshError is not null) return;
+            try { await tree.ReloadAsync(); }
+            catch (Exception)
+            {
+                if (IsCurrent(generation)) _treeRefreshError = "Не удалось обновить дерево территорий. Повторите обновление.";
+            }
+        }
+        finally { _viewRefresh.Release(); }
     }
 
-    /// <summary>Повторно читает дерево в вызвавшем окне после сохранения карточки.</summary>
+    private async Task RefreshActivePaneAsync(long generation)
+    {
+        var active = _active;
+        if (active?.RawId is not int id) return;
+        string? expectedUrl = null;
+        try
+        {
+            if (!TerritorialEntityRoutes.TryRoots(RootIds, Root, Parent, out var roots)) return;
+            var item = await TerritorialEntityData.SelectionInScopeAsync(Db, [id], roots, _lifetime.Token)
+                ? await TerritorialEntityData.FindTerritoryAsync(Db, id, _lifetime.Token)
+                : null;
+            if (!IsCurrent(generation) || !ReferenceEquals(active, _active)) return;
+
+            if (item is null)
+            {
+                ResetNode();
+                if (_viewState?.Selected == id)
+                    _viewState = _viewState with { Selected = null, PhoneCodes = false };
+                return;
+            }
+
+            var previousUrl = _gridUrl;
+            active = _active = ToPaneNode(item);
+            if (IsCity(active)) _phoneCodes = true;
+            UpdateGrid(id);
+            _paneRefreshError = null;
+            // A changed URL creates a new frame. Otherwise ask the current grid to reload its data.
+            if (_gridUrl is not { } url || url != previousUrl) return;
+            expectedUrl = url;
+            await using var module = await JS.InvokeAsync<IJSObjectReference>("import", _lifetime.Token,
+                "./js/territorialEntitySearch.js");
+            if (IsCurrent(generation) && ReferenceEquals(active, _active) && _gridUrl == url)
+            {
+                if (!await module.InvokeAsync<bool>("refreshMetadataFrame", _lifetime.Token, _gridFrame, url))
+                    SetPaneRefreshError(generation, active, url);
+            }
+        }
+        catch (Exception)
+        {
+            SetPaneRefreshError(generation, active, expectedUrl);
+        }
+    }
+
+    private void SetPaneRefreshError(long generation, ClayTreeNode active, string? expectedUrl)
+    {
+        if (IsCurrent(generation) && ReferenceEquals(active, _active) &&
+            (expectedUrl is null || _gridUrl == expectedUrl))
+            _paneRefreshError = "Не удалось обновить список и сведения о территории. Повторите обновление.";
+    }
+
+    /// <summary>Обновляет дерево и данные выбранной территории в вызвавшем окне после сохранения карточки.</summary>
     [JSInvokable]
-    public Task RefreshFromChildAsync() => InvokeAsync(async () => { await ReloadTreeAsync(); StateHasChanged(); });
+    public Task RefreshFromChildAsync() => InvokeAsync(async () =>
+    {
+        var generation = _generation;
+        await RefreshViewAsync(generation, reloadTree: true);
+        if (IsCurrent(generation)) StateHasChanged();
+    });
 
     /// <inheritdoc />
     public async ValueTask DisposeAsync()

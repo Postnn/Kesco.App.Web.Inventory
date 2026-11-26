@@ -22,6 +22,7 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Inv;
 public partial class LocationFact : IAsyncDisposable
 {
     private const string DraftScope = "main";
+    private const string WorkplaceScope = "workplace";
     private const string OperationKind = "confirm-location";
     private static readonly ClaySelectOptions LocationOptions = new() { Label = "Расположение", DraftKey = "fact.location", Required = true };
     private static readonly ClaySelectOptions EmployeeOptions = new() { Label = "Поиск по ответственному", DraftKey = "fact.responsible" };
@@ -66,6 +67,9 @@ public partial class LocationFact : IAsyncDisposable
     private bool _focusSearch;
     private bool _focusNotes;
     private bool _restoreRaw;
+    private bool _restoreWorkplaceRaw;
+    private bool _workplaceRawIncomplete;
+    private bool _legacyRawPending;
     private bool _restoreIncomplete;
     private bool _ready;
     private bool _busy;
@@ -75,7 +79,9 @@ public partial class LocationFact : IAsyncDisposable
     private ClayDraftOperation? _pendingOperation;
     private ConfirmedFact? _confirmedCleanup;
     private bool _disposed;
-    private bool CanConfirm => CurrentUser?.HasRole(LocationFactData.RequiredRole) == true && _registration is not null && !_blocked;
+    private bool CanConfirm => CurrentUser?.HasRole(LocationFactData.RequiredRole) == true && _registration is not null && !_blocked && !_legacyRawPending;
+    private bool CanSubmitPending => CanConfirm && !_busy && !_conflict && !_restoreRaw && !_restoreIncomplete &&
+        _pending is { } expected && _site?.Id == expected.Site.Id;
     private bool CanEditPending => _dialogVisible && _pending is not null && !_blocked && !_busy && !_askRelocation;
     private CancellationToken Token => _lifetime.Token;
 
@@ -102,7 +108,6 @@ public partial class LocationFact : IAsyncDisposable
             {
                 CurrentUser = await Employee.GetCurrentWithRolesAsync(Db, await PrincipalAsync(), Token);
                 if (CurrentUser is null) { _message = "Не удалось подтвердить текущего сотрудника."; return; }
-                _ready = true;
                 if (!CurrentUser.HasRole(LocationFactData.RequiredRole))
                 {
                     _message = "Доступен просмотр учётного списка. Для подтверждения нужна роль специалиста по инвентаризации.";
@@ -121,11 +126,23 @@ public partial class LocationFact : IAsyncDisposable
                     ? JsonSerializer.Deserialize<FactDraft>(json)
                     : null;
                 var sent = ReadCommand(_pendingOperation);
+                var workplace = restore.TypedScopes?.TryGetValue(WorkplaceScope, out var workplaceJson) == true
+                    ? JsonSerializer.Deserialize<WorkplaceDraft>(workplaceJson) ?? throw new JsonException()
+                    : null;
+                var intendedSite = workplace is not null ? workplace.SiteId : (draft?.Snapshot ?? sent?.Expected)?.Site.Id;
+                if (intendedSite is > 0)
+                    _site = await LocationFactData.ReadSiteAsync(Db, intendedSite.Value, Token);
+                _siteChoice = _site?.Id;
+                if (workplace is not null)
+                {
+                    _itOnly = workplace.ItOnly;
+                    _scanner = workplace.Scanner;
+                    if (_site is not null && workplace.ResponsibleId is > 0)
+                        _responsibleId = (await Employees.GetByIdAsync(workplace.ResponsibleId, Token))?.Id;
+                }
                 if (draft is not null || sent is not null)
                 {
                     _pending = draft?.Snapshot ?? sent!.Expected;
-                    _site = _pending.Site;
-                    _siteChoice = _site.Id;
                     _notes = draft?.Notes ?? sent!.Notes;
                     _broken = draft?.Broken ?? sent!.Broken;
                     _scanOperation = draft?.Scanner == true;
@@ -133,9 +150,25 @@ public partial class LocationFact : IAsyncDisposable
                     _dialogError = _message;
                     ShowDialog();
                     _restoreRaw = restore.HasDraft;
-                    await ReadRowsAsync();
                 }
-                else _focusLocation = true;
+                else
+                {
+                    _focusLocation = _site is null;
+                    _focusSearch = _site is not null;
+                    if (restore.HasDraft)
+                    {
+                        var readiness = await _registration.GetRestoreReadinessAsync(Token);
+                        _legacyRawPending = ScopeNeedsRestore(readiness, DraftScope);
+                    }
+                }
+
+                if (workplace is null) await SaveWorkplaceAsync();
+                _restoreWorkplaceRaw = restore.HasDraft;
+                if (intendedSite is > 0 && _site is null && _message is null)
+                    _message = "Сохранённое расположение закрыто или недоступно.";
+                if (_site is not null) await ReadRowsAsync();
+                if (_pending is not null && _site?.Id != _pending.Site.Id && _dialogError is null)
+                    _dialogError = "Проверьте доступность сохранённого расположения перед подтверждением.";
                 UpdateSearchOptions();
             }
             catch (Exception e) when (e is not OperationCanceledException)
@@ -143,8 +176,18 @@ public partial class LocationFact : IAsyncDisposable
                 _blocked = true;
                 _message = "Не удалось загрузить данные или восстановить черновик инвентаризации.";
             }
-            finally { if (!_disposed) StateHasChanged(); }
+            finally
+            {
+                _ready = CurrentUser is not null;
+                if (!_disposed) StateHasChanged();
+            }
             return;
+        }
+        if (_restoreWorkplaceRaw && !_busy && _registration is not null)
+        {
+            _restoreWorkplaceRaw = false;
+            await RestoreWorkplaceInputsAsync();
+            if (!_disposed) StateHasChanged();
         }
         if (_restoreRaw && _registration is not null)
         {
@@ -175,8 +218,38 @@ public partial class LocationFact : IAsyncDisposable
         _restoreIncomplete = true;
         var applied = await _registration.ApplyRawWithResultAsync(DraftScope, Token);
         var readiness = await _registration.GetRestoreReadinessAsync(Token);
-        _restoreIncomplete = applied.Pending.Count > 0 || !readiness.Complete;
+        _restoreIncomplete = applied.Pending.Count > 0 || ScopeNeedsRestore(readiness, DraftScope);
         if (!_disposed) StateHasChanged();
+    }
+
+    private static bool ScopeNeedsRestore(ClayDraftRestoreReadiness readiness, string scope) =>
+        readiness.PendingScopes.Contains(scope, StringComparer.Ordinal) || readiness.FailedScopes.Contains(scope, StringComparer.Ordinal);
+
+    private async Task RestoreWorkplaceInputsAsync()
+    {
+        if (_busy || _disposed || _registration is not { } registration) return;
+        _busy = _workplaceRawIncomplete = true;
+        try
+        {
+            var applied = await registration.ApplyRawWithResultAsync(WorkplaceScope, Token);
+            var readiness = await registration.GetRestoreReadinessAsync(Token);
+            _workplaceRawIncomplete = applied.Pending.Count > 0 || ScopeNeedsRestore(readiness, WorkplaceScope);
+        }
+        catch (Exception e) when (e is JSException or InvalidOperationException) { }
+        catch (OperationCanceledException) when (_disposed) { }
+        finally { _busy = false; }
+    }
+
+    private Task PersistWorkplaceAsync() => _registration?.SaveTypedScopeAsync(WorkplaceScope,
+        JsonSerializer.Serialize(new WorkplaceDraft(_site?.Id, _responsibleId, _itOnly, _scanner)), Token) ?? Task.CompletedTask;
+
+    private async Task SaveWorkplaceAsync()
+    {
+        try { await PersistWorkplaceAsync(); }
+        catch (Exception e) when (e is JSException or InvalidOperationException)
+        {
+            BlockStorage(null, "Не удалось сохранить настройки рабочего места. Повторите сохранение черновика.");
+        }
     }
 
     private Task ChangeSiteChoiceAsync(int? id)
@@ -199,29 +272,42 @@ public partial class LocationFact : IAsyncDisposable
                 _site = await LocationFactData.ReadSiteAsync(Db, id.Value, Token);
                 if (_site is null) { _message = "Расположение закрыто или недоступно."; return; }
             }
+            else _siteChoice = null;
+
+            await SaveWorkplaceAsync();
             await ReadRowsAsync();
+            if (_site is not null && _workplaceRawIncomplete) _restoreWorkplaceRaw = true;
         }
         catch (Exception e) when (e is not OperationCanceledException) { _message = "Не удалось загрузить расположение или список оборудования."; }
         finally { UpdateSearchOptions(); _busy = false; }
     }
 
-    private Task ChangeItAsync(bool? value)
+    private async Task ChangeItAsync(bool? value)
     {
-        if (_busy || _pending is not null) return Task.CompletedTask;
+        if (_busy || _pending is not null) return;
         _itOnly = value == true;
         UpdateSearchOptions();
         _focusSearch = true;
-        return RefreshAsync();
+        await SaveWorkplaceAsync();
+        await RefreshAsync();
     }
 
-    private Task ChangeResponsibleAsync(int? value)
+    private async Task ChangeResponsibleAsync(int? value)
     {
-        if (_busy || _pending is not null) return Task.CompletedTask;
+        if (_busy || _pending is not null) return;
         _responsibleId = value;
         _focusSearch = true;
-        return RefreshAsync();
+        await SaveWorkplaceAsync();
+        await RefreshAsync();
     }
-    private void ChangeScanner(bool? value) { if (!_busy) { _scanner = value == true; _focusSearch = true; } }
+
+    private async Task ChangeScannerAsync(bool? value)
+    {
+        if (_busy || _pending is not null) return;
+        _scanner = value == true;
+        _focusSearch = true;
+        await SaveWorkplaceAsync();
+    }
 
     private async Task RefreshAsync()
     {
@@ -312,7 +398,7 @@ public partial class LocationFact : IAsyncDisposable
 
     private Task ReviewAsync()
     {
-        if (_pending is null || _busy || _blocked) return Task.CompletedTask;
+        if (!CanSubmitPending || _pending is null) return Task.CompletedTask;
         if (LocationFactData.Validate(_pending.Equipment.FactName, _notes, _broken, false) is { } error)
         { _dialogError = error; return Task.CompletedTask; }
         if (!_pending.DifferentLocation) return ConfirmAsync(false);
@@ -323,7 +409,7 @@ public partial class LocationFact : IAsyncDisposable
 
     private async Task ConfirmAsync(bool move)
     {
-        if (_busy || _conflict || _restoreRaw || _restoreIncomplete || !CanConfirm || _pending is not { } expected || _registration is not { } registration || _site?.Id != expected.Site.Id) return;
+        if (!CanSubmitPending || _pending is not { } expected || _registration is not { } registration) return;
         var command = new FactCommand(expected, _notes, _broken, move);
         if (LocationFactData.Validate(expected.Equipment.FactName, command.Notes, command.Broken, command.Move) is { } validation)
         { _dialogError = validation; _askRelocation = false; return; }
@@ -424,6 +510,7 @@ public partial class LocationFact : IAsyncDisposable
                 return;
             }
 
+            await PersistWorkplaceAsync();
             if (_pending is not null) await PersistAsync();
             _storageRetryRequired = false;
             _notSentAttemptId = null;
@@ -588,6 +675,7 @@ public partial class LocationFact : IAsyncDisposable
         _lifetime.Dispose();
     }
 
+    private sealed record WorkplaceDraft(int? SiteId, int? ResponsibleId, bool ItOnly, bool Scanner);
     private sealed record FactCommand(LocationFactSnapshot Expected, string Notes, bool Broken, bool Move);
     private sealed record ConfirmedFact(ClayDraftOperation Operation, FactCommand Command, DateTime CheckedAt, bool Scanner);
     private sealed record FactDraft(LocationFactSnapshot Snapshot, string Notes, bool Broken, bool Scanner, bool Conflict = false);

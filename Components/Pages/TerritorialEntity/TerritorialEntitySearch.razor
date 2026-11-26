@@ -19,6 +19,10 @@
 {
     <MudAlert Severity="Severity.Warning" Class="mb-2">@_message</MudAlert>
 }
+@if (_treeRefreshError is not null)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-2">@_treeRefreshError</MudAlert>
+}
 @if (_pendingMove is not null)
 {
     <MudAlert Severity="Severity.Warning">Результат переноса не подтверждён. <MudButton Disabled="@_moving" OnClick="CompareMoveAsync">Сверить родителя</MudButton>
@@ -55,7 +59,11 @@
                         <MudMenuItem OnClick="@(() => ShowPhoneCodes(true))">Телефонные коды в @node.Text</MudMenuItem>
                     </MudMenu>
                 }
-                <iframe @key="_gridUrl" title="@(_phoneCodes ? "Телефонные коды" : "Территории")" class="border-0"
+                @if (_paneRefreshError is not null)
+                {
+                    <MudAlert Severity="Severity.Warning" Class="mb-2">@_paneRefreshError</MudAlert>
+                }
+                <iframe @key="_gridUrl" @ref="_gridFrame" title="@(_phoneCodes ? $"Телефонные коды в {node.Text}" : $"Территории в {node.Text}")" class="border-0"
                         style="width:100%;min-height:460px" src="@_gridUrl"></iframe>
             }
         </MudItem>
