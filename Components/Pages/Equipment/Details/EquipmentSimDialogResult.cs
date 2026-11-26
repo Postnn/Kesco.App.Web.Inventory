@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Clayzor.Lib.Entities.Inventory;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Equipment.Details;
@@ -13,4 +14,14 @@ public sealed record EquipmentSimDialogResult(
     DateTime ActivatedLocal,
     int? ContractId,
     int? PersonalDataPersonId,
-    EquipmentSimSecrets Secrets);
+    [property: JsonIgnore] EquipmentSimSecrets Secrets)
+{
+    /// <summary>Явный режим Add либо Edit, заданный исходным открытием редактора.</summary>
+    public EquipmentSimWriteMode Mode { get; init; }
+
+    /// <summary>Непрозрачная защищённая исходная версия для Edit.</summary>
+    public string? OriginalVersion { get; init; }
+
+    /// <inheritdoc />
+    public override string ToString() => nameof(EquipmentSimDialogResult);
+}

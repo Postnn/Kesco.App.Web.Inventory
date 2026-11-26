@@ -48,6 +48,9 @@ public sealed class EquipmentEditorContext
     /// <summary>Применяет raw только в DOM-области регистрации этого редактора.</summary>
     public Func<Task>? RawRestore { get; set; }
 
+    /// <summary>Повторяет только ожидающие разрешённые поля после свежей проверки прав редактором.</summary>
+    public Func<Task>? PendingRawRestore { get; set; }
+
     /// <summary>Уведомляет родителя о pending/ready/failed состоянии редактора.</summary>
     public Func<EquipmentEditorReadiness, Task>? ReadinessChanged { get; set; }
 
@@ -98,6 +101,15 @@ public sealed class EquipmentEditorContext
         if (!IsCurrent || RawRestore is null)
             return;
         await RawRestore();
+    }
+
+    internal async Task ApplyPendingRawAsync()
+    {
+        if (!IsCurrent)
+            return;
+        if (PendingRawRestore is not { } retry)
+            throw new InvalidOperationException("Повтор восстановления недоступен.");
+        await retry();
     }
 
     internal async Task ReportReadinessAsync(EquipmentEditorReadiness readiness)

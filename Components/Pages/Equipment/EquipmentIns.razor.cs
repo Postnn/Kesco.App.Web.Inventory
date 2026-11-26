@@ -1,24 +1,28 @@
 using System.Text.Json;
 using System.Web;
+using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Web.Controls.Components;
 using Clayzor.Lib.Web.Controls.Components.Form;
 using Clayzor.Lib.Web.Controls.Components.Select;
 using Clayzor.Lib.Web.DBSelect.Documents;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.JSInterop;
 using MudBlazor;
+using EquipmentEntity = Clayzor.Lib.Entities.Inventory.Equipment;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
 
 /// <summary>Создание оборудования с начальным расположением, ответственным и бухгалтерским учётом.</summary>
-public partial class EquipmentIns : IDisposable
+public partial class EquipmentIns : IAsyncDisposable
 {
-    private const int InventorySpecialistRoleId = 43;
-    private const int OnHandsLocationId = 55;
+    private const int OnHandsLocationId = (int)Расположения.На_руках;
     private readonly CancellationTokenSource _pageCts = new();
+    [Inject] private AuthenticationStateProvider Authentication { get; set; } = null!;
+    private Employee? CurrentUser { get; set; }
     private readonly ClayEntityFormOptions _entityFormOptions = new()
     {
         Class = "model-equipment-form equipment-ins-form",
@@ -43,50 +47,61 @@ public partial class EquipmentIns : IDisposable
     };
     private readonly ClaySelectOptions _typeOptions = new()
     {
+        DraftKey = "ins.type", AdvanceFocusOnSelection = true,
         Required = true, AutoSelectSingle = true, MaxItems = 300, Placeholder = "Выберите тип оборудования",
     };
     private readonly ClaySelectOptions _modelOptions = new()
     {
+        DraftKey = "ins.model",
         Required = true, AutoSelectSingle = true, Placeholder = "Выберите модель",
     };
     private readonly ClaySelectOptions _ownerOptions = new()
     {
+        DraftKey = "ins.owner",
         Required = true, AutoSelectSingle = true, Placeholder = "Выберите владельца",
     };
     private readonly ClaySelectOptions _personOptions = new()
     {
+        DraftKey = "ins.shipper", AdvanceFocusOnSelection = true,
         AutoSelectSingle = true, Placeholder = "Выберите поставщика",
     };
     private readonly ClaySelectOptions _documentOptions = new()
     {
+        DraftKey = "ins.receipt-document",
         AutoSelectSingle = true, Placeholder = "Выберите документ поступления",
     };
     private readonly ClaySelectOptions _locationOptions = new()
     {
+        DraftKey = "ins.location", AdvanceFocusOnSelection = true,
         Required = true, AutoSelectSingle = true, Placeholder = "Выберите расположение",
     };
     private readonly ClaySelectOptions _responsibleOptions = new()
     {
+        DraftKey = "ins.employee", AdvanceFocusOnSelection = true,
         AutoSelectSingle = true, Placeholder = "Выберите сотрудника",
     };
     private readonly ClaySelectOptions _accountingDocumentOptions = new()
     {
+        DraftKey = "ins.accounting-document",
         AutoSelectSingle = true, Placeholder = "Выберите документ поступления",
     };
     private readonly ClaySelectOptions _tenantOptions = new()
     {
+        DraftKey = "ins.tenant",
         AutoSelectSingle = true, Placeholder = "Выберите арендатора",
     };
-    private readonly ClayDatePickerOptions _dateOptions = new() { Required = true, Clearable = false };
-    private readonly ClayTimeOptions _timeOptions = new() { Required = true, Clearable = false };
-    private readonly ClayTextBoxOptions _snOptions = new() { MaxLength = 50 };
-    private readonly ClayTextBoxOptions _networkNameOptions = new() { MaxLength = 50 };
-    private readonly ClayTextBoxOptions _macOptions = new() { MaxLength = 17 };
-    private readonly ClayTextBoxOptions _locationDescriptionOptions = new() { MaxLength = 300 };
-    private readonly ClayTextBoxOptions _responsibleDescriptionOptions = new() { MaxLength = 300 };
-    private readonly ClayTextBoxOptions _inventoryNumberOptions = new() { MaxLength = 50 };
-    private readonly ClayTextBoxOptions _accountingDescriptionOptions = new() { MaxLength = 300 };
-    private readonly ClayTextAreaOptions _descriptionOptions = new() { MaxLength = 300, Lines = 3 };
+    private readonly ClayDatePickerOptions _dateOptions = new() { DraftKey = "ins.date", Required = true, Clearable = false };
+    private readonly ClayTimeOptions _timeOptions = new() { DraftKey = "ins.time", Required = true, Clearable = false };
+    private readonly ClayTextBoxOptions _snOptions = new() { DraftKey = "ins.serial", MaxLength = 50 };
+    private readonly ClayTextBoxOptions _networkNameOptions = new() { DraftKey = "ins.network", MaxLength = 50 };
+    private readonly ClayTextBoxOptions _macOptions = new() { DraftKey = "ins.mac", MaxLength = 17 };
+    private readonly ClayTextBoxOptions _macSecondOptions = new() { DraftKey = "ins.mac-2", MaxLength = 17 };
+    private readonly ClayTextBoxOptions _macIloOptions = new() { DraftKey = "ins.mac-ilo", MaxLength = 17 };
+    private readonly ClayTextBoxOptions _locationDescriptionOptions = new() { DraftKey = "ins.location-note", MaxLength = 300 };
+    private readonly ClayTextBoxOptions _responsibleDescriptionOptions = new() { DraftKey = "ins.employee-note", MaxLength = 300 };
+    private readonly ClayTextBoxOptions _inventoryNumberOptions = new() { DraftKey = "ins.inventory-number", MaxLength = 50 };
+    private readonly ClayTextBoxOptions _accountingDescriptionOptions = new() { DraftKey = "ins.accounting-note", MaxLength = 300 };
+    private readonly ClayTextAreaOptions _descriptionOptions = new() { DraftKey = "ins.notes", MaxLength = 300, Lines = 3 };
 
     private global::Clayzor.Lib.Entities.Inventory.Equipment _model = new();
     private MudForm? _form;
@@ -106,6 +121,7 @@ public partial class EquipmentIns : IDisposable
     private int _operationVersion;
     private int _ownerVersion;
     private int _shipperVersion;
+    private int _selectionVersion;
     private int? _confirmedOwnerId;
     private int? _createdEquipmentId;
     private string? _createdEditUrl;
@@ -122,7 +138,9 @@ public partial class EquipmentIns : IDisposable
 
     private bool IsModified => _loaded && _createdEquipmentId is null && Snapshot() != _originalSnapshot;
     private bool HasPendingCreation => _createdEquipmentId is null && (_loadedFromCopy || IsModified);
-    private bool CanSave => _loaded && _canEdit && !_loading && !_saving && HasPendingCreation;
+    private bool CanSave => _loaded && _canEdit && !_loading && !_saving && !CreationBlocked && HasPendingCreation;
+    private bool CreationFocusReady => !_disposed && _loaded && _canEdit && !_loading && !_saving &&
+        !_restoreCreationRaw && !_creationRecoveryBusy && !CreationBlocked && _createdEquipmentId is null && _sourceKey == SourceKey;
     private bool ShowNetworkName => _selectedType?.HasNetworkName > 0;
     private int MacCount => Math.Min(3, _selectedModel?.NetworkInterfaces ?? 0);
     private Func<Employee, Task>? EmployeeViewItem =>
@@ -132,6 +150,7 @@ public partial class EquipmentIns : IDisposable
     protected override void OnInitialized()
     {
         _sourceKey = SourceKey;
+        _entityFormOptions.Class += $" {_creationRoot}";
         Navigation.LocationChanged += OnNavigationLocationChanged;
     }
 
@@ -143,6 +162,12 @@ public partial class EquipmentIns : IDisposable
             _initialRenderCompleted = true;
             _sourceKey = SourceKey;
             await LoadAsync();
+        }
+        else if (!_loading && !_saving)
+        {
+            if (_restoreCreationRaw)
+                await RestoreCreationRawAsync();
+            await AutosaveCreationEditorAsync();
         }
     }
 
@@ -167,67 +192,76 @@ public partial class EquipmentIns : IDisposable
         _ownerVersion++;
         _loading = true;
         _loaded = false;
+        _canEdit = false;
         _loadedFromCopy = false;
         _notFound = false;
         _allowNavigation = false;
         _createdEquipmentId = null;
         _createdEditUrl = null;
+        _creationResult = null;
+        _creationAttempt = null;
+        _receiptPersisted = _creationUncertain = _creationRawPending = _restoreCreationRaw = false;
+        _creationRawFailed = _applyingCreationRaw = false;
+        _notSentCreationId = null;
+        _sourceUnavailable = _draftNeedsReview = _editorRestored = _editorSaveFailed = false;
+        _lastEditorDraft = _freshOriginal = null;
+        _creationRecoveryCandidates = [];
+        _creationRecoveryReady = _creationRecoveryBusy = false;
+        _creationRecoveryNotice = null;
+        CurrentUser = null;
         _confirmedOwnerId = null;
         _shipperVersion++;
         StateHasChanged();
         await Task.Delay(100);
         try
         {
+            if (_creationAutosave is { } pending) await pending;
+            if (!IsCurrent(version)) return;
+            await ReleaseCreationDraftAsync();
+            if (!IsCurrent(version)) return;
             var copyId = QueryInt("copyId");
             var initialTypeId = QueryInt("codetype");
-            var model = copyId > 0 ? await Service.GetForCopyAsync(copyId) : new global::Clayzor.Lib.Entities.Inventory.Equipment();
+            global::Clayzor.Lib.Entities.Inventory.Equipment? model = null;
+            try
+            {
+                if (copyId > 0) model = await Service.GetForCopyAsync(copyId);
+            }
+            catch (Exception error) when (error is InvalidOperationException or Microsoft.Data.SqlClient.SqlException)
+            {
+                // Без свежего источника можно открыть только авторизованный локальный черновик.
+            }
             if (!IsCurrent(version))
                 return;
-            if (model is null)
-            {
-                _notFound = true;
-                return;
-            }
+            _sourceUnavailable = copyId > 0 && model is null;
+            model ??= new global::Clayzor.Lib.Entities.Inventory.Equipment();
             model.Id = 0;
             if (model.EquipmentTypeId is null && initialTypeId > 0)
                 model.EquipmentTypeId = initialTypeId;
 
-            var canEdit = await Service.HasRoleAsync(InventorySpecialistRoleId);
+            var principal = await PrincipalAsync();
+            if (!IsCurrent(version))
+                return;
+            var currentUser = await Service.GetCurrentUserAsync(principal, _pageCts.Token);
             if (!IsCurrent(version))
                 return;
             var localOffset = await JS.InvokeAsync<int>("clayGridTimeZone.getOffsetMinutes", _pageCts.Token);
             if (!IsCurrent(version))
                 return;
 
-            var selectedType = model.EquipmentTypeId is > 0
-                ? await EquipmentTypeSource.GetByIdAsync(model.EquipmentTypeId, _pageCts.Token)
-                : null;
-            if (!IsCurrent(version))
-                return;
-            var selectedModel = model.ModelId is > 0
-                ? await ModelSource.GetByIdAsync(model.ModelId, _pageCts.Token)
-                : null;
-            if (!IsCurrent(version))
-                return;
-            var accountingAvailable = await Service.CanUseAccountingAsync(model.OwnerId);
-            if (!IsCurrent(version))
-                return;
-
+            CurrentUser = currentUser;
             _model = model;
-            _confirmedOwnerId = model.OwnerId;
-            ModelSource.Filter.EquipmentTypeId = model.EquipmentTypeId;
-            ReceiptDocumentSource.PersonId = model.OwnerId;
-            _selectedType = selectedType;
-            _selectedModel = selectedModel;
             _receiptDate = DateTime.UtcNow.AddMinutes(localOffset).Date;
             _receiptTime = TimeSpan.Zero;
-            _canEdit = canEdit;
-            _accountingAvailable = accountingAvailable;
-            UpdateOptions();
+            _freshOriginal = _originalSnapshot = Snapshot();
             _validationMessage = null;
-            _loaded = true;
-            _loadedFromCopy = copyId > 0;
-            _originalSnapshot = Snapshot();
+            await AttachCreationDraftAsync(currentUser, version);
+            if (!IsCurrent(version)) return;
+            if (_sourceUnavailable && !_editorRestored && _createdEquipmentId is null && !_creationUncertain)
+            {
+                _notFound = true;
+                return;
+            }
+            await LoadCreationInputsAsync(currentUser, version);
         }
         catch (OperationCanceledException) when (_disposed || !IsCurrent(version))
         {
@@ -242,8 +276,35 @@ public partial class EquipmentIns : IDisposable
         }
     }
 
+    private async Task LoadCreationInputsAsync(Employee? actor, int version)
+    {
+        var model = _model;
+        var selectedType = model.EquipmentTypeId is > 0
+            ? await EquipmentTypeSource.GetByIdAsync(model.EquipmentTypeId, _pageCts.Token) : null;
+        if (!IsCurrent(version)) return;
+        var selectedModel = model.ModelId is > 0
+            ? await ModelSource.GetByIdAsync(model.ModelId, _pageCts.Token) : null;
+        if (!IsCurrent(version)) return;
+        var accountingAvailable = await Service.CanUseAccountingAsync(actor, model.OwnerId, _pageCts.Token);
+        if (!IsCurrent(version)) return;
+
+        _confirmedOwnerId = model.OwnerId;
+        ModelSource.Filter.EquipmentTypeId = model.EquipmentTypeId;
+        ReceiptDocumentSource.PersonId = model.OwnerId;
+        _selectedType = selectedType;
+        _selectedModel = selectedModel;
+        CurrentUser = actor;
+        _canEdit = actor?.HasRole(Роли.Специалист_по_инвентаризации_оборудования) == true;
+        _accountingAvailable = accountingAvailable;
+        UpdateOptions();
+        _notFound = false;
+        _loaded = true;
+        _loadedFromCopy = QueryInt("copyId") > 0 && !_sourceUnavailable;
+    }
+
     private void OnTypeIdChanged(int? id)
     {
+        _selectionVersion++;
         if (id is null)
         {
             _model.EquipmentTypeId = null;
@@ -266,7 +327,7 @@ public partial class EquipmentIns : IDisposable
 
     private void OnTypeChanged(EquipmentType? type)
     {
-        if (type is null)
+        if (type is null || type.Id != _model.EquipmentTypeId)
             return;
         _selectedType = type;
         _model.EquipmentTypeId = type.Id;
@@ -276,6 +337,7 @@ public partial class EquipmentIns : IDisposable
 
     private void OnModelIdChanged(int? id)
     {
+        _selectionVersion++;
         if (id is null)
         {
             _model.ModelId = null;
@@ -294,15 +356,23 @@ public partial class EquipmentIns : IDisposable
     {
         if (model is null)
             return;
+        if (_model.ModelId != model.Id) return;
+        var selection = ++_selectionVersion;
+        var route = _operationVersion;
         _selectedModel = model;
         _model.ModelId = model.Id;
-        if (_model.EquipmentTypeId != model.EquipmentTypeId)
+        _model.EquipmentTypeId = model.EquipmentTypeId;
+        ModelSource.Filter.EquipmentTypeId = model.EquipmentTypeId;
+        if (_selectedType?.Id != model.EquipmentTypeId)
         {
-            _model.EquipmentTypeId = model.EquipmentTypeId;
-            ModelSource.Filter.EquipmentTypeId = model.EquipmentTypeId;
-            _selectedType = await EquipmentTypeSource.GetByIdAsync(model.EquipmentTypeId, _pageCts.Token);
+            var type = await EquipmentTypeSource.GetByIdAsync(model.EquipmentTypeId, _pageCts.Token);
+            if (!IsCurrent(route) || selection != _selectionVersion || _model.ModelId != model.Id ||
+                _model.EquipmentTypeId != model.EquipmentTypeId)
+                return;
+            _selectedType = type?.Id == model.EquipmentTypeId ? type : null;
         }
-        ClearHiddenFeatures();
+        if (_selectedType is not null)
+            ClearHiddenFeatures();
         UpdateOptions();
     }
 
@@ -339,7 +409,7 @@ public partial class EquipmentIns : IDisposable
     private async Task RefreshAccountingAsync(int personId)
     {
         var version = ++_ownerVersion;
-        var available = await Service.CanUseAccountingAsync(personId);
+        var available = await Service.CanUseAccountingAsync(CurrentUser, personId, _pageCts.Token);
         if (_disposed || version != _ownerVersion || _confirmedOwnerId != personId || _model.OwnerId != personId)
             return;
         _accountingAvailable = available;
@@ -368,6 +438,7 @@ public partial class EquipmentIns : IDisposable
 
     private void OnLocationChanged(int? id)
     {
+        _locationChoiceVersion++;
         _model.LocationId = id;
         UpdateOptions();
     }
@@ -419,7 +490,7 @@ public partial class EquipmentIns : IDisposable
             options.ReadOnly = !_canEdit;
         foreach (var options in new ClayInputOptions[]
                  {
-                     _dateOptions, _timeOptions, _snOptions, _networkNameOptions, _macOptions,
+                     _dateOptions, _timeOptions, _snOptions, _networkNameOptions, _macOptions, _macSecondOptions, _macIloOptions,
                      _locationDescriptionOptions, _responsibleDescriptionOptions, _descriptionOptions,
                  })
             options.ReadOnly = !_canEdit;
@@ -455,22 +526,24 @@ public partial class EquipmentIns : IDisposable
         return errors.Count == 0;
     }
 
+    private async Task<string?> PrincipalAsync()
+    {
+        var identity = (await Authentication.GetAuthenticationStateAsync()).User.Identity;
+        return identity?.IsAuthenticated == true ? identity.Name : null;
+    }
+
     private async Task SaveAsync(bool closeAfterSave)
     {
-        if (!_loaded || !_canEdit)
+        if (!_loaded || !_canEdit || CreationBlocked || _creationDraft is not { } registration)
             return;
-        if (_createdEquipmentId is int createdId)
+        if (_createdEquipmentId is not null)
         {
             if (_saving)
                 return;
             if (closeAfterSave)
                 await CloseAsync();
             else
-            {
-                _createdEditUrl ??= BuildEditUrl(GetConfiguredUrl("URI_equipment_form"), createdId);
-                _allowNavigation = true;
-                Navigation.NavigateTo(_createdEditUrl);
-            }
+                OpenCreatedEquipment();
             return;
         }
         if (_saving)
@@ -478,7 +551,7 @@ public partial class EquipmentIns : IDisposable
         if (!HasPendingCreation)
         {
             if (closeAfterSave)
-                await CloseAsync();
+                await CancelAsync();
             return;
         }
 
@@ -496,20 +569,30 @@ public partial class EquipmentIns : IDisposable
                 if (!IsCurrent(version) || !_form.IsValid)
                     return;
             }
+            if (!await VerifyCreationRawReadyAsync(registration, version, _pageCts.Token)) return;
             if (!ValidateBusinessRules())
                 return;
             _model.ReceivedAtUtc = await ConvertReceiptTimeToUtcAsync();
             if (!IsCurrent(version))
                 return;
-            var id = await Service.CreateAsync(_model);
+            var principal = await PrincipalAsync();
+            if (!IsCurrent(version))
+                return;
+            var id = await Service.CreateAsync(_model, principal, CurrentUser?.Id ?? 0, _pageCts.Token,
+                (request, ct) => BeginCreationAsync(request, registration, version, ct));
             if (!IsCurrent(version))
                 return;
             if (id <= 0)
                 throw new InvalidOperationException("База данных не вернула идентификатор созданного оборудования.");
+            if (_creationAttempt is not { } attempt)
+                throw new InvalidOperationException("Не получено подтверждение отправленной попытки.");
+
+            _creationResult = new CreationReceipt(SourceKey, attempt.AttemptId, attempt.Revision, id);
             _model.Id = id;
             _createdEquipmentId = id;
             _createdEditUrl = editFormUrl is null ? null : BuildEditUrl(editFormUrl, id);
             _originalSnapshot = Snapshot();
+            await FinishCreationAsync(registration, _pageCts.Token);
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _pageCts.Token);
             if (!IsCurrent(version))
                 return;
@@ -521,15 +604,21 @@ public partial class EquipmentIns : IDisposable
             _allowNavigation = true;
             Navigation.NavigateTo(_createdEditUrl!);
         }
-        catch (Microsoft.Data.SqlClient.SqlException)
+        catch (OperationCanceledException) when (!IsCurrent(version)) { }
+        catch (Exception error) when (IsCurrent(version))
         {
-            if (IsCurrent(version))
-                _validationMessage = "Оборудование не создано. Подробности — в сообщении базы данных.";
-        }
-        catch (InvalidOperationException ex)
-        {
-            if (IsCurrent(version))
-                _validationMessage = ex.Message;
+            if (_creationResult is { } receipt)
+                _validationMessage = CreationCleanupPending
+                    ? $"Оборудование №{receipt.EquipmentId} создано. Завершите обработку черновика."
+                    : $"Оборудование №{receipt.EquipmentId} создано. Не удалось завершить переход.";
+            else if (_creationAttempt is { } attempt)
+                await MarkCreationUnknownAsync(registration, attempt);
+            else if (_notSentCreationId is not null)
+                _validationMessage = "Команда не отправлена. Завершите проверку черновика перед повтором.";
+            else
+                _validationMessage = error is InvalidOperationException or UnauthorizedAccessException
+                    ? error.Message
+                    : "Создание не начато. Не удалось завершить проверку команды.";
         }
         finally
         {
@@ -563,11 +652,13 @@ public partial class EquipmentIns : IDisposable
         return int.TryParse(query[name], out var value) ? value : 0;
     }
 
-    private string Snapshot() => JsonSerializer.Serialize(new
+    private string Snapshot() => Snapshot(_model, _receiptDate, _receiptTime);
+
+    private static string Snapshot(EquipmentEntity model, DateTime? date, TimeSpan? time) => JsonSerializer.Serialize(new
     {
-        Model = _model,
-        Date = _receiptDate,
-        Time = _receiptTime,
+        Model = model,
+        Date = date,
+        Time = time,
     });
 
     private bool IsCurrent(int version) => !_disposed && version == _operationVersion;
@@ -577,16 +668,38 @@ public partial class EquipmentIns : IDisposable
 
     private async Task RefreshAsync()
     {
+        if (_applyingCreationRaw || _creationRecoveryBusy) return;
+        if (CreationCleanupPending || _notSentCreationId is not null)
+        {
+            await RetryCreationCompletionAsync();
+            return;
+        }
+        if (_creationUncertain || _createdEquipmentId is not null)
+            return;
+        if (CreationRecoveryBlocked && _creationDraft is { } registration)
+        {
+            await ScanCreationRecoveryAsync(registration, _operationVersion, _pageCts.Token);
+            return;
+        }
+        if (_editorSaveFailed)
+        {
+            await AutosaveCreationEditorAsync(retry: true);
+            return;
+        }
+        if (_creationRawPending && !_sourceUnavailable && !_draftNeedsReview)
+        {
+            await RestoreCreationRawAsync(pendingOnly: true);
+            return;
+        }
+        if (_sourceUnavailable || _draftNeedsReview)
+        {
+            await AutosaveCreationEditorAsync(retry: true);
+            if (!_editorSaveFailed) await LoadAsync();
+            return;
+        }
         if (_saving || IsModified && !await ConfirmAsync("Несохранённые данные будут потеряны. Продолжить?"))
             return;
         await LoadAsync();
-    }
-
-    private async Task CancelAsync()
-    {
-        if (IsModified && !await ConfirmAsync("Закрыть форму без сохранения изменений?"))
-            return;
-        await CloseAsync();
     }
 
     private async Task CloseAsync()
@@ -605,22 +718,8 @@ public partial class EquipmentIns : IDisposable
         return result is { Canceled: false };
     }
 
-    private async Task BeforeInternalNavigationAsync(LocationChangingContext context)
-    {
-        if (_saving || _allowNavigation || !IsModified)
-        {
-            if (_saving)
-                context.PreventNavigation();
-            return;
-        }
-        if (!await ConfirmAsync("Перейти на другую страницу без сохранения изменений?"))
-            context.PreventNavigation();
-        else
-            _allowNavigation = true;
-    }
-
     /// <summary>Освобождает ресурсы страницы и отменяет ожидания.</summary>
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
         if (_disposed)
             return;
@@ -629,6 +728,7 @@ public partial class EquipmentIns : IDisposable
         _operationVersion++;
         _ownerVersion++;
         _pageCts.Cancel();
-        _pageCts.Dispose();
+        try { await ReleaseCreationDraftAsync(); }
+        finally { _pageCts.Dispose(); }
     }
 }

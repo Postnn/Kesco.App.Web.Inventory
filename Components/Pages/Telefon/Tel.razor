@@ -22,6 +22,8 @@
 @inject NavigationManager Navigation
 @inject IConfiguration Configuration
 @inject IJSRuntime JS
+@inject TimeProvider Clock
+@inject Microsoft.AspNetCore.Components.Authorization.AuthenticationStateProvider Authentication
 
 <PageTitle>@Title</PageTitle>
 <NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
@@ -29,18 +31,54 @@
 <ClayEntityForm Options="_entityFormOptions">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit || _deleted && _pendingOperations.Count == 0)" OnClick="@(() => SaveAsync(true))" />
-            <ClayToolbarButton Options="_applyOptions" Disabled="@((!CanSave && _pendingOperations.Count == 0) || _deleted && _pendingOperations.Count == 0)" OnClick="@(() => SaveAsync(false))" />
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit || _versionConflict || TelWriteBlocked || HasPendingSync || _deleted && _pendingOperations.Count == 0)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave || HasPendingSync)" OnClick="@(() => SaveAsync(false))" />
             @if (_model?.Id > 0 && !_deleted)
             {
                 <ClayToolbarButton Options="_copyOptions" Disabled="@(_loading || _saving)" OnClick="CopyAsync" />
-                <ClayToolbarButton Options="_deleteOptions" Disabled="@(_loading || _saving || !_canEdit)" OnClick="DeleteAsync" />
+                <ClayToolbarButton Options="_deleteOptions" Disabled="@(_loading || _saving || !_canEdit || _versionConflict || TelWriteBlocked || HasPendingSync)" OnClick="DeleteAsync" />
             }
-            <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || _deleted)" OnClick="RefreshAsync" />
-            <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
+            <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || _deleted || _telEditorTransition)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="_cancelOptions" Disabled="@(_saving || _telEditorTransition)" OnClick="CancelAsync" />
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
+        @if (_telJournalNotice is not null)
+        {
+            <section aria-label="Журнал записи и АТС" data-testid="tel-write-journal">
+                <MudAlert Severity="Severity.Warning">@_telJournalNotice</MudAlert>
+                <ClayToolbarButton Options="FinishJournalOptions" Disabled="@IsTelJournalInteractionBlocked"
+                                   OnClick="CompleteOrCheckTelJournalAsync" />
+                @if (CanRetryAts)
+                {
+                    <ClayToolbarButton Options="RetryAtsOptions" Disabled="@IsTelJournalInteractionBlocked"
+                                       OnClick="RetryJournaledAtsAsync" />
+                }
+                @foreach (var candidate in _telCandidates.Where(item => item.CanRecover))
+                {
+                    <ClayToolbarButton Options="RecoverTelOptions" Disabled="@(IsTelJournalInteractionBlocked || HasUnsavedDraft)"
+                                       OnClick="() => RecoverTelJournalAsync(candidate)" />
+                }
+                <ClayToolbarButton Options="InspectTelOptions" Disabled="@IsTelJournalInteractionBlocked"
+                                   OnClick="ObserveTelWriteAsync" />
+            </section>
+        }
+        @if (_telInputNotice is not null)
+        {
+            <section aria-label="Черновик ввода номера" data-testid="tel-editor-draft">
+                <MudAlert Severity="Severity.Warning">@_telInputNotice</MudAlert>
+                @if (_telRawPending)
+                {
+                    <ClayToolbarButton Options="RestoreTelInputOptions"
+                        Disabled="@(IsTelJournalInteractionBlocked || _telRestoringRaw)" OnClick="RetryTelRawAsync" />
+                }
+                else if (_telInputSaveFailed)
+                {
+                    <ClayToolbarButton Options="RetryTelStorageOptions"
+                        Disabled="@(IsTelJournalInteractionBlocked || _telRestoringRaw)" OnClick="RetryTelInputAsync" />
+                }
+            </section>
+        }
         @if (_loadError is not null)
         {
             <MudAlert Severity="Severity.Error" Class="mb-2">@_loadError</MudAlert>
@@ -65,7 +103,7 @@
                 <MudAlert Severity="Severity.Warning" Class="mb-2">@_warningMessage</MudAlert>
             }
             <MudForm @ref="_form">
-                <div class="phone-form-fields">
+                <div class="phone-form-fields" data-draft-scope="@TelInputScope" inert="@(_loading || _telRestoringRaw || _telJournalBusy || _telChildOpen || _telEditorTransition)">
                     <div class="phone-form-pair">
                         <label class="phone-form-label" for="phone-number">Номер телефона:</label>
                         <div>
@@ -312,7 +350,7 @@
                             <span class="phone-form-label">Оборудование:</span>
                             <div>
                                 <ClayGrid TEntity="PhoneEquipmentLink" Items="_relations.Equipment" Options="_equipmentGridOptions"
-                                          RowClass="@(item => item.ReturnDate?.Date < DateTime.UtcNow.Date ? "equipment-overdue" : null)">
+                                          RowClass="EquipmentReturnRowClass">
                                     <ColumnDefs>
                                         <ClayColumnDef ColumnId="1" SqlName="Model" DisplayName="Оборудование" />
                                         @if (_relations.Equipment.Any(item => item.ConnectionEquipmentId is > 0))

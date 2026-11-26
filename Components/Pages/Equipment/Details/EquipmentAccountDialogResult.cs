@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Kesco.App.Web.Inventory.Components.Pages.Equipment.Details;
 
 /// <summary>Результат редактирования учётной записи оборудования.</summary>
@@ -7,6 +9,13 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Equipment.Details;
 /// <param name="Notes">Примечание.</param>
 public sealed record EquipmentAccountDialogResult(
     string Login,
-    string Password,
+    [property: JsonIgnore] string Password,
     bool LimitedRights,
-    string Notes);
+    string Notes)
+{
+    /// <summary>Непрозрачная версия исходной строки для редактирования.</summary>
+    public string? OriginalVersion { get; init; }
+
+    /// <inheritdoc />
+    public override string ToString() => nameof(EquipmentAccountDialogResult);
+}

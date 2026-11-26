@@ -3,6 +3,7 @@
 @using Clayzor.Lib.Entities.Inventory
 
 <PageTitle>Регламентные работы</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@HasUnsentConfirmation" OnBeforeInternalNavigation="BeforeMaintenanceNavigationAsync" />
 <InventoryMainMenu />
 
 <div class="inventory-list-page @_draftRoot">
@@ -43,9 +44,12 @@
     {
         <MudButton OnClick="ReloadAsync">Перечитать список</MudButton>
     }
-    @if (_pendingConfirmation is { } id && !IsBusy && _rows.FirstOrDefault(row => row.Id == id && CanConfirm(row)) is { } pending)
+    @if (HasUnsentConfirmation && !IsBusy && _pendingConfirmation is { } id)
     {
-        <MudButton OnClick="@(() => ConfirmAsync(pending.Id))">Продолжить подтверждение</MudButton>
+        @if (_rows.Any(row => row.Id == id && CanConfirm(row)))
+        {
+            <MudButton OnClick="@(() => ConfirmAsync(id))">Продолжить подтверждение</MudButton>
+        }
         <MudButton OnClick="CancelPendingAsync">Отменить вопрос</MudButton>
     }
     @if (_list is { } list && _recoverableDrafts.Count == 0)

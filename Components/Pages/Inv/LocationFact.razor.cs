@@ -15,6 +15,8 @@ using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.Data.SqlClient;
 using Microsoft.JSInterop;
 using MudBlazor;
+using MudBlazor.Extensions;
+using MudBlazor.Extensions.Options;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Inv;
 
@@ -24,6 +26,10 @@ public partial class LocationFact : IAsyncDisposable
     private const string DraftScope = "main";
     private const string WorkplaceScope = "workplace";
     private const string OperationKind = "confirm-location";
+    private static readonly ClayTextBoxOptions LegacyLocationInput = new() { Label = "Расположение, поисковый текст", ReadOnly = true, DraftKey = "fact.location" };
+    private static readonly ClayTextBoxOptions LegacyResponsibleInput = new() { Label = "Ответственный, поисковый текст", ReadOnly = true, DraftKey = "fact.responsible" };
+    private static readonly ClayTextBoxOptions LegacySearchInput = new() { Label = "Поиск оборудования", ReadOnly = true, DraftKey = "fact.search" };
+    private static readonly ClayTextAreaOptions LegacyNotesInput = new() { Label = "Примечание", ReadOnly = true, Lines = 3, DraftKey = "fact.notes" };
     private static readonly ClaySelectOptions LocationOptions = new() { Label = "Расположение", DraftKey = "fact.location", Required = true };
     private static readonly ClaySelectOptions EmployeeOptions = new() { Label = "Поиск по ответственному", DraftKey = "fact.responsible" };
     private static readonly ClayTextAreaOptions NotesOptions = new() { Label = "Примечание", Lines = 3, MaxLength = 500, DraftKey = "fact.notes" };
@@ -70,6 +76,9 @@ public partial class LocationFact : IAsyncDisposable
     private bool _restoreWorkplaceRaw;
     private bool _workplaceRawIncomplete;
     private bool _legacyRawPending;
+    private bool _showLegacyRaw;
+    private bool _restoreLegacyRaw;
+    private bool _legacyRawIncomplete;
     private bool _restoreIncomplete;
     private bool _ready;
     private bool _busy;
@@ -91,6 +100,7 @@ public partial class LocationFact : IAsyncDisposable
     [Inject] private IConfiguration Config { get; set; } = null!;
     [Inject] private ClayFormWindowService Windows { get; set; } = null!;
     [Inject] private ClayDraftService Drafts { get; set; } = null!;
+    [Inject] private IDialogService Dialogs { get; set; } = null!;
     [Inject] private ISnackbar Snackbar { get; set; } = null!;
     [Inject] private IJSRuntime JS { get; set; } = null!;
     [Inject] private LocationSelectDataSource Locations { get; set; } = null!;
@@ -119,13 +129,18 @@ public partial class LocationFact : IAsyncDisposable
                 var restore = _registration.Restore;
                 _pendingOperation = restore.OperationSnapshot;
                 _blocked = _pendingOperation is not null;
-                if (_pendingOperation is { } operation)
+                var sent = ReadCommand(_pendingOperation);
+                if (_pendingOperation is { Status: ClayDraftOperationStatus.Confirmed } confirmed && sent is not null)
+                {
+                    _confirmedCleanup = new ConfirmedFact(confirmed, sent, CheckedAt: null, Scanner: false, ReceiptRecorded: true);
+                    _message = "Проверка записана. Завершите обработку черновика.";
+                }
+                else if (_pendingOperation is { } operation)
                     _message = $"Исход попытки {operation.AttemptId} требует сверки. Повтор записи заблокирован.";
 
                 var draft = restore.TypedScopes?.TryGetValue(DraftScope, out var json) == true
                     ? JsonSerializer.Deserialize<FactDraft>(json)
                     : null;
-                var sent = ReadCommand(_pendingOperation);
                 var workplace = restore.TypedScopes?.TryGetValue(WorkplaceScope, out var workplaceJson) == true
                     ? JsonSerializer.Deserialize<WorkplaceDraft>(workplaceJson) ?? throw new JsonException()
                     : null;
@@ -148,8 +163,11 @@ public partial class LocationFact : IAsyncDisposable
                     _scanOperation = draft?.Scanner == true;
                     _conflict = draft?.Conflict == true;
                     _dialogError = _message;
-                    ShowDialog();
-                    _restoreRaw = restore.HasDraft;
+                    if (_confirmedCleanup is null)
+                    {
+                        ShowDialog();
+                        _restoreRaw = restore.HasDraft;
+                    }
                 }
                 else
                 {
@@ -179,6 +197,16 @@ public partial class LocationFact : IAsyncDisposable
             finally
             {
                 _ready = CurrentUser is not null;
+                if (!_disposed) StateHasChanged();
+            }
+            return;
+        }
+        if (_showLegacyRaw)
+        {
+            if (_restoreLegacyRaw && !_busy)
+            {
+                _restoreLegacyRaw = false;
+                await RestoreLegacyInputsAsync();
                 if (!_disposed) StateHasChanged();
             }
             return;
@@ -224,6 +252,41 @@ public partial class LocationFact : IAsyncDisposable
 
     private static bool ScopeNeedsRestore(ClayDraftRestoreReadiness readiness, string scope) =>
         readiness.PendingScopes.Contains(scope, StringComparer.Ordinal) || readiness.FailedScopes.Contains(scope, StringComparer.Ordinal);
+
+    private void ShowLegacyInputs()
+    {
+        if (_busy || !_legacyRawPending || _registration is null)
+            return;
+
+        _showLegacyRaw = _restoreLegacyRaw = true;
+        _legacyRawIncomplete = false;
+    }
+
+    private void ReturnToWorkplace()
+    {
+        if (_busy)
+            return;
+
+        _showLegacyRaw = false;
+        _restoreWorkplaceRaw = true;
+    }
+
+    private async Task RestoreLegacyInputsAsync()
+    {
+        if (!_showLegacyRaw || _busy || _disposed || _registration is not { } registration)
+            return;
+
+        _busy = _legacyRawIncomplete = true;
+        try
+        {
+            var applied = await registration.ApplyRawWithResultAsync(DraftScope, Token);
+            var readiness = await registration.GetRestoreReadinessAsync(Token);
+            _legacyRawIncomplete = applied.Pending.Count != 0 || ScopeNeedsRestore(readiness, DraftScope);
+        }
+        catch (Exception e) when (e is JSException or InvalidOperationException) { }
+        catch (OperationCanceledException) when (_disposed) { }
+        finally { _busy = false; }
+    }
 
     private async Task RestoreWorkplaceInputsAsync()
     {
@@ -430,7 +493,7 @@ public partial class LocationFact : IAsyncDisposable
                 new ClayDraftOperationIntent(OperationKind, JsonSerializer.Serialize(command), [DraftScope], requestedAttemptId), Token);
             _pendingOperation = attempt;
             var checkedAt = await LocationFactData.ConfirmAsync(Db, principal, command.Expected, command.Notes, command.Broken, command.Move, Token);
-            _confirmedCleanup = new ConfirmedFact(attempt, command, checkedAt, scanner);
+            _confirmedCleanup = new ConfirmedFact(attempt, command, checkedAt, scanner, ReceiptRecorded: false);
             await FinishConfirmedAsync(registration);
         }
         catch (Exception e)
@@ -465,7 +528,15 @@ public partial class LocationFact : IAsyncDisposable
     private async Task FinishConfirmedAsync(ClayDraftRegistration registration)
     {
         if (_confirmedCleanup is not { } receipt) return;
-        try { await registration.CommitOperationAsync(receipt.Operation.Revision, cancellationToken: Token); }
+        try
+        {
+            if (!receipt.ReceiptRecorded)
+            {
+                await registration.RecordConfirmedOperationAsync(receipt.Operation.Revision, Token);
+                _confirmedCleanup = receipt = receipt with { ReceiptRecorded = true };
+            }
+            await registration.CommitOperationAsync(receipt.Operation.Revision, cancellationToken: Token);
+        }
         catch (Exception) when (!_disposed)
         {
             BlockDraft("Проверка записана. Завершите обработку черновика.");
@@ -607,16 +678,108 @@ public partial class LocationFact : IAsyncDisposable
 
     private async Task CancelAsync()
     {
-        if (_busy) return;
-        _busy = true;
-        try { if (!_blocked && _registration is not null) await _registration.DiscardScopeAsync(DraftScope, Token); }
-        catch (Exception e) when (e is JSException or InvalidOperationException) { BlockDraft("Не удалось удалить черновик в браузере."); }
-        finally
+        if (_busy || !_dialogVisible) return;
+        var registration = _registration;
+        var actorId = CurrentUser?.Id;
+        var version = _dialogVersion;
+        var route = Navigation.Uri;
+        var workplace = new WorkplaceDraft(_site?.Id, _responsibleId, _itOnly, _scanner);
+        var pending = _pending;
+        var scanner = _scanOperation;
+        var notes = _notes;
+        var broken = _broken;
+        var token = Token;
+        bool Current() => !_disposed && !token.IsCancellationRequested && _dialogVisible && version == _dialogVersion &&
+            route == Navigation.Uri && actorId == CurrentUser?.Id && ReferenceEquals(_registration, registration) &&
+            ReferenceEquals(_pending, pending) && notes == _notes && broken == _broken && scanner == _scanOperation &&
+            workplace == new WorkplaceDraft(_site?.Id, _responsibleId, _itOnly, _scanner);
+
+        async Task<bool> HasCurrentActorAsync()
         {
-            if (_blocked) _dialogVisible = false;
-            else ClosePending();
-            _busy = false;
+            var actor = await Employee.GetCurrentWithRolesAsync(Db, await PrincipalAsync(), token);
+            return actor is not null && actor.Id == actorId && actor.HasRole(LocationFactData.RequiredRole);
         }
+
+        _busy = true;
+        try
+        {
+            var scope = registration is null || _blocked ? null : await registration.ReadEditorScopeAsync(DraftScope, token);
+            if (!Current()) return;
+            var dialog = await Dialogs.ShowExAsync<ClayEditorCancelDialog>("Отмена изменений",
+                new DialogParameters(), new DialogOptionsEx
+                {
+                    DragMode = MudDialogDragMode.Simple, CloseOnEscapeKey = true, CloseButton = true,
+                });
+            if (await dialog.Result is not { Canceled: false, Data: ClayEditorCancelChoice choice } ||
+                !Current() || choice == ClayEditorCancelChoice.Continue)
+                return;
+
+            if (_blocked || _pendingOperation is not null || _confirmedCleanup is not null ||
+                scope is not { HasOperation: false } || registration is null)
+            {
+                if (choice == ClayEditorCancelChoice.CloseWithoutSaving) _dialogVisible = false;
+                else _dialogError = "Сначала требуется сверка или восстановление. Ввод и журнал сохранены.";
+                return;
+            }
+
+            var authorized = await HasCurrentActorAsync();
+            if (!Current()) return;
+            if (!authorized || pending is null || pending.Site.Id != workplace.SiteId)
+            {
+                _dialogError = "Не удалось подтвердить сотрудника или рабочее место. Ввод сохранён.";
+                return;
+            }
+
+            if (choice == ClayEditorCancelChoice.CloseWithoutSaving)
+            {
+                if (await ReplaceFactScopeAsync(registration, scope.Revision, null, Current, token))
+                    ClosePending();
+                return;
+            }
+
+            var fresh = await LocationFactData.ReadForConfirmAsync(Db, pending.Site.Id, pending.Equipment.EquipmentId, token);
+            if (!Current()) return;
+            if (fresh.Site.Id != pending.Site.Id || fresh.Equipment.EquipmentId != pending.Equipment.EquipmentId)
+            {
+                _dialogError = "Контекст подтверждения изменился. Ввод сохранён.";
+                return;
+            }
+            authorized = await HasCurrentActorAsync();
+            if (!Current()) return;
+            if (!authorized)
+            {
+                _dialogError = "Сотрудник или право подтверждения изменились. Ввод сохранён.";
+                return;
+            }
+            var replacement = new FactDraft(fresh, scanner ? "" : fresh.Notes, !scanner && fresh.Broken, scanner);
+            if (!await ReplaceFactScopeAsync(registration, scope.Revision, JsonSerializer.Serialize(replacement), Current, token))
+                return;
+
+            _pending = replacement.Snapshot;
+            _notes = replacement.Notes;
+            _broken = replacement.Broken;
+            _comparison = null;
+            _conflict = _restoreRaw = _restoreIncomplete = false;
+            _askRelocation = scanner && fresh.DifferentLocation;
+            _dialogError = null;
+            ShowDialog();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception error) when (error is JSException or InvalidOperationException or SqlException or TimeoutException or UnauthorizedAccessException)
+        {
+            if (Current()) _dialogError = "Не удалось завершить отмену. Ввод сохранён.";
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task<bool> ReplaceFactScopeAsync(ClayDraftRegistration registration, long revision, string? snapshot,
+        Func<bool> current, CancellationToken token)
+    {
+        if (_blocked || _pendingOperation is not null || _confirmedCleanup is not null) return false;
+        var replaced = await registration.ReplaceEditorScopeAsync(DraftScope, revision, snapshot, token);
+        if (!current()) return false;
+        if (!replaced) _dialogError = "Ввод изменился. Повторите отмену.";
+        return replaced;
     }
 
     private void ShowDialog()
@@ -677,6 +840,6 @@ public partial class LocationFact : IAsyncDisposable
 
     private sealed record WorkplaceDraft(int? SiteId, int? ResponsibleId, bool ItOnly, bool Scanner);
     private sealed record FactCommand(LocationFactSnapshot Expected, string Notes, bool Broken, bool Move);
-    private sealed record ConfirmedFact(ClayDraftOperation Operation, FactCommand Command, DateTime CheckedAt, bool Scanner);
+    private sealed record ConfirmedFact(ClayDraftOperation Operation, FactCommand Command, DateTime? CheckedAt, bool Scanner, bool ReceiptRecorded);
     private sealed record FactDraft(LocationFactSnapshot Snapshot, string Notes, bool Broken, bool Scanner, bool Conflict = false);
 }

@@ -1,19 +1,22 @@
 @page "/Equipment/EquipmentIns"
 @layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
+@using Clayzor.Lib.Entities
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Select
 @using Clayzor.Lib.Web.DBSelect.Employees
 @using Clayzor.Lib.Web.DBSelect.Equipment
 @using Clayzor.Lib.Web.DBSelect.Locations
 @using Clayzor.Lib.Web.DBSelect.Persons
+@using Clayzor.Lib.Web.DBSelect.Phones
 @using Kesco.App.Web.Inventory.Services
 @using Microsoft.Extensions.Configuration
-@implements IDisposable
+@implements IAsyncDisposable
 @inject EquipmentInsService Service
 @inject EquipmentTypeSelectDataSource EquipmentTypeSource
 @inject EquipmentModelSelectDataSource ModelSource
 @inject EmployeeSelectDataSource EmployeeSource
 @inject PersonSelectDataSource PersonSource
+@inject PhoneCustomerSelectDataSource TenantSource
 @inject LocationSelectDataSource LocationSource
 @inject IServiceProvider Services
 @inject IConfiguration Configuration
@@ -22,18 +25,46 @@
 @inject IJSRuntime JS
 
 <PageTitle>Ввод оборудования</PageTitle>
-<NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
+<NavigationLock ConfirmExternalNavigation="@ConfirmExternalExit" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
 <ClayEntityForm Options="_entityFormOptions">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit || CreationBlocked)" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
-            <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving)" OnClick="RefreshAsync" />
-            <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
+            <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || _applyingCreationRaw)" OnClick="RefreshAsync" />
+            @if (CreationCleanupPending || _notSentCreationId is not null)
+            {
+                <ClayToolbarButton Options="_creationRetryOptions" Disabled="@_saving" OnClick="RetryCreationCompletionAsync" />
+            }
+            @if (_createdEquipmentId is not null && !CreationBlocked)
+            {
+                <ClayToolbarButton Options="_openCreatedOptions" Disabled="@_saving" OnClick="OpenCreatedEquipment" />
+                <ClayToolbarButton Options="_newCreationOptions" Disabled="@_saving" OnClick="BeginAnotherCreationAsync" />
+            }
+            @if (_draftNeedsReview && !_sourceUnavailable)
+            {
+                <ClayToolbarButton Options="_reviewCreationOptions" Disabled="@(_saving || _creationRawPending)" OnClick="AcceptCreationBaselineAsync" />
+            }
+            <ClayToolbarButton Options="_cancelOptions" Disabled="@(_saving || _loading || _applyingCreationRaw)" OnClick="CancelAsync" />
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
+        @if (!_loading && !string.IsNullOrWhiteSpace(_creationRecoveryNotice))
+        {
+            <MudAlert Severity="Severity.Warning">@_creationRecoveryNotice</MudAlert>
+        }
+        @if (!_loading && CurrentUser?.HasRole(Роли.Специалист_по_инвентаризации_оборудования) == true &&
+             !PreservesCreationOutcome && _creationRecoveryCandidates.Count > 0)
+        {
+            foreach (var candidate in _creationRecoveryCandidates)
+            {
+                <ClayToolbarButton Options="@(new() { Text = candidate.HasOperation
+                    ? $"Открыть сохранённую попытку (ревизия {candidate.Revision})"
+                    : $"Восстановить черновик (ревизия {candidate.Revision})" })"
+                    Disabled="@(!CanRecoverCreationDraft || !candidate.CanRecover)" OnClick="() => RecoverCreationDraftAsync(candidate)" />
+            }
+        }
         @if (_notFound)
         {
             <MudAlert Severity="Severity.Warning">Исходное оборудование для копирования не найдено.</MudAlert>
@@ -51,7 +82,24 @@
                 <MudAlert Severity="Severity.Error" Class="mb-3">@_validationMessage</MudAlert>
             }
 
-            <MudForm @ref="_form">
+            @if (_creationRawPending && !_restoreCreationRaw && !PreservesCreationOutcome)
+            {
+                <MudAlert Severity="Severity.Warning" data-testid="ins-input-readiness">
+                    @if (_sourceUnavailable || _draftNeedsReview)
+                    {
+                        @(_creationRawFailed ? "Не удалось восстановить ввод." : "Часть ввода ожидает восстановления.")
+                        <ClayToolbarButton Options="_retryCreationRawOptions" Disabled="@(_applyingCreationRaw || _saving)"
+                                           OnClick="() => RestoreCreationRawAsync(pendingOnly: true)" />
+                    }
+                    else
+                    {
+                        @(_creationRawFailed ? "Не удалось восстановить ввод. Нажмите «Обновить» для повтора." : RawPendingMessage)
+                    }
+                </MudAlert>
+            }
+
+            <MudForm @key="_operationVersion" @ref="_form" data-draft-scope="@CreationScope" inert="@(_saving || _creationRecoveryBusy || _creationUncertain || _createdEquipmentId is not null)">
+                <ClayEditorFocusScope Label="Поля нового оборудования" Ready="@CreationFocusReady" AdvanceOnEnter="true">
                 <div class="equipment-ins-fields">
                     <div class="equipment-ins-row">
                         <span class="equipment-ins-label">Дата поступления:</span>
@@ -86,6 +134,7 @@
                                     ValueChanged="OnModelIdChanged"
                                     SelectedItem="_selectedModel"
                                     SelectedItemChanged="OnModelChangedAsync"
+                                    AdvancedSearch="ModelAdvancedSearch" ViewItem="ModelViewItem"
                                     Options="_modelOptions" />
                     </div>
                     <div class="equipment-ins-row">
@@ -107,11 +156,11 @@
                                 <ClayTextBox Value="@_model.MacAddress" ValueChanged="@(value => OnMacChanged(value, 1))" Options="_macOptions" />
                                 @if (MacCount > 1)
                                 {
-                                    <ClayTextBox Value="@_model.MacAddress2" ValueChanged="@(value => OnMacChanged(value, 2))" Options="_macOptions" />
+                                    <ClayTextBox Value="@_model.MacAddress2" ValueChanged="@(value => OnMacChanged(value, 2))" Options="_macSecondOptions" />
                                 }
                                 @if (MacCount > 2)
                                 {
-                                    <ClayTextBox Value="@_model.MacAddressIlo" ValueChanged="@(value => OnMacChanged(value, 3))" Options="_macOptions" />
+                                    <ClayTextBox Value="@_model.MacAddressIlo" ValueChanged="@(value => OnMacChanged(value, 3))" Options="_macIloOptions" />
                                 }
                             </div>
                         </div>
@@ -155,6 +204,7 @@
                                     TextSelector="@(item => item.Name)"
                                     Value="_model.LocationId"
                                     ValueChanged="OnLocationChanged"
+                                    AdvancedSearch="LocationAdvancedSearch" ViewItem="LocationViewItem"
                                     Options="_locationOptions" />
                         <div class="equipment-ins-row equipment-ins-note-row">
                             <span class="equipment-ins-label">Примечание расположения:</span>
@@ -200,7 +250,7 @@
                             <div class="equipment-ins-row equipment-ins-accounting-row">
                                 <span class="equipment-ins-label">Арендатор:</span>
                                 <ClaySelect TItem="PersonLookup" TValue="int?"
-                                            DataSource="PersonSource"
+                                            DataSource="TenantSource"
                                             ValueSelector="@(item => (int?)item.Id)"
                                             TextSelector="@(item => item.Name)"
                                             @bind-Value="_model.TenantId"
@@ -218,6 +268,7 @@
                         <ClayTextArea @bind-Value="_model.Description" Options="_descriptionOptions" />
                     </div>
                 </div>
+                </ClayEditorFocusScope>
             </MudForm>
         }
     </ChildContent>

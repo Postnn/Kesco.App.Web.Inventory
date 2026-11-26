@@ -1,10 +1,12 @@
 @inherits EquipmentEditorDialogBase<EquipmentAccountDialogResult>
 @using Clayzor.Lib.Web.Controls.Components.Form
+@using Kesco.App.Web.Inventory.Components.Layout
 @inject Kesco.App.Web.Inventory.Services.EquipmentFormService Service
 
 <MudDialog>
     <TitleContent>@(IsEdit ? "Изменение учётной записи" : "Новая учётная запись")</TitleContent>
     <DialogContent>
+        <ClayFormActions Form="InventoryFormHelp.EquipmentAccount" />
         @if (!string.IsNullOrWhiteSpace(_error))
         {
             <MudAlert Severity="Severity.Error">@_error</MudAlert>
@@ -30,9 +32,9 @@
         <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
         @if (_readFailed)
         {
-            <ClayToolbarButton Options="_retryButtonOptions" OnClick="LoadSecretsAndRawAsync" Disabled="@_loading" />
+            <ClayToolbarButton Options="_retryButtonOptions" OnClick="LoadSecretsAndRawAsync" Disabled="@(_loading || _readinessInFlight)" />
         }
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || _readFailed || _saving || _saveBlocked)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || _readinessInFlight || _readFailed || _saving || _saveBlocked)" />
     </DialogActions>
 </MudDialog>
 
@@ -45,13 +47,24 @@
     private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300, DraftKey = "account.notes" };
     private bool _loading = true;
     private bool _readFailed;
+    private bool _readinessInFlight;
+    private bool _pendingRawRetry;
+    private bool _retryRequiresReopen;
     private int _secretReadVersion;
+    private bool _openingCaptured;
+    private bool _draftRestored;
+    private bool _versionConflict;
+    private string _openingNotes = string.Empty;
+    private byte _openingRights;
 
     /// <summary>Идентификатор оборудования.</summary>
     [Parameter] public int EquipmentId { get; set; }
 
     /// <summary>Исходный логин; null означает новую запись.</summary>
     [Parameter] public string? OriginalLogin { get; set; }
+
+    /// <summary>Непрозрачная исходная версия без пароля, сохраняемая вместе с черновиком.</summary>
+    [Parameter] public string? OriginalVersion { get; set; }
 
     /// <summary>Логин.</summary>
     [Parameter] public string Login { get; set; } = string.Empty;
@@ -68,7 +81,17 @@
     private bool IsEdit => OriginalLogin is not null;
 
     /// <inheritdoc />
-    protected override void OnParametersSet() => _loginOptions.ReadOnly = IsEdit;
+    protected override void OnParametersSet()
+    {
+        _loginOptions.ReadOnly = IsEdit;
+        if (_openingCaptured) return;
+        _openingNotes = Notes ?? string.Empty;
+        _openingRights = LimitedRights == true ? (byte)1 : (byte)0;
+        _openingCaptured = true;
+    }
+
+    /// <inheritdoc />
+    protected override void OnDraftStateRestored() => _draftRestored = true;
 
     /// <inheritdoc />
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -80,13 +103,28 @@
 
     private async Task LoadSecretsAndRawAsync()
     {
+        if (_readinessInFlight || _saving || !IsEditorCurrent())
+            return;
+        _readinessInFlight = true;
+        try { await ReadAuthorizedInputAsync(); }
+        finally
+        {
+            _readinessInFlight = false;
+            if (IsEditorCurrent())
+                StateHasChanged();
+        }
+    }
+
+    private async Task ReadAuthorizedInputAsync()
+    {
         var version = ++_secretReadVersion;
         var equipmentId = EquipmentId;
         var originalLogin = OriginalLogin;
         _loading = true;
         _readFailed = false;
         _error = null;
-        Password = string.Empty;
+        if (!_pendingRawRetry)
+            Password = string.Empty;
         _passwordOptions.Disabled = true;
         _passwordOptions.ReadOnly = true;
         if (EditorContext is not null)
@@ -95,24 +133,38 @@
         {
             try
             {
-                var password = await Service.GetAccountPasswordAsync(equipmentId, originalLogin!);
+                var snapshot = await Service.GetAccountEditSnapshotAsync(equipmentId, originalLogin!);
                 if (!IsSecretReadCurrent(version, equipmentId, originalLogin))
                     return;
-                Password = password;
+                if (!_pendingRawRetry || _retryRequiresReopen)
+                    Password = snapshot.Password;
+                if (!_draftRestored && OriginalVersion is null && snapshot.LimitedRights == _openingRights &&
+                    string.Equals(snapshot.Notes, _openingNotes, StringComparison.Ordinal))
+                    OriginalVersion = snapshot.ExpectedVersion;
+                _versionConflict = OriginalVersion is null || OriginalVersion != snapshot.ExpectedVersion;
             }
             catch (Exception ex) when (ex is UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
             {
                 if (!IsSecretReadCurrent(version, equipmentId, originalLogin))
                     return;
                 Password = string.Empty;
+                _retryRequiresReopen |= _pendingRawRetry;
                 _readFailed = true;
                 _error = ex is UnauthorizedAccessException or InvalidOperationException
+                    and not Clayzor.Lib.Entities.Inventory.EquipmentAccountStorageException
                     ? ex.Message
                     : "Не удалось прочитать пароль. Повторите чтение; сохранение заблокировано.";
             }
         }
         if (!IsSecretReadCurrent(version, equipmentId, originalLogin))
             return;
+        if (!_readFailed && _pendingRawRetry && (_retryRequiresReopen || _versionConflict))
+        {
+            _retryRequiresReopen = true;
+            _readFailed = true;
+            Password = string.Empty;
+            _error = "Ввод сохранён в черновике. Откройте редактор для восстановления и сверки.";
+        }
         _loading = false;
         _passwordOptions.Disabled = _readFailed;
         _passwordOptions.ReadOnly = _readFailed;
@@ -126,9 +178,20 @@
         try
         {
             if (EditorContext is not null)
-                await EditorContext.ApplyRawAsync();
+            {
+                if (_pendingRawRetry)
+                    await EditorContext.ApplyPendingRawAsync();
+                else
+                    await EditorContext.ApplyRawAsync();
+            }
             if (!IsSecretReadCurrent(version, equipmentId, originalLogin))
                 return;
+            if (_versionConflict)
+            {
+                _saveBlocked = true;
+                _error = "Исходная версия учётной записи не подтверждена. Ввод сохранён. Сверьте актуальные данные перед записью.";
+                await InvokeAsync(StateHasChanged);
+            }
             if (EditorContext is not null)
                 await EditorContext.ReportReadinessAsync(EquipmentEditorReadiness.Ready);
         }
@@ -136,11 +199,16 @@
         {
             if (!IsSecretReadCurrent(version, equipmentId, originalLogin))
                 return;
-            Password = string.Empty;
+            _pendingRawRetry = EditorContext?.PendingRawRestore is not null;
+            _retryRequiresReopen |= _pendingRawRetry && _versionConflict;
+            if (!_pendingRawRetry || _versionConflict || _retryRequiresReopen)
+                Password = string.Empty;
             _readFailed = true;
             _passwordOptions.Disabled = true;
             _passwordOptions.ReadOnly = true;
-            _error = $"Не удалось восстановить введённый пароль. {ex.Message}";
+            _error = _retryRequiresReopen || _versionConflict
+                ? "Ввод сохранён в черновике. Откройте редактор для восстановления и сверки."
+                : "Не удалось восстановить все поля. Повторите восстановление.";
             if (EditorContext is not null)
                 await EditorContext.ReportReadinessAsync(EquipmentEditorReadiness.Failed);
             await InvokeAsync(StateHasChanged);
@@ -153,7 +221,7 @@
     private void OnLoginChanged(string? value)
     {
         Login = value ?? string.Empty;
-        if (!_readFailed)
+        if (!_readFailed && !_versionConflict)
             _error = null;
     }
 
@@ -164,11 +232,11 @@
             _error = "Контекст оборудования изменился. Откройте форму повторно.";
             return Task.CompletedTask;
         }
-        if (_loading || _readFailed)
+        if (_loading || _readinessInFlight || _readFailed || _versionConflict)
             return Task.CompletedTask;
-        Login = Login.Trim();
+        Login = OriginalLogin ?? Login.Trim();
         var draft = new EquipmentAccountDialogResult(
-            Login, Password, LimitedRights == true, Notes ?? string.Empty);
+            Login, Password, LimitedRights == true, Notes ?? string.Empty) { OriginalVersion = OriginalVersion };
         return ApplyAsync(draft, () => Login.Length == 0 ? "Укажите логин." : null);
     }
 }

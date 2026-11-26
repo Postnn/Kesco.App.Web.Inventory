@@ -1,10 +1,14 @@
 @inherits EquipmentEditorDialogBase<EquipmentComputerSnapshot>
+@implements IEquipmentDeferredRawRestore
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
+@using Kesco.App.Web.Inventory.Components.Layout
 
 <MudDialog>
     <TitleContent>Конфигурация компьютера</TitleContent>
     <DialogContent>
+        <ClayFormActions Form="InventoryFormHelp.EquipmentComputer" />
+        @RawRestoreNotice
         @if (!string.IsNullOrWhiteSpace(_loadError))
         {
             <MudAlert Severity="Severity.Error">@_loadError</MudAlert>
@@ -108,7 +112,7 @@
     </DialogContent>
     <DialogActions>
         <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked || _loadError is not null)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked || RawRestoreBlocked || _loadError is not null)" />
     </DialogActions>
 </MudDialog>
 

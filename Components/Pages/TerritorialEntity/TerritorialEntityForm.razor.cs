@@ -39,22 +39,27 @@ public partial class TerritorialEntityForm
         _id, TerritorialEntityRoutes.PhoneListContext)).AbsoluteUri;
 
     protected override string FormKey => "territory-form";
-    protected override string EntityKey => _id.ToString(CultureInfo.InvariantCulture);
+    protected override string EntityKey => _id > 0 ? _id.ToString(CultureInfo.InvariantCulture)
+        : $"new:{(TerritorialEntityRoutes.TryPositiveId(QueryParent, out var parent) ? parent : 0)}";
     protected override string RouteKey => $"{QueryId}:{QueryParent}";
-    protected override bool Editable => _recordAvailable && _id > 0 && Access.TerritoryUpdate;
+    protected override bool Editable => _recordAvailable && (_id == 0 ? Access.TerritoryInsert : Access.TerritoryUpdate);
+    private bool CanDeleteTerritory => _recordAvailable && _id > 0 && Access.TerritoryDelete;
+    protected override bool CanRegisterDraft => Editable || CanDeleteTerritory;
     protected override bool SupportsEditorCancellation => true;
-    protected override DraftRowVersion? ReadDraftRowVersion() => Clean is { } current ? VersionOf(current.Record) : null;
+    protected override DraftRowVersion? ReadDraftRowVersion() => Clean?.Record is { Id: > 0 } current ? VersionOf(current) : null;
 
     protected override async Task<FreshEditorState?> ReadFreshEditorAsync(
         Clayzor.Lib.Entities.Inventory.Employee actor, CancellationToken token)
     {
-        if (!TerritorialEntityRoutes.TryPositiveId(QueryId, out var id) || id != _id) return null;
+        if (!TerritorialEntityRoutes.TryTerritoryId(QueryId, out var id) || id != _id) return null;
         var access = await TerritorialEntityData.ReadAccessAsync(Db, actor, token);
-        var record = await TerritorialEntityData.ReadTerritoryAsync(Db, id, token);
+        var record = id == 0
+            ? await ReadNewTerritoryAsync(QueryParent, access, token)
+            : await TerritorialEntityData.ReadTerritoryAsync(Db, id, token);
         if (record is null) return null;
         var types = (await TerritorialEntityData.ReadTerritoryTypesAsync(Db, token)).ToArray();
         token.ThrowIfCancellationRequested();
-        return new FreshEditorState(ToFormState(record), access, VersionOf(record), () => ApplyTypes(types));
+        return new FreshEditorState(ToFormState(record), access, id > 0 ? VersionOf(record) : null, () => ApplyTypes(types));
     }
 
     private static FormState ToFormState(TerritorialEntityRecord record) =>
@@ -74,7 +79,7 @@ public partial class TerritorialEntityForm
         new("Record.CountryCode", "Тел. код страны", "territory.country-code"),
         new("Record.Direction", "Направление", "territory.direction"),
     ];
-    protected override bool CanReadMissingDraft => Access.TerritoryUpdate && TerritorialEntityRoutes.TryPositiveId(QueryId, out _);
+    protected override bool CanReadMissingDraft => (Access.TerritoryUpdate || Access.TerritoryDelete) && TerritorialEntityRoutes.TryPositiveId(QueryId, out _);
 
     protected override async Task<CompareRead> ReadForComparisonAsync(FormState proposed, Clayzor.Lib.Entities.Inventory.Employee actor, CancellationToken token)
     {
@@ -93,27 +98,15 @@ public partial class TerritorialEntityForm
             Message = QueryId is null ? "Код территории не передан." : "Некорректный код территории.";
             return null;
         }
-        if (id == 0)
-        {
-            if (queryParent is not null &&
-                (!TerritorialEntityRoutes.TryPositiveId(queryParent, out var parent) ||
-                 await TerritorialEntityData.FindTerritoryAsync(Db, parent, routeToken) is null))
-            {
-                routeToken.ThrowIfCancellationRequested();
-                Message = "Родительская территория не найдена или недоступна.";
-                return null;
-            }
-            routeToken.ThrowIfCancellationRequested();
-            Message = "Создание территории пока недоступно.";
-            return null;
-        }
         routeToken.ThrowIfCancellationRequested();
         _id = id;
-        var record = await TerritorialEntityData.ReadTerritoryAsync(Db, id, routeToken);
+        var record = id == 0
+            ? await ReadNewTerritoryAsync(queryParent, Access, routeToken)
+            : await TerritorialEntityData.ReadTerritoryAsync(Db, id, routeToken);
         routeToken.ThrowIfCancellationRequested();
         if (record is null)
         {
-            Message = "Территория не найдена или недоступна.";
+            Message ??= "Территория не найдена или недоступна.";
             return null;
         }
         var types = await TerritorialEntityData.ReadTerritoryTypesAsync(Db, routeToken);
@@ -121,6 +114,27 @@ public partial class TerritorialEntityForm
         ApplyTypes(types.ToArray());
         if (!Editable) Message = "Карточка открыта для просмотра.";
         return ToFormState(record);
+    }
+
+    private async Task<TerritorialEntityRecord?> ReadNewTerritoryAsync(
+        string? queryParent, TerritorialEntityAccess access, CancellationToken token)
+    {
+        int? parent = null;
+        if (queryParent is not null)
+        {
+            if (!TerritorialEntityRoutes.TryPositiveId(queryParent, out var id) ||
+                await TerritorialEntityData.FindTerritoryAsync(Db, id, token) is null)
+            {
+                token.ThrowIfCancellationRequested();
+                Message = "Родительская территория не найдена или недоступна.";
+                return null;
+            }
+            parent = id;
+        }
+        if (access.TerritoryInsert)
+            return new TerritorialEntityRecord { ParentId = parent };
+        Message = "Создание территории сейчас запрещено.";
+        return null;
     }
 
     private void ApplyTypes(TerritorialEntityOption[] types)
@@ -160,15 +174,50 @@ public partial class TerritorialEntityForm
         if (!parsed) errors.Add("Код ОКСМ должен быть положительным целым числом.");
         Validation = errors;
         if (errors.Count != 0) return;
+        var creating = _id == 0;
         TerritorialEntityRecord? saved = null;
-        if (!await ExecuteWriteAsync("territory.update", async principal =>
-                saved = await TerritorialEntityData.UpdateTerritoryAsync(Db, principal, original.Record, record, Lifetime))) return;
-        Accept(new(saved!, saved!.CountryClassification?.ToString(CultureInfo.InvariantCulture)));
-        await AfterDraftCleanupAsync(async () =>
-        {
-            await RefreshOpenerAsync();
-            if (close) await CloseAsync();
-        });
+        if (!await ExecuteWriteAsync(creating ? "territory.create" : "territory.update", async principal =>
+                saved = creating
+                    ? await TerritorialEntityData.CreateTerritoryAsync(Db, principal, record, Lifetime)
+                    : await TerritorialEntityData.UpdateTerritoryAsync(Db, principal, original.Record, record, Lifetime),
+                creating ? () => saved!.Id : null))
+            return;
+        Accept(ToFormState(saved!));
+        await AfterDraftCleanupAsync(() => CompleteWriteAsync(creating && !close ? saved!.Id : null, close));
+    }
+
+    private async Task DeleteTerritoryAsync()
+    {
+        if (!CanDeleteTerritory || !CanCommit || Dirty || Clean is not { } original) return;
+        var generation = EditorGeneration;
+        if (!await ConfirmAsync("Удаление территории", $"Удалить территорию «{original.Record.Name}»?") ||
+            generation != EditorGeneration || !CanDeleteTerritory || !CanCommit || Dirty || !ReferenceEquals(Clean, original))
+            return;
+
+        if (!await ExecuteWriteAsync("territory.delete",
+                principal => TerritorialEntityData.DeleteTerritoryAsync(Db, principal, original.Record, Lifetime),
+                () => original.Record.Id))
+            return;
+        _recordAvailable = false;
+        await AfterDraftCleanupAsync(() => CompleteWriteAsync(null, close: true));
+    }
+
+    protected override Func<Task>? RestoreConfirmedResult(string operation, int resultId) => operation switch
+    {
+        "territory.create" when _id == 0 && resultId > 0 => () => CompleteWriteAsync(resultId, close: false),
+        "territory.delete" when _id > 0 && _id == resultId => () => CompleteWriteAsync(null, close: true),
+        _ => null,
+    };
+
+    private async Task CompleteWriteAsync(int? createdId, bool close)
+    {
+        var generation = EditorGeneration;
+        await RefreshOpenerAsync();
+        if (generation != EditorGeneration) return;
+        if (close)
+            await CloseAsync();
+        else if (createdId is int id)
+            NavigateAfterConfirmedWrite(TerritorialEntityRoutes.TerritoryEdit(id));
     }
 
     [Inject] private IConfiguration Configuration { get; set; } = null!;

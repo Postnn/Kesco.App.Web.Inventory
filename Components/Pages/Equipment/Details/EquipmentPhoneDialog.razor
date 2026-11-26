@@ -1,27 +1,53 @@
 @inherits EquipmentEditorDialogBase<EquipmentPhoneReturnResult>
+@implements IEquipmentDeferredRawRestore
 @using Clayzor.Lib.Web.Controls.Components.Form
+@using Kesco.App.Web.Inventory.Components.Pages.Telefon
+@using Kesco.App.Web.Inventory.Components.Layout
+@inject NavigationManager Navigation
 
 <MudDialog>
     <TitleContent>Срок возврата телефонного номера</TitleContent>
     <DialogContent>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Срок возврата:</span>
-            <ClayDatePicker @bind-Value="ReturnDate" Options="_dateOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Примечание:</span>
-            <ClayTextBox @bind-Value="Notes" Options="_notesOptions" />
-        </div>
+        <ClayFormActions Form="@OwnerHelp" />
+        @if (TelDraft is null)
+        {
+            @RawRestoreNotice
+            @Fields
+        }
+        else
+        {
+            <div class="@TelDraft.RootClass" data-draft-scope="@TelDraft.Scope" inert="@TelDraft.Busy">
+                @Fields
+            </div>
+        }
+        @if (TelDraft?.Error is { } message)
+        {
+            <MudAlert Severity="Severity.Error">@message</MudAlert>
+            @if (TelDraft.NeedsRawRestore)
+            {
+                <ClayToolbarButton Options="_restoreOptions" OnClick="TelDraft.RestoreAsync" Disabled="TelDraft.Busy" />
+            }
+        }
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelEditorAsync" Disabled="@(TelDraft?.Busy == true)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(TelDraft is null ? _saving || _saveBlocked || RawRestoreBlocked : !TelDraft.CanApply)" />
     </DialogActions>
 </MudDialog>
 
 @code {
+    private ClayFormHelp? OwnerHelp
+    {
+        get
+        {
+            var form = InventoryFormHelp.Find(Navigation.ToBaseRelativePath(Navigation.Uri));
+            return form == InventoryFormHelp.Equipment || form == InventoryFormHelp.Tel ? form : null;
+        }
+    }
+
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
+    private readonly ClayToolbarButtonOptions _restoreOptions = new() { Text = "Повторить восстановление ввода" };
     private readonly ClayDatePickerOptions _dateOptions = new() { DraftKey = "phone.return-date" };
     private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300, DraftKey = "phone.notes" };
 
@@ -31,5 +57,49 @@
     /// <summary>Примечание к сроку возврата.</summary>
     [Parameter] public string Notes { get; set; } = string.Empty;
 
-    private Task Apply() => ApplyAsync(new EquipmentPhoneReturnResult(ReturnDate, Notes ?? string.Empty), () => null);
+    /// <summary>Область черновика, когда диалог открыт формой Tel.</summary>
+    [Parameter] public TelRelationDraftSession<EquipmentPhoneReturnResult>? TelDraft { get; set; }
+
+    private RenderFragment Fields => @<text>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Срок возврата:</span>
+            <ClayDatePicker @bind-Value="ReturnDate" Options="_dateOptions" />
+        </div>
+        <div class="equipment-ins-row">
+            <span class="equipment-ins-label">Примечание:</span>
+            <ClayTextBox @bind-Value="Notes" Options="_notesOptions" />
+        </div>
+    </text>;
+
+    /// <inheritdoc />
+    protected override void OnParametersSet()
+    {
+        if (TelDraft is null)
+            return;
+        _dateOptions.DraftKey = TelDraft.Scope + ".return-date";
+        _notesOptions.DraftKey = TelDraft.Scope + ".notes";
+    }
+
+    /// <inheritdoc />
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (TelDraft is null)
+            await base.OnAfterRenderAsync(firstRender);
+        else if (await TelDraft.RenderedAsync(new EquipmentPhoneReturnResult(ReturnDate, Notes ?? string.Empty)) && !_disposed)
+            StateHasChanged();
+    }
+
+    private async Task CancelEditorAsync()
+    {
+        if (TelDraft is null || await TelDraft.CancelAsync())
+            Cancel();
+    }
+
+    private async Task Apply()
+    {
+        var value = new EquipmentPhoneReturnResult(ReturnDate, Notes ?? string.Empty);
+        if (TelDraft is not null && !await TelDraft.ApplyAsync(value))
+            return;
+        await ApplyAsync(value, () => null);
+    }
 }

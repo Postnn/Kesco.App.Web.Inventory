@@ -1,26 +1,24 @@
-using System.Text.Json;
+using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Web.Controls.Components;
 using Clayzor.Lib.Web.Controls.Components.Form;
 using Clayzor.Lib.Web.Controls.Components.Select;
+using Clayzor.Lib.Web.Controls.Services;
 using Microsoft.AspNetCore.Components;
-using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.JSInterop;
 using MudBlazor;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
 
 /// <summary>Создание и редактирование модели оборудования.</summary>
-public partial class ModelEquipmentForm : IDisposable
+public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
 {
-    private const int InventorySpecialistRoleId = 43;
-    private const int DutyEngineerRoleId = 102;
-    private const int PhoneEquipmentTypeId = 30;
 
     private readonly CancellationTokenSource _pageCts = new();
     private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "model-equipment-form" };
     private readonly ClaySelectOptions _typeOptions = new()
     {
+        DraftKey = "model.type",
         Required = true,
         RequiredError = "Выберите тип оборудования",
         AutoSelectSingle = true,
@@ -29,22 +27,23 @@ public partial class ModelEquipmentForm : IDisposable
     };
     private readonly ClaySelectOptions _resourceOptions = new()
     {
+        DraftKey = "model.resource",
         AutoSelectSingle = true,
         AlwaysShowAdvancedSearch = true,
         Placeholder = "Выберите название ресурса",
         CreateItemText = "Создать ресурс",
     };
-    private readonly ClayTextBoxOptions _modelNameOptions = new() { Required = true, RequiredError = "Укажите модель", MaxLength = 100 };
-    private readonly ClayTextBoxOptions _partNumberOptions = new() { MaxLength = 50 };
-    private readonly ClayTextBoxOptions _cpuOptions = new() { MaxLength = 50 };
-    private readonly ClayTextBoxOptions _networkNameOptions = new() { MaxLength = 50 };
-    private readonly ClayTextBoxOptions _lifeTimeOptions = new() { MaxLength = 50 };
-    private readonly ClayTextAreaOptions _driverOptions = new() { MaxLength = 300, Lines = 3 };
-    private readonly ClayTextAreaOptions _descriptionOptions = new() { MaxLength = 300, Lines = 2 };
-    private readonly ClayNumberOptions _monitorSizeOptions = new() { Precision = 1, Min = 0, Step = 0.1m };
-    private readonly ClayNumberOptions _memoryBanksOptions = new() { Precision = 0, Min = 0 };
-    private readonly ClayDropDownListOptions _networkSelectOptions = new();
-    private readonly ClayDropDownListOptions _memoryTypeOptions = new();
+    private readonly ClayTextBoxOptions _modelNameOptions = new() { DraftKey = "model.name", Required = true, RequiredError = "Укажите модель", MaxLength = 100 };
+    private readonly ClayTextBoxOptions _partNumberOptions = new() { DraftKey = "model.pn", MaxLength = 50 };
+    private readonly ClayTextBoxOptions _cpuOptions = new() { DraftKey = "model.cpu", MaxLength = 50 };
+    private readonly ClayTextBoxOptions _networkNameOptions = new() { DraftKey = "model.net-name", MaxLength = 50 };
+    private readonly ClayTextBoxOptions _lifeTimeOptions = new() { DraftKey = "model.lifetime", MaxLength = 50 };
+    private readonly ClayTextAreaOptions _driverOptions = new() { DraftKey = "model.driver", MaxLength = 300, Lines = 3 };
+    private readonly ClayTextAreaOptions _descriptionOptions = new() { DraftKey = "model.notes", MaxLength = 300, Lines = 2 };
+    private readonly ClayNumberOptions _monitorSizeOptions = new() { DraftKey = "model.monitor", Precision = 1, Min = 0, Step = 0.1m };
+    private readonly ClayNumberOptions _memoryBanksOptions = new() { DraftKey = "model.memory-banks", Precision = 0, Min = 0 };
+    private readonly ClayDropDownListOptions _networkSelectOptions = new() { DraftKey = "model.net" };
+    private readonly ClayDropDownListOptions _memoryTypeOptions = new() { DraftKey = "model.memory-type" };
     private readonly ClayToolbarButtonOptions _okOptions = new()
     {
         Text = "OK",
@@ -86,6 +85,7 @@ public partial class ModelEquipmentForm : IDisposable
     private IReadOnlyList<NetworkOption> _networkOptions = [];
     private int? _equipmentTypeId;
     private bool _sortTypesByName;
+    private Employee? CurrentUser;
     private bool _canEdit;
     private bool _isDutyEngineer;
     private bool _loading = true;
@@ -96,8 +96,7 @@ public partial class ModelEquipmentForm : IDisposable
     private bool _disposed;
     private int _loadVersion;
     private (int Id, int InitialType) _loadedKey = (-1, 0);
-    private string _originalSnapshot = string.Empty;
-    private int _originalTypeId;
+    private EquipmentModelWriteBaseline? _writeBaseline;
     private string? _validationMessage;
 
     /// <summary>Идентификатор редактируемой модели.</summary>
@@ -118,12 +117,13 @@ public partial class ModelEquipmentForm : IDisposable
     private bool ShowMultimedia => ShowMonitor || _selectedType?.HasComputerCharacteristics > 0;
     private bool ShowComputer => _selectedType?.HasComputerCharacteristics > 0;
     private bool ShowNetwork => _selectedType?.MacAddressCount > 0;
-    private bool ShowPhoneTemplate => _model?.Id > 0 && _selectedType?.Id == PhoneEquipmentTypeId && _isDutyEngineer;
-    private bool IsModified => _loaded && _model is not null && _originalSnapshot != Snapshot(_model);
-    private bool CanSave => IsModified && _canEdit && !_loading && !_saving;
+    private bool ShowPhoneTemplate => _model?.Id > 0 && _selectedType?.Id == (int)ТипыОборудования.IP_телефон && _isDutyEngineer;
+    private bool IsModified => _loaded && _model is not null && _editorOriginal is not null && _editorOriginal.Fields != ModelEditorFields.From(_model);
+    private bool CanSave => IsModified && _canEdit && !_loading && !_saving && !WriteBlocked;
     private decimal? MonitorSize => _model is null || _model.MonitorSize == 0 ? null : (decimal)_model.MonitorSize;
-    private string UsageText => $"В базе данных сохранено {_usage.Total} единиц оборудования данной модели" +
-                                (_usage.WrittenOff > 0 ? $", из них списано {_usage.WrittenOff}." : ".");
+    private string EquipmentUsageUrl(int modelId) => Navigation.GetUriWithQueryParameters(Navigation.BaseUri,
+        new Dictionary<string, object?> { ["id"] = (int)Запросы.Оборудование, ["modelId"] = modelId });
+    private string UsageSuffix => _usage.WrittenOff > 0 ? $", из них списано {_usage.WrittenOff}." : ".";
     private string? ChangedByUrl => _model?.ChangedById is > 0 && !string.IsNullOrWhiteSpace(Configuration["URI_user_form"])
         ? AppendQuery(Configuration["URI_user_form"]!, $"id={_model.ChangedById}")
         : null;
@@ -134,14 +134,30 @@ public partial class ModelEquipmentForm : IDisposable
     private Func<ResourceLookup, Task>? ResourceViewItem =>
         !string.IsNullOrWhiteSpace(Configuration["URI_resource_form"]) ? OpenResourceViewAsync : null;
 
+    /// <inheritdoc />
+    protected override void OnInitialized() => _entityFormOptions.Class += $" {_journalRoot}";
+
     /// <summary>Загружает запись после рендера и повторно загружает её при смене параметров URL.</summary>
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         var key = (Id: Id, InitialType: Id > 0 ? 0 : InitialTypeId);
-        if (_loadedKey == key)
+        if (_loadedKey != key)
+        {
+            if (_saving || _journalBusy)
+                return;
+            _loadedKey = key;
+            await LoadCurrentAsync(key.Id, key.InitialType);
             return;
-        _loadedKey = key;
-        await LoadCurrentAsync(key.Id, key.InitialType);
+        }
+
+        if (_journalBusy) return;
+
+        if (_localRecovery is { RestoreRaw: true } recovery)
+            await RestoreReadOnlyRawAsync(recovery);
+        else if (_restoreRawRequested)
+            await RestoreRawInputAsync();
+        else
+            await PersistEditedInputAsync();
     }
 
     private async Task LoadCurrentAsync(int id, int initialTypeId)
@@ -150,6 +166,10 @@ public partial class ModelEquipmentForm : IDisposable
         _loading = true;
         _loaded = false;
         _notFound = false;
+        _canEdit = false;
+        _writeBaseline = null;
+        CurrentUser = null;
+        _validationMessage = null;
         _model = null;
         _selectedType = null;
         _equipmentTypeId = null;
@@ -157,7 +177,27 @@ public partial class ModelEquipmentForm : IDisposable
         await Task.Delay(100);
         try
         {
+            await ResetReadOnlyRecoveryAsync();
+            await ResetJournalAsync();
             await LoadDataAsync(id, initialTypeId, version);
+            if (_disposed || version != _loadVersion)
+                return;
+            if (_loaded && _canEdit)
+                await InitializeJournalAsync(id, initialTypeId, version);
+            else if (id > 0 && (_notFound || _loaded))
+                await LoadReadOnlyRecoveryAsync(id, version);
+        }
+        catch (OperationCanceledException) when (_disposed || version != _loadVersion) { }
+        catch (Microsoft.Data.SqlClient.SqlException error) when (error.Number == 229 &&
+            id > 0 && !_disposed && version == _loadVersion && !_loaded)
+        {
+            _validationMessage = "Недостаточно прав для чтения модели оборудования.";
+            await LoadReadOnlyRecoveryAsync(id, version);
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _loadVersion)
+                _validationMessage = "Не удалось загрузить модель или подтвердить текущего сотрудника.";
         }
         finally
         {
@@ -169,46 +209,54 @@ public partial class ModelEquipmentForm : IDisposable
         }
     }
 
-    private async Task LoadDataAsync(int id, int initialTypeId, int version)
+    private async Task LoadDataAsync(int id, int initialTypeId, int version, Func<Task<bool>>? canPublish = null,
+        Func<EquipmentModel, Employee?, Task<bool>>? acceptReset = null, CancellationToken? cancellationToken = null)
     {
+        var token = cancellationToken ?? _pageCts.Token;
         var model = id > 0
-            ? await Service.GetModelAsync(id)
+            ? await EquipmentModel.GetForEditAsync(Db, id, token)
             : new EquipmentModel { EquipmentTypeId = initialTypeId };
         if (version != _loadVersion || _disposed)
             return;
+        if (canPublish is not null && (!await canPublish() || _disposed || version != _loadVersion))
+            return;
         if (model is null)
         {
-            _notFound = true;
+            if (acceptReset is null) _notFound = true;
             return;
         }
 
         var type = model.EquipmentTypeId > 0
-            ? await EquipmentTypeSource.GetByIdAsync(model.EquipmentTypeId, _pageCts.Token)
+            ? await EquipmentTypeSource.GetByIdAsync(model.EquipmentTypeId, token)
             : null;
         if (version != _loadVersion || _disposed)
             return;
-        var memoryTypes = await MemoryTypeSource.GetAllAsync(_pageCts.Token);
+        var memoryTypes = await MemoryTypeSource.GetAllAsync(token);
         if (version != _loadVersion || _disposed)
             return;
-        var canEdit = await Service.HasRoleAsync(InventorySpecialistRoleId);
+        var actor = await Employee.GetCurrentWithRolesAsync(Db, await ReadPrincipalAsync(), token);
         if (version != _loadVersion || _disposed)
             return;
-        var isDutyEngineer = await Service.HasRoleAsync(DutyEngineerRoleId);
-        if (version != _loadVersion || _disposed)
-            return;
-        var usage = id > 0 ? await Service.GetUsageAsync(id) : new EquipmentModelUsage();
+        var usage = id > 0 ? await EquipmentModel.GetUsageAsync(Db, id, cancellationToken: token) : new EquipmentModelUsage();
         if (version != _loadVersion || _disposed)
             return;
 
+        if (canPublish is not null && (!await canPublish() || _disposed || version != _loadVersion))
+            return;
+        if (acceptReset is not null && (model.Id != id || model.EquipmentTypeId > 0 && type?.Id != model.EquipmentTypeId ||
+            !await acceptReset(model, actor) || _disposed || version != _loadVersion || token.IsCancellationRequested ||
+            Id != id || id <= 0 && InitialTypeId != initialTypeId))
+            return;
         _model = model;
         _selectedType = type;
         _equipmentTypeId = model.EquipmentTypeId > 0 ? model.EquipmentTypeId : null;
         _memoryTypes = [new MemoryType { Id = 0, Name = "—" }, .. memoryTypes.Where(item => item.Id != 0)];
-        _canEdit = canEdit;
-        _isDutyEngineer = isDutyEngineer;
+        CurrentUser = actor;
+        _canEdit = actor?.HasRole(Роли.Специалист_по_инвентаризации_оборудования) == true;
+        _isDutyEngineer = actor?.HasRole(Роли.Дежурный_инженер) == true;
         _usage = usage;
-        _originalTypeId = model.EquipmentTypeId;
-        _originalSnapshot = Snapshot(model);
+        _writeBaseline = _canEdit ? model.CaptureWriteBaseline() : null;
+        CaptureEditorOriginal(model);
         _validationMessage = null;
         _loaded = true;
         UpdateTypeState(false);
@@ -254,8 +302,7 @@ public partial class ModelEquipmentForm : IDisposable
                 _model.NetworkInterfaces = 0;
             if (_model.NetworkInterfaces == 0)
                 _model.NetworkName = string.Empty;
-            if (_selectedType?.Id != PhoneEquipmentTypeId)
-                _model.PhoneTemplate = string.Empty;
+
         }
 
         _networkOptions = Enumerable.Range(0, (_selectedType?.MacAddressCount ?? 0) + 1)
@@ -301,17 +348,21 @@ public partial class ModelEquipmentForm : IDisposable
 
     private async Task SaveAsync(bool closeAfterSave)
     {
-        if (_model is null || _saving || !_canEdit)
+        if (_model is null || CurrentUser is not { } actor || _saving || !_canEdit || WriteBlocked || _journal is not { } registration)
             return;
         if (!IsModified)
         {
             if (closeAfterSave)
-                await CloseAsync();
+                await CancelAsync();
             return;
         }
 
         var model = _model;
+        var baseline = _writeBaseline;
+        var route = (Id, InitialTypeId);
         var version = ++_loadVersion;
+        var dispatched = false;
+        var noEffect = false;
         _saving = true;
         _validationMessage = null;
         StateHasChanged();
@@ -326,9 +377,12 @@ public partial class ModelEquipmentForm : IDisposable
                 if (!IsCurrentSave(model, version) || !_form.IsValid)
                     return;
             }
-            if (!ValidateBusinessRules(model))
+            if (model.Validate() is { } validation)
+            {
+                _validationMessage = validation;
                 return;
-            if (await Service.HasDuplicateAsync(model))
+            }
+            if (await EquipmentModel.HasDuplicateAsync(Db, model, _pageCts.Token))
             {
                 if (IsCurrentSave(model, version))
                     _validationMessage = "Модель с таким наименованием и PN уже существует.";
@@ -336,9 +390,11 @@ public partial class ModelEquipmentForm : IDisposable
             }
             if (!IsCurrentSave(model, version))
                 return;
-            if (model.Id > 0 && _originalTypeId != model.EquipmentTypeId)
+            int? confirmedTypeId = null;
+            var requestedTypeId = model.EquipmentTypeId;
+            if (model.Id > 0 && baseline?.EquipmentTypeId != requestedTypeId)
             {
-                var usage = await Service.GetUsageAsync(model.Id, model.EquipmentTypeId);
+                var usage = await EquipmentModel.GetUsageAsync(Db, model.Id, requestedTypeId, _pageCts.Token);
                 if (!IsCurrentSave(model, version))
                     return;
                 if (usage.Total > 0)
@@ -350,83 +406,123 @@ public partial class ModelEquipmentForm : IDisposable
                         "Изменение типа изменит характеристики этого оборудования. Продолжить?");
                     if (!IsCurrentSave(model, version) || !confirmed)
                         return;
+                    confirmedTypeId = requestedTypeId;
                 }
             }
 
-            var isNew = model.Id == 0;
-            var id = await Service.SaveAsync(model);
+            var principal = await ReadPrincipalAsync();
             if (!IsCurrentSave(model, version))
                 return;
-            if (id <= 0)
-            {
-                _validationMessage = "База данных не вернула идентификатор созданной модели.";
+            var fingerprint = EditableFingerprint(model);
+            var input = SerializeEditorDraft(model);
+            var id = await model.SaveAsync(Db, principal, actor.Id, baseline, confirmedTypeId, _pageCts.Token,
+                new EquipmentModelWriteBoundary(
+                    ct => PrepareJournalAsync(registration, model.Id, baseline?.ChangedAt, fingerprint, input, actor.Id, ct),
+                    () =>
+                    {
+                        if (!IsCurrentSave(model, version) || route != (Id, InitialTypeId))
+                            throw new OperationCanceledException();
+                        dispatched = true;
+                    },
+                    () => noEffect = true));
+            _knownWrite = new KnownModelWrite(_writeAttempt!.AttemptId, id, fingerprint);
+            await FinishKnownJournalAsync(registration);
+            if (!IsCurrentSave(model, version))
                 return;
-            }
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener");
             if (!IsCurrentSave(model, version))
                 return;
+            if (await HasLaterEditorInputAsync(registration, fingerprint))
+            {
+                _lateInput = true;
+                UpdateJournalNotice();
+                return;
+            }
             if (closeAfterSave)
             {
                 await CloseAsync();
+                await ClearConfirmedReceiptAsync(registration);
                 return;
             }
-            var reloadVersion = ++_loadVersion;
-            await LoadDataAsync(id, 0, reloadVersion);
-            if (_disposed || reloadVersion != _loadVersion || !_loaded)
-                return;
-            if (isNew)
+            await PublishSavedModelAsync(id, registration);
+        }
+        catch (Exception ex) when (IsJournalError(ex) ||
+            ex is Microsoft.Data.SqlClient.SqlException or UnauthorizedAccessException)
+        {
+            if (_knownWrite is not null)
             {
-                _allowNavigation = true;
-                _loadedKey = (id, 0);
-                Navigation.NavigateTo($"/Equipment/ModelEquipmentForm?id={id}", replace: true);
+                if (!_disposed)
+                    _journalNotice = "Сохранение подтверждено. Не удалось перечитать модель, обновить окно или завершить журнал.";
             }
-        }
-        catch (Microsoft.Data.SqlClient.SqlException)
-        {
-            if (IsCurrentSave(model, version))
-                _validationMessage = "Модель не сохранена. Подробности — в сообщении базы данных.";
-        }
-        catch (InvalidOperationException ex)
-        {
-            if (IsCurrentSave(model, version))
-                _validationMessage = ex.Message;
+            else
+            {
+                await MarkWriteFailureAsync(registration, dispatched, noEffect);
+                if (IsCurrentSave(model, version) && (!dispatched || noEffect))
+                    _validationMessage = ex is Microsoft.Data.SqlClient.SqlException
+                        ? "Не удалось подготовить сохранение модели." : ex.Message;
+            }
         }
         finally
         {
-            if (!_disposed)
-            {
-                _saving = false;
+            _saving = false;
+            if (_disposed)
+                await ResetJournalAsync();
+            else
                 StateHasChanged();
-            }
+        }
+    }
+
+    private async Task PublishSavedModelAsync(int id, ClayDraftRegistration registration)
+    {
+        var fingerprint = _model is { } original ? EditableFingerprint(original) : null;
+        var version = ++_loadVersion;
+        _notFound = false;
+        await LoadDataAsync(id, 0, version, async () =>
+        {
+            _lateInput = fingerprint is not null && await HasLaterEditorInputAsync(registration, fingerprint);
+            return !_lateInput;
+        });
+        if (_disposed || version != _loadVersion)
+            return;
+        if (_lateInput)
+        {
+            UpdateJournalNotice();
+            return;
+        }
+        if (_notFound || _model?.Id != id || !_loaded)
+            throw new InvalidOperationException("Не удалось прочитать сохранённую модель.");
+        await ClearConfirmedReceiptAsync(registration);
+        if (Id != id)
+        {
+            await ResetJournalAsync();
+            await InitializeJournalAsync(id, 0, version);
+            if (_disposed || version != _loadVersion)
+                return;
+            _allowNavigation = true;
+            _loadedKey = (id, 0);
+            Navigation.NavigateTo($"/Equipment/ModelEquipmentForm?id={id}", replace: true);
         }
     }
 
     private bool IsCurrentSave(EquipmentModel model, int version) =>
         !_disposed && version == _loadVersion && ReferenceEquals(model, _model);
 
-    private bool ValidateBusinessRules(EquipmentModel model)
+    private async Task<string?> ReadPrincipalAsync()
     {
-        if (model.EquipmentTypeId <= 0 || string.IsNullOrWhiteSpace(model.Name))
-        {
-            _validationMessage = "Выберите тип и укажите наименование модели.";
-            return false;
-        }
-        if ((model.EquipmentTypeId == 1 || model.EquipmentTypeId == 2) && model.PartNumber.Trim().Length < 3)
-        {
-            _validationMessage = "Для типов 1 и 2 PN должен содержать не менее 3 символов.";
-            return false;
-        }
-        if (model.NetworkInterfaces > 0 && model.NetworkName.Trim().Length < 3)
-        {
-            _validationMessage = "При Net больше 0 название Net должно содержать не менее 3 символов.";
-            return false;
-        }
-        return true;
+        var identity = (await Authentication.GetAuthenticationStateAsync()).User.Identity;
+        return identity?.IsAuthenticated == true ? identity.Name : null;
     }
 
     private async Task RefreshAsync()
     {
-        if (_model is null || _loading || _saving)
+        if (_model is null || _loading || _saving || _journalBusy)
+            return;
+        if (_journalNotice is not null)
+        {
+            await ObserveWriteAsync();
+            return;
+        }
+        if (await ProtectEditorRefreshAsync())
             return;
         if (IsModified && !await ConfirmAsync("Обновление", "Отменить несохранённые изменения и загрузить запись повторно?"))
             return;
@@ -434,38 +530,10 @@ public partial class ModelEquipmentForm : IDisposable
         await LoadCurrentAsync(Id, InitialTypeId);
     }
 
-    private async Task CancelAsync()
-    {
-        if (IsModified && !await ConfirmAsync("Закрытие формы", "Закрыть форму без сохранения изменений?"))
-            return;
-        await CloseAsync();
-    }
-
     private async Task CloseAsync()
     {
         _allowNavigation = true;
         await JS.InvokeVoidAsync("clayModelEquipmentForm.close");
-    }
-
-    private async Task BeforeInternalNavigationAsync(LocationChangingContext context)
-    {
-        if (_allowNavigation)
-        {
-            _allowNavigation = false;
-            return;
-        }
-        if (_saving)
-        {
-            context.PreventNavigation();
-            return;
-        }
-        if (!IsModified)
-            return;
-        context.PreventNavigation();
-        if (!await ConfirmAsync("Переход на другую страницу", "Покинуть форму без сохранения изменений?"))
-            return;
-        _allowNavigation = true;
-        Navigation.NavigateTo(context.TargetLocation);
     }
 
     private async Task<bool> ConfirmAsync(string title, string message)
@@ -527,9 +595,7 @@ public partial class ModelEquipmentForm : IDisposable
         _memoryTypeOptions.ReadOnly = readOnly;
     }
 
-    private static string Snapshot(EquipmentModel model) => JsonSerializer.Serialize(model);
-
-    /// <summary>Отменяет ожидания внешних форм и блокирует применение поздних ответов.</summary>
+/// <summary>Отменяет ожидания внешних форм и блокирует применение поздних ответов.</summary>
     public void Dispose()
     {
         if (_disposed)
@@ -541,4 +607,13 @@ public partial class ModelEquipmentForm : IDisposable
     }
 
     private sealed record NetworkOption(int Id, string Name);
+
+    /// <summary>Освобождает регистрацию, сохраняя долговечное состояние попытки.</summary>
+    public async ValueTask DisposeAsync()
+    {
+        Dispose();
+        await ResetReadOnlyRecoveryAsync();
+        if (!_saving)
+            await ResetJournalAsync();
+    }
 }

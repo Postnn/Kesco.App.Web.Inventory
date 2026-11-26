@@ -1,10 +1,14 @@
 @inherits EquipmentEditorDialogBase<EquipmentSimService>
+@implements IEquipmentDeferredRawRestore
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
+@using Kesco.App.Web.Inventory.Components.Layout
 
 <MudDialog>
     <TitleContent>Дополнительная услуга SIM</TitleContent>
     <DialogContent>
+        <ClayFormActions Form="InventoryFormHelp.EquipmentSimService" />
+        @RawRestoreNotice
         @if (!string.IsNullOrWhiteSpace(_error))
         {
             <MudAlert Severity="Severity.Error">@_error</MudAlert>
@@ -42,7 +46,7 @@
     </DialogContent>
     <DialogActions>
         <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked || RawRestoreBlocked)" />
     </DialogActions>
 </MudDialog>
 
@@ -90,6 +94,8 @@
 
     private async Task Apply()
     {
+        if (RawRestoreBlocked)
+            return;
         var today = GetToday is null ? Today : (await GetToday()).Date;
         if (!IsEditorCurrent())
             return;

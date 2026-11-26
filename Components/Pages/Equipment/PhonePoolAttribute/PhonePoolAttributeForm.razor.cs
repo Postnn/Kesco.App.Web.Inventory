@@ -26,11 +26,16 @@ public partial class PhonePoolAttributeForm
     {
         Text = "Удалить", Title = "Удалить запись со значением атрибута пула", Icon = Icons.Material.Filled.Delete,
     };
+    private static readonly ClayToolbarButtonOptions RetryRecoveryButton = new() { Text = "Повторить чтение атрибута", Icon = Icons.Material.Filled.Refresh };
     private static readonly DraftMergeField[] Fields = [new(nameof(FormState.Value), "Значение", ValueDraftKey)];
 
     private readonly ClayTextBoxOptions _poolOptions = new() { Label = "Пул телефона:", ReadOnly = true };
     private readonly ClayTextBoxOptions _typeOptions = new() { Label = "Тип атрибута:", ReadOnly = true };
     private readonly ClayTextAreaOptions _descriptionOptions = new() { Label = "Описание:", ReadOnly = true };
+    private static readonly ClayTextBoxOptions RecoveryValueOptions = new()
+    {
+        Label = "Восстановленный ввод", ReadOnly = true, DraftKey = ValueDraftKey,
+    };
     private readonly ClayTextBoxOptions _valueOptions = new() { Label = "Значение:", MaxLength = 150, Immediate = true, DraftKey = ValueDraftKey };
 
     /// <summary>Декодированное ASP.NET значение параметра id.</summary>
@@ -47,6 +52,8 @@ public partial class PhonePoolAttributeForm
     private bool _focus;
     private bool _confirmingDelete;
     private string? _freshReadFailure;
+    private PhonePoolAttributeCard? _freshRecovery;
+    private bool _retryingRecovery;
     private PhonePoolAttributeKey? RequestedKey => PhonePoolAttributeKey.Parse(Id);
 
     /// <inheritdoc />
@@ -66,6 +73,9 @@ public partial class PhonePoolAttributeForm
     protected override bool CanRegisterDraft => Editable || CanDeleteAttribute;
 
     /// <inheritdoc />
+    protected override bool SupportsEditorCancellation => Editable;
+
+    /// <inheritdoc />
     protected override bool CanReadMissingDraft => RequestedKey is not null;
 
     /// <inheritdoc />
@@ -81,6 +91,10 @@ public partial class PhonePoolAttributeForm
     /// <inheritdoc />
     protected override bool IsDomainRejection(Exception exception) => exception is PhonePoolAttributeRejectedException;
 
+    private bool ShowRecovery => !Loading && _card is null && CurrentUser is not null && RequestedKey is not null &&
+        (Draft is not null || StorageBlocked);
+    private bool CanRetryRecovery => ShowRecovery && !Busy && !_retryingRecovery && !ConfirmedCleanupPending;
+
     private bool CanDeleteAttribute => !_deleted && _card?.Attribute is not null && _rights?.CanDelete == true;
     private bool CanApply => !_confirmingDelete && CanCommit && Editable && (_card?.Attribute is null || Dirty);
     private bool CanCloseOrSave => !Loading && !Busy && !_confirmingDelete && !ConfirmedCleanupPending &&
@@ -95,6 +109,8 @@ public partial class PhonePoolAttributeForm
         _deleted = false;
         _focus = false;
         _freshReadFailure = null;
+        _freshRecovery = null;
+        _retryingRecovery = false;
         if (RequestedKey is not { } key)
         {
             Message = "Не удалось установить идентификатор сущности Атрибут пула.";
@@ -114,12 +130,7 @@ public partial class PhonePoolAttributeForm
         catch (Exception e) when (e is UnauthorizedAccessException or PhonePoolAttributeRejectedException or SqlException or TimeoutException)
         {
             routeToken.ThrowIfCancellationRequested();
-            _freshReadFailure = e switch
-            {
-                SqlException { Number: 229 } => "Нет доступа к данным пары атрибута.",
-                SqlException or TimeoutException => "Не удалось прочитать актуальные данные пары атрибута.",
-                _ => e.Message,
-            };
+            _freshReadFailure = DescribeReadFailure(e);
             Message = _freshReadFailure;
             return null;
         }
@@ -132,6 +143,97 @@ public partial class PhonePoolAttributeForm
         var current = await PhonePoolAttributeData.ReadAsync(Db, actor, key, token);
         return current.Card.Attribute is { } attribute ? new(new FormState(attribute.Value)) : new(null);
     }
+
+    /// <inheritdoc />
+    protected override async Task<FreshEditorState?> ReadFreshEditorAsync(Employee actor, CancellationToken token)
+    {
+        if (!Editable || _card is not { } opened || RequestedKey != opened.Key)
+            return null;
+
+        var generation = EditorGeneration;
+        try
+        {
+            var fresh = await PhonePoolAttributeData.ReadAsync(Db, actor, opened.Key, token);
+            if (token.IsCancellationRequested || generation != EditorGeneration || RequestedKey != opened.Key ||
+                !ReferenceEquals(_card, opened) || fresh.Card.Key != opened.Key || !fresh.Rights.CanRead)
+                return null;
+
+            var attribute = fresh.Card.Attribute;
+            if (opened.Attribute is null ? attribute is not null || !fresh.Rights.CanInsert
+                : attribute is null || !fresh.Rights.CanUpdate)
+                return null;
+
+            var version = attribute is null ? null : new DraftRowVersion(opened.Key.RouteId, attribute.ChangedBy, null, attribute.ChangedAt);
+            return new FreshEditorState(new FormState(attribute?.Value ?? ""), Access, version, () =>
+            {
+                _card = fresh.Card;
+                _rights = fresh.Rights;
+                _focus = true;
+                UpdateOptions();
+            });
+        }
+        catch (Exception error) when (error is UnauthorizedAccessException or PhonePoolAttributeRejectedException or SqlException or TimeoutException)
+        {
+            return null;
+        }
+    }
+
+    private Task CancelAttributeAsync() =>
+        Loading || Busy || _confirmingDelete || _retryingRecovery ? Task.CompletedTask
+            : Editable || ConfirmedCleanupPending ? CancelAsync() : CloseAsync();
+
+    private Task RefreshAttributeAsync() => CanRefresh ? RefreshAsync() : RetryRecoveryReadAsync();
+
+    private async Task RetryRecoveryReadAsync()
+    {
+        if (!CanRetryRecovery || RequestedKey is not { } key || CurrentUser is not { } openedBy)
+            return;
+
+        var generation = EditorGeneration;
+        var token = Lifetime;
+        _retryingRecovery = true;
+        _freshRecovery = null;
+        _freshReadFailure = null;
+        try
+        {
+            var principal = await ReadPrincipalAsync();
+            if (!IsCurrentRecovery()) return;
+            var actor = await Employee.GetCurrentWithRolesAsync(Db, principal, token);
+            if (!IsCurrentRecovery()) return;
+            if (actor is null || actor.Id != openedBy.Id)
+            {
+                _freshReadFailure = "Не удалось подтвердить сотрудника для чтения атрибута.";
+                return;
+            }
+
+            var fresh = await PhonePoolAttributeData.ReadAsync(Db, actor, key, token);
+            if (!IsCurrentRecovery()) return;
+            if (fresh.Card.Key == key)
+                _freshRecovery = fresh.Card;
+            else
+                _freshReadFailure = "Не удалось подтвердить ключ прочитанной пары атрибута.";
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception e) when (e is UnauthorizedAccessException or PhonePoolAttributeRejectedException or SqlException or TimeoutException)
+        {
+            if (IsCurrentRecovery())
+                _freshReadFailure = DescribeReadFailure(e);
+        }
+        finally
+        {
+            if (generation == EditorGeneration)
+                _retryingRecovery = false;
+        }
+
+        bool IsCurrentRecovery() => !token.IsCancellationRequested && generation == EditorGeneration && RequestedKey == key;
+    }
+
+    private static string DescribeReadFailure(Exception error) => error switch
+    {
+        SqlException { Number: 229 } => "Нет доступа к данным пары атрибута.",
+        SqlException or TimeoutException => "Не удалось прочитать актуальные данные пары атрибута.",
+        _ => error.Message,
+    };
 
     /// <inheritdoc />
     protected override async Task OnAfterRenderAsync(bool firstRender)

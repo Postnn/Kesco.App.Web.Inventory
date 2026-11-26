@@ -12,6 +12,10 @@
         <ClayToolbar>
             <ClayToolbarButton Options="OkButton" Disabled="@(Busy || Loading || Draft is null || (Dirty && !CanCommit))" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="ApplyButton" Disabled="@(!Editable || !CanCommit || !Dirty)" OnClick="@(() => SaveAsync(false))" />
+            @if (CanDeleteTerritory)
+            {
+                <ClayToolbarButton Options="DeleteButton" Disabled="@(Dirty || !CanCommit)" OnClick="DeleteTerritoryAsync" />
+            }
             <ClayToolbarButton Options="ReloadButton" Disabled="@(!CanRefresh)" OnClick="RefreshAsync" />
             <ClayToolbarButton Options="CancelButton" Disabled="@Busy" OnClick="CancelAsync" />
         </ClayToolbar>

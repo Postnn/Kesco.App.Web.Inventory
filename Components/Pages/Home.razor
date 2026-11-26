@@ -12,10 +12,14 @@
         </header>
     }
 
-    @if (CurrentQueryId is not null)
+    @if (HasInvalidModelScope)
+    {
+        <MudAlert Severity="Severity.Warning">Некорректный код модели оборудования.</MudAlert>
+    }
+    else if (CurrentQueryId is not null)
     {
         <section class="inventory-home__grid" aria-label="Рабочая область грида">
-            <ClayGrid TEntity="IClayGridRow" Options="_gridOptions" TitleChanged="OnGridTitleChanged" />
+            <ClayGrid @key="EquipmentModelContextId" TEntity="IClayGridRow" Options="_gridOptions" TitleChanged="OnGridTitleChanged" />
         </section>
     }
     else if (HasInvalidQueryId)

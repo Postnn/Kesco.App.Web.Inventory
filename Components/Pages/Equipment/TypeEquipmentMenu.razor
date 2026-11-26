@@ -23,10 +23,11 @@ else
         <MudItem xs="12" md="4" lg="3" Style="min-width:0">
             <section class="type-equipment-types" aria-label="Типы оборудования">
                 <ClayGrid TEntity="EquipmentType" Options="_typesOptions" Items="_types" TotalCount="_types.Length"
-                          RowClass="GetTypeRowClass" OnRowActivate="SelectType" OnQueryChanged="OnTypesQueryChangedAsync">
+                          RowClass="GetTypeRowClass" OnRowActivate="SelectType" OnQueryChanged="OnTypesQueryChangedAsync"
+                          DistinctValuesLoader="LoadTypeNamesAsync">
                     <ColumnDefs>
                         <ClayColumnDef ColumnId="1" SqlName="@EquipmentType.IdColumnName" DisplayName="Код" Filterable="true" />
-                        <ClayColumnDef ColumnId="2" SqlName="@EquipmentType.NameColumnName" DisplayName="Тип оборудования" Filterable="true" AllowValueFilter="true" />
+                        <ClayColumnDef ColumnId="2" SqlName="@EquipmentType.MenuNameColumnName" DisplayName="Тип оборудования" Filterable="true" AllowValueFilter="true" />
                     </ColumnDefs>
                     <Columns>
                         <ClayColumn TEntity="EquipmentType" ColumnId="1">
@@ -37,7 +38,7 @@ else
                                 <div @onclick:stopPropagation="true">
                                     <MudButton Variant="Variant.Text" Size="Size.Small" Class="px-1 justify-start text-nowrap"
                                                aria-pressed="@(IsSelected(context.Item) ? "true" : "false")" OnClick="@(() => SelectType(context.Item))">
-                                        @context.Item.GetMenuName(CurrentUser!)
+                                        @context.Item.MenuName
                                     </MudButton>
                                 </div>
                             </CellTemplate>
@@ -51,7 +52,7 @@ else
             {
                 <section class="type-equipment-models" aria-labelledby="type-equipment-models-heading">
                     <MudText Typo="Typo.h6" HtmlTag="h2" id="type-equipment-models-heading" Class="mb-2">
-                        @selected.GetMenuName(CurrentUser!)
+                        @selected.MenuName
                     </MudText>
                     <ClayGrid @key="selected.Id" TEntity="IClayGridRow" Options="_modelsOptions" />
                 </section>

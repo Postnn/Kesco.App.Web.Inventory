@@ -2,36 +2,55 @@
 @page "/Inv/LocationFact.aspx"
 @using Clayzor.Lib.Entities.Inventory
 @using Kesco.App.Web.Inventory.Components
+@using Kesco.App.Web.Inventory.Components.Layout
 
 <PageTitle>Инвентаризация рабочего места</PageTitle>
 <InventoryMainMenu />
 <NavigationLock ConfirmExternalNavigation="@(_pending is not null || _busy)" />
 <div class="location-fact">
     <MudText Typo="Typo.h5" Class="clay-page-title mb-2">Инвентаризация рабочего места</MudText>
-    <div class="d-flex flex-column gap-2" data-draft-scope="@WorkplaceScope" inert="@(_busy || !_ready)">
-        <div class="d-flex align-center flex-wrap gap-2">
-            <ClaySelect @ref="_locationSelect" TItem="LocationLookup" TValue="int?" DataSource="Locations" Options="LocationOptions"
-                        ValueSelector="@(item => item.Id)" TextSelector="@(item => item.Name)" Value="_siteChoice" ValueChanged="ChangeSiteChoiceAsync" Cleared="@(() => ChangeSiteAsync(null))" />
-            <ClayCheckbox Label="IT-оборудование" State="_itOnly" StateChanged="ChangeItAsync" />
+    @if (_showLegacyRaw)
+    {
+        <section aria-label="Ввод из прежнего черновика" data-draft-scope="@DraftScope" class="d-flex flex-column gap-2">
+            <ClayTextBox Options="LegacyLocationInput" />
+            <ClayTextBox Options="LegacyResponsibleInput" />
+            <ClayTextBox Options="LegacySearchInput" />
+            <ClayTextArea Options="LegacyNotesInput" />
+            @if (_legacyRawIncomplete)
+            {
+                <MudText Typo="Typo.body2">Часть сохранённого ввода пока не отображается.</MudText>
+                <MudButton OnClick="RestoreLegacyInputsAsync" Disabled="@_busy">Повторить восстановление ввода</MudButton>
+            }
+            <MudButton OnClick="ReturnToWorkplace" Disabled="@_busy">Вернуться к рабочему месту</MudButton>
+        </section>
+    }
+    else
+    {
+        <div class="d-flex flex-column gap-2" data-draft-scope="@WorkplaceScope" inert="@(_busy || !_ready || _legacyRawPending)">
+            <div class="d-flex align-center flex-wrap gap-2">
+                <ClaySelect @ref="_locationSelect" TItem="LocationLookup" TValue="int?" DataSource="Locations" Options="LocationOptions"
+                            ValueSelector="@(item => item.Id)" TextSelector="@(item => item.Name)" Value="_siteChoice" ValueChanged="ChangeSiteChoiceAsync" Cleared="@(() => ChangeSiteAsync(null))" />
+                <ClayCheckbox Label="IT-оборудование" State="_itOnly" StateChanged="ChangeItAsync" />
+            </div>
+            <ClaySelect TItem="Employee" TValue="int?" DataSource="Employees" Options="EmployeeOptions" ValueSelector="@(item => item.Id)"
+                        TextSelector="@(item => item.Name)" Value="_responsibleId" ValueChanged="ChangeResponsibleAsync" />
+            <ClaySelect @key="_equipmentVersion" @ref="_equipmentSelect" TItem="LocationFactMatch" TValue="int?" DataSource="_equipmentSource"
+                        Options="_equipmentOptions" ValueSelector="@(item => item.Id)" TextSelector="@(item => item.MatchText)"
+                        Value="_equipmentId" ValueChanged="ChooseEquipmentAsync">
+                <ItemTemplate Context="item">
+                    <span>@item.Id · @item.Name</span>
+                    <small>SN: @item.SerialNumber · Владелец: @item.OwnerName · Инв.: @item.InventoryNumber</small>
+                </ItemTemplate>
+            </ClaySelect>
+            <div class="d-flex align-center flex-wrap gap-2">
+                <ClayCheckbox Label="Режим ввода - сканер" State="_scanner" StateChanged="ChangeScannerAsync" />
+                <ClayButton Icon="@Icons.Material.Filled.Refresh" Text="Обновить список оборудования" Disabled="@(_site is null)" OnClick="RefreshAsync" />
+            </div>
         </div>
-        <ClaySelect TItem="Employee" TValue="int?" DataSource="Employees" Options="EmployeeOptions" ValueSelector="@(item => item.Id)"
-                    TextSelector="@(item => item.Name)" Value="_responsibleId" ValueChanged="ChangeResponsibleAsync" />
-        <ClaySelect @key="_equipmentVersion" @ref="_equipmentSelect" TItem="LocationFactMatch" TValue="int?" DataSource="_equipmentSource"
-                    Options="_equipmentOptions" ValueSelector="@(item => item.Id)" TextSelector="@(item => item.MatchText)"
-                    Value="_equipmentId" ValueChanged="ChooseEquipmentAsync">
-            <ItemTemplate Context="item">
-                <span>@item.Id · @item.Name</span>
-                <small>SN: @item.SerialNumber · Владелец: @item.OwnerName · Инв.: @item.InventoryNumber</small>
-            </ItemTemplate>
-        </ClaySelect>
-        <div class="d-flex align-center flex-wrap gap-2">
-            <ClayCheckbox Label="Режим ввода - сканер" State="_scanner" StateChanged="ChangeScannerAsync" />
-            <ClayButton Icon="@Icons.Material.Filled.Refresh" Text="Обновить список оборудования" Disabled="@(_site is null)" OnClick="RefreshAsync" />
-        </div>
-    </div>
+    }
     @if (_busy || !_ready && _message is null) { <MudProgressLinear Class="my-2" Indeterminate="true" /> }
     @if (_message is not null) { <MudAlert Severity="Severity.Warning" Class="my-2">@_message</MudAlert> }
-    @if (_workplaceRawIncomplete)
+    @if (_workplaceRawIncomplete && !_showLegacyRaw)
     {
         <MudAlert Severity="Severity.Warning" Class="my-2">
             Часть ввода рабочего места ожидает восстановления.
@@ -40,11 +59,20 @@
     }
     @if (_legacyRawPending)
     {
-        <MudAlert Severity="Severity.Warning" Class="my-2">Черновик прежней версии содержит ввод без открытого подтверждения. Запись приостановлена до восстановления.</MudAlert>
+        <MudAlert Severity="Severity.Warning" Class="my-2">
+            Черновик прежней версии содержит ввод без открытого подтверждения. Запись приостановлена.
+            @if (!_showLegacyRaw)
+            {
+                <MudButton OnClick="ShowLegacyInputs" Disabled="@_busy">Показать сохранённый ввод</MudButton>
+            }
+        </MudAlert>
     }
     @if (_confirmedCleanup is { } receipt)
     {
-        <ClayLocalTime Value="@receipt.CheckedAt" />
+        @if (receipt.CheckedAt is { } checkedAt)
+        {
+            <ClayLocalTime Value="@checkedAt" />
+        }
         <MudButton OnClick="RetryConfirmedCleanupAsync" Disabled="@_busy">Завершить обработку черновика</MudButton>
     }
     @if (_storageRetryRequired && !_dialogVisible)
@@ -94,6 +122,7 @@
                DefaultFocus="@(_askRelocation ? DefaultFocus.Element : DefaultFocus.None)">
         <TitleContent>Подтверждение нахождения оборудования на расположении</TitleContent>
         <DialogContent>
+            <ClayFormActions Form="InventoryFormHelp.LocationFact" />
             @if (_storageRetryRequired)
             {
                 <MudButton OnClick="RetryStorageAsync" Disabled="@_busy">Повторить сохранение черновика</MudButton>

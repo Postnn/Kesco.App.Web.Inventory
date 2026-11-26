@@ -67,13 +67,14 @@ public partial class Net
             ?? throw new InvalidOperationException("Журнал не подтвердил поиск попыток.");
         var health = await context.Registration.GetHealthAsync(_pageCts.Token);
         context.OtherAttempts = candidates.Where(candidate => candidate.HasOperation).ToArray();
+        context.OtherDrafts = candidates.Where(candidate => !candidate.HasOperation).ToArray();
         context.Scanned = health is { Healthy: true, PendingWrites: 0 } &&
             (!health.HasOperation || context.Attempt is not null);
         ShowOperationNotice(context);
     }
 
     private async Task<bool> DispatchOperationAsync(
-        LocalNetworkPort model, int version, Employee currentUser, string kind, string data, Func<Task> dispatch)
+        LocalNetworkPort model, int version, Employee currentUser, string kind, string data, Func<Task> dispatch, NetDraft? submitted = null)
     {
         if (OperationBlocked || _operationContext is not { } context ||
             context.EmployeeId != currentUser.Id || context.PortId != model.Id)
@@ -86,16 +87,35 @@ public partial class Net
         try
         {
             await ScanOperationJournalAsync(context);
-            if (OperationBlocked || !IsCurrentSave(model, version))
+            if (OperationBlocked || !IsCurrentSave(model, version) || !await VerifyNetInputReadyAsync(context))
                 return false;
+
+            var scopes = submitted is null ? Array.Empty<string>() : new[] { NetInputScope };
+            long inputRevision = 0;
+            if (submitted is not null)
+            {
+                inputRevision = await PersistNetInputAsync(context, submitted);
+                if (inputRevision <= 0 || Snapshot(model) != submitted || !IsCurrentSave(model, version))
+                    return false;
+                try { await context.Registration.EnsureScopesCanBeAcceptedAsync(scopes, _pageCts.Token); }
+                catch (InvalidOperationException)
+                {
+                    if (!await VerifyNetInputReadyAsync(context)) return false;
+                    throw;
+                }
+                if (Snapshot(model) != submitted || !IsCurrentSave(model, version))
+                    return false;
+            }
 
             var attemptId = Guid.NewGuid().ToString("N");
             ClayDraftOperation attempt;
             try
             {
                 await context.Registration.EnsureCommandAllowedAsync(_pageCts.Token);
+                if (!await VerifyNetInputReadyAsync(context)) return false;
                 attempt = await context.Registration.BeginOperationAsync(
-                    new ClayDraftOperationIntent(kind, data, AttemptId: attemptId), _pageCts.Token);
+                    new ClayDraftOperationIntent(kind, data, scopes, AttemptId: attemptId,
+                        BlockOtherDraftOperations: true), _pageCts.Token);
                 if (attempt.AttemptId != attemptId || attempt.Kind != kind || attempt.Data != data ||
                     attempt.Status != ClayDraftOperationStatus.Running)
                     throw new InvalidOperationException("Получено неподходящее подтверждение журнала.");
@@ -109,12 +129,20 @@ public partial class Net
             context.Attempt = attempt;
             _observedOutcome = null;
 
-            if (!IsCurrentSave(model, version))
+            var inputReady = await VerifyNetInputReadyAsync(context);
+            var acknowledgedInput = submitted is null
+                ? attempt.Scopes.Count == 0
+                : attempt.Scopes.Count == 1 && Snapshot(model) == submitted &&
+                  attempt.Scopes.Any(scope => scope.Name == NetInputScope && scope.TypedRevision == inputRevision);
+
+            if (!IsCurrentSave(model, version) || !acknowledgedInput || !inputReady)
             {
                 try
                 {
                     await context.Registration.RejectOperationAsync(attempt.Revision);
                     context.Attempt = null;
+                    if (inputReady && IsCurrentSave(model, version))
+                        _validationMessage = "Ревизия ввода изменилась до записи. Проверьте данные и примените ещё раз.";
                 }
                 catch (Exception ex) when (IsJournalError(ex))
                 {
@@ -164,6 +192,16 @@ public partial class Net
                 context.ReceiptRecorded = true;
             }
             await context.Registration.CommitOperationAsync(attempt.Revision);
+            if (attempt.Scopes.Any(scope => scope.Name == NetInputScope && scope.TypedRevision == context.LastInputRevision))
+            {
+                context.LastSavedInput = null;
+                context.LastInputRevision = 0;
+            }
+            if (attempt.Kind == SaveOperationKind)
+            {
+                context.InputReady = false;
+                context.InputRestoreStarted = false;
+            }
             context.Attempt = null;
             context.ReceiptRecorded = false;
         }
@@ -187,7 +225,11 @@ public partial class Net
             if (_operationContext is not { } context)
             {
                 if (CurrentUser is { } user)
+                {
                     await InitializeOperationContextAsync(model, user, _loadVersion);
+                    if (_operationContext is { } recovered)
+                        ApplyRecoveredNetInput(recovered);
+                }
                 return;
             }
             context.InUse = true;
@@ -215,7 +257,7 @@ public partial class Net
     private async Task RecoverOperationAsync(ClayDraftRecoveryCandidate candidate)
     {
         if (!CanInspectOperation || _operationContext is not { Attempt: null, NotSentId: null } context ||
-            !candidate.CanRecover || !context.OtherAttempts.Contains(candidate))
+            !candidate.CanRecover || (!context.OtherAttempts.Contains(candidate) && !context.OtherDrafts.Contains(candidate)))
             return;
         _inspectingOperation = context.InUse = true;
         try
@@ -228,6 +270,7 @@ public partial class Net
             }
 
             context.Attempt = context.Registration.Restore.OperationSnapshot;
+            ApplyRecoveredNetInput(context);
             if (ReferenceEquals(_operationContext, context))
                 _observedOutcome = null;
             context.ReceiptRecorded = context.Attempt?.Status == ClayDraftOperationStatus.Confirmed;
@@ -312,8 +355,13 @@ public partial class Net
         if (context is null)
             return;
         context.Retired = true;
-        if (!context.InUse)
-            await context.Registration.DisposeAsync();
+        await context.InputGate.WaitAsync();
+        try
+        {
+            if (!context.InUse)
+                await context.Registration.DisposeAsync();
+        }
+        finally { context.InputGate.Release(); }
     }
 
     private static async Task LeaveOperationContextAsync(NetOperationContext context)
@@ -328,6 +376,19 @@ public partial class Net
         internal ClayDraftRegistration Registration { get; } = registration;
         internal int EmployeeId { get; } = employeeId;
         internal int PortId { get; } = portId;
+        internal SemaphoreSlim InputGate { get; } = new(1, 1);
+        internal NetDraft? InputBaseline { get; set; }
+        internal DateTime InputVersion { get; set; }
+        internal NetEditorInput? LastSavedInput { get; set; }
+        internal long LastInputRevision { get; set; }
+        internal bool InputRestoreStarted { get; set; }
+        internal bool InputApplying { get; set; }
+        internal bool InputReady { get; set; }
+        internal bool InputConflict { get; set; }
+        internal NetInputReview? InputReview { get; set; }
+        internal bool InputFailed { get; set; }
+        internal bool VerifiedAfterWrite { get; set; }
+        internal IReadOnlyList<ClayDraftRecoveryCandidate> OtherDrafts { get; set; } = [];
         internal ClayDraftOperation? Attempt { get; set; }
         internal IReadOnlyList<ClayDraftRecoveryCandidate> OtherAttempts { get; set; } = [];
         internal string? NotSentId { get; set; }

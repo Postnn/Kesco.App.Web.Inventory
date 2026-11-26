@@ -6,6 +6,7 @@
 <PageTitle>Территории и телефонные коды</PageTitle>
 
 <div class="territorial-search-page">
+<span hidden data-territory-move-owner="@_registrationId"></span>
 @if (ReturnMode is null)
 {
     <InventoryMainMenu />
@@ -36,6 +37,23 @@ else if (_pendingMove is not null)
         @if (_moveComparison is not null) { <div>@_moveComparison</div> }
     </MudAlert>
 }
+else if (_moveJournalEnabled && !_moveJournalReady && !_legacyMoveBlocked)
+{
+    @if (_moveCandidates.Count > 0)
+    {
+        <MudAlert Severity="Severity.Warning">
+            Найден незавершённый перенос. Новый перенос заблокирован.
+            @foreach (var candidate in _moveCandidates.Where(item => item.CanRecover))
+            {
+                <MudButton Disabled="@_moving" OnClick="() => RecoverMoveJournalAsync(candidate)">Открыть сохранённый перенос</MudButton>
+            }
+        </MudAlert>
+    }
+    else
+    {
+        <MudButton Disabled="@_moving" OnClick="RetryMoveJournalAsync">Проверить журнал переноса</MudButton>
+    }
+}
 @if (_treeOptions is not null && _source is not null)
 {
     <MudGrid Spacing="2" Class="territorial-search-grid">
@@ -43,6 +61,10 @@ else if (_pendingMove is not null)
             <MudPaper Class="pa-2 territorial-search-tree-panel" Elevation="0">
                 <div class="d-flex align-center justify-space-between">
                     <MudButton Variant="Variant.Text" OnClick="ResetViewAsync" FullWidth="false">Территории</MudButton>
+                    @if (_canAddTerritory)
+                    {
+                        <ClayButton Icon="@Icons.Material.Filled.Add" Text="Новая территория" OnClick="OpenRootTerritoryAsync" />
+                    }
                     <ClayButton Icon="@Icons.Material.Filled.Refresh" Text="Обновить дерево" OnClick="ReloadTreeAsync" />
                 </div>
                 @if (_total is int count)

@@ -4,9 +4,9 @@
 @using Clayzor.Lib.Web.Controls.Components.Select
 @using Clayzor.Lib.Web.DBSelect.Equipment
 @using Clayzor.Lib.Web.Controls.Services
-@using Kesco.App.Web.Inventory.Services
 @implements IDisposable
-@inject ModelEquipmentFormService Service
+@inject Clayzor.Lib.DALC.DbManager Db
+@inject Microsoft.AspNetCore.Components.Authorization.AuthenticationStateProvider Authentication
 @inject EquipmentTypeSelectDataSource EquipmentTypeSource
 @inject ResourceSelectDataSource ResourceSource
 @inject MemoryTypeSelectDataSource MemoryTypeSource
@@ -17,19 +17,88 @@
 @inject IJSRuntime JS
 
 <PageTitle>@Title</PageTitle>
-<NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
+<NavigationLock ConfirmExternalNavigation="@ConfirmModelExternalExit" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
 <ClayEntityForm Options="_entityFormOptions">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit || WriteBlocked)" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
             <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving)" OnClick="RefreshAsync" />
-            <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
+            <ClayToolbarButton Options="_cancelOptions" Disabled="@(_saving || _loading || _journalBusy)" OnClick="CancelAsync" />
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
 
+    @if (!string.IsNullOrWhiteSpace(_validationMessage))
+    {
+        <MudAlert Severity="Severity.Error" Class="mb-3">@_validationMessage</MudAlert>
+    }
+    @if (_journalNotice is not null)
+    {
+        <section aria-label="Журнал сохранения модели" data-testid="model-save-journal">
+            <MudAlert Severity="Severity.Warning">@_journalNotice</MudAlert>
+            <ClayToolbarButton Options="RetryJournalOptions" Disabled="@(_saving || _loading || _journalBusy)" OnClick="RetryJournalAsync" />
+            @foreach (var candidate in _journalCandidates.Where(candidate => candidate.CanRecover))
+            {
+                <ClayToolbarButton Options="AdoptJournalOptions" Disabled="@(_saving || _loading || _journalBusy || IsModified)"
+                                   OnClick="() => AdoptJournalAsync(candidate)" />
+            }
+            @if (_knownWrite is not null && _writeAttempt is null && !_lateInput)
+            {
+                <ClayToolbarButton Options="ReadKnownOptions" Disabled="@(_saving || _loading || _journalBusy)" OnClick="ReadKnownWriteAsync" />
+            }
+            <ClayToolbarButton Options="ObserveOptions" Disabled="@(_saving || _loading || _journalBusy)" OnClick="ObserveWriteAsync" />
+        </section>
+    }
+    @if (_inputNotice is not null)
+    {
+        <section aria-label="Черновик ввода модели" data-testid="model-editor-draft">
+            <MudAlert Severity="Severity.Warning">@_inputNotice</MudAlert>
+            @if (_rawPending)
+            {
+                <ClayToolbarButton Options="RetryInputOptions" Disabled="@(_saving || _loading || _restoringRaw || _journalBusy)"
+                                   OnClick="RetryEditorRawAsync" />
+            }
+            else if (_inputSaveFailed)
+            {
+                <ClayToolbarButton Options="RetryInputStorageOptions" Disabled="@(_saving || _loading || _restoringRaw || _journalBusy)"
+                                   OnClick="RetryEditorInputAsync" />
+            }
+        </section>
+    }
+    <div @key="_loadVersion" class="@ReadOnlyRecoveryClass(_loadVersion)">
+    @if (_localRecovery is { } localRecovery && IsReadOnlyRecoveryCurrent(localRecovery))
+    {
+        <section data-draft-scope="@EditorScope"
+                 aria-label="Локальный черновик модели" data-testid="model-readonly-recovery">
+            <MudAlert Severity="Severity.Warning">
+                Локальный черновик модели. Поля можно скопировать. Запись недоступна.
+                @if (localRecovery.HasOperation)
+                {
+                    <p>В журнале есть незавершённая попытка сохранения. Её состояние сохранено.</p>
+                }
+                @if (localRecovery.RawPending)
+                {
+                    <p>Часть исходного ввода осталась в защищённом черновике.</p>
+                    <ClayToolbarButton Options="RetryInputOptions" Disabled="@localRecovery.ApplyingRaw"
+                                       OnClick="@(() => RestoreReadOnlyRawAsync(localRecovery))" />
+                }
+            </MudAlert>
+            @if (localRecovery.Fields is { } typed)
+            {
+                <p>Мультимедиа: @(typed.IsMultimedia ? "да" : "нет")</p>
+            }
+            @foreach (var field in ReadOnlyRecoveryFields(localRecovery.Fields))
+            {
+                <label class="d-block">
+                    <span>@field.Label</span>
+                    <textarea class="d-block" readonly rows="@field.Rows" data-draft-key="@field.Key">@field.Value</textarea>
+                </label>
+            }
+        </section>
+    }
+    </div>
     @if (_notFound)
     {
         <MudAlert Severity="Severity.Warning">Модель оборудования с указанным идентификатором не найдена.</MudAlert>
@@ -42,13 +111,9 @@
                 Для изменения модели требуется роль «Специалист по инвентаризации оборудования» (43).
             </MudAlert>
         }
-        if (!string.IsNullOrWhiteSpace(_validationMessage))
-        {
-            <MudAlert Severity="Severity.Error" Class="mb-3">@_validationMessage</MudAlert>
-        }
 
-        <MudForm @ref="_form">
-            <div class="model-equipment-fields">
+        <MudForm @key="_editorRenderVersion" @ref="_form">
+            <div class="model-equipment-fields" data-draft-scope="@EditorScope" inert="@(_loading || _journalBusy || _restoringRaw)">
                 <div class="model-equipment-row">
                     <span class="model-equipment-label">Тип оборудования:</span>
                     <div>
@@ -172,7 +237,12 @@
 
                 @if (_model.Id > 0 && _usage.Total > 0)
                 {
-                    <MudText Typo="Typo.body2" Class="mt-3">@UsageText</MudText>
+                    <MudText Typo="Typo.body2" Class="mt-3">
+                        В базе данных сохранено
+                        <MudLink Href="@EquipmentUsageUrl(_model.Id)" Target="_blank" rel="noopener"
+                                 aria-label="Открыть список оборудования данной модели">@_usage.Total</MudLink>
+                        единиц оборудования данной модели@(UsageSuffix)
+                    </MudText>
                 }
             </div>
         </MudForm>

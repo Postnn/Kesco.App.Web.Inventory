@@ -1,10 +1,12 @@
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Grid
 @using Clayzor.Lib.Web.Controls.Components.Form
+@using Kesco.App.Web.Inventory.Components.Layout
 
 <MudDialog>
     <TitleContent>История сетевых имён</TitleContent>
     <DialogContent>
+        <ClayFormActions Form="InventoryFormHelp.Equipment" />
         <ClayGrid TEntity="EquipmentNetworkNameHistory" Items="Items" Options="_gridOptions">
             <ColumnDefs>
                 <ClayColumnDef ColumnId="1" SqlName="NetworkName" DisplayName="Сетевое имя" />

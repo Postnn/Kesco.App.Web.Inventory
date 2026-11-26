@@ -14,8 +14,8 @@
             <ClayToolbarButton Options="Ok" Disabled="@(Busy || Loading || _openingSim || ConfirmedCleanupPending || _contract is null || Draft is null || Dirty && !CanSave)"
                                OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="SaveButton" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
-            <ClayToolbarButton Options="ReloadButton" Disabled="@(!(CanRefresh || CanRetryRecovery) || _openingSim || _retryingRecovery)" OnClick="RefreshBeelineAsync" />
-            <ClayToolbarButton Options="CancelButton" Disabled="@(Busy || _openingSim)" OnClick="CancelAsync" />
+            <ClayToolbarButton Options="ReloadButton" Disabled="@(!(CanRefresh || CanRetryRecovery) || _openingSim || _retryingRecovery || _choosingRecoveryCancel)" OnClick="RefreshBeelineAsync" />
+            <ClayToolbarButton Options="CancelButton" Disabled="@(Busy || Loading || _openingSim || _retryingRecovery || _choosingRecoveryCancel)" OnClick="CancelBeelineAsync" />
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
