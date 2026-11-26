@@ -77,6 +77,12 @@ public partial class DutyEditor : IAsyncDisposable
     private bool _disposed;
     private bool _unknown;
     private DateOnly? _attemptDate;
+    private DateOnly? _routeDate;
+    private string? _freshReadError;
+    private DutySnapshot? _recoverySnapshot;
+    private DutySnapshot? _sentSnapshot;
+    private ClayDraftOperation? _recoveredOperation;
+    private bool _rawRecoveryPending;
     private string? _notSentAttemptId;
     private long? _confirmedRevision;
     private bool _conflict;
@@ -95,7 +101,9 @@ public partial class DutyEditor : IAsyncDisposable
 
     private bool IsFact => _original is { Closed: 0 } row && _context is { } context &&
         DateOnly.FromDateTime(row.DutyDate) < context.BusinessDay;
-    private bool HasWriteAccess => _original is null ? _context?.CanInsert == true : _original.Closed == 0 && _context?.CanUpdate == true;
+    private bool HasWriteAccess => _freshReadError is null && (_original is null
+        ? _routeDate is null && _context?.CanInsert == true
+        : _original.Closed == 0 && _context?.CanUpdate == true);
     private bool CanEdit => !_loading && !_busy && !_unknown && !_conflict && !_completed &&
         _registration is not null && HasWriteAccess;
     private bool CanSave => CanEdit && !_restoreRaw && !_retryRaw && !_storageError && !_calendarFailed && !_calendarPending && _draft is not null;
@@ -129,7 +137,14 @@ public partial class DutyEditor : IAsyncDisposable
         var ct = _lifetime.Token;
         try
         {
-            DateOnly? date = null;
+            _routeDate = null;
+            _context = null;
+            _original = null;
+            _draft = _baseline = null;
+            _freshReadError = null;
+            _recoverySnapshot = _sentSnapshot = null;
+            _recoveredOperation = null;
+            _rawRecoveryPending = false;
             if (!string.IsNullOrWhiteSpace(RouteId))
             {
                 if (!DutyKey.TryParse(RouteId, out var parsed))
@@ -137,63 +152,33 @@ public partial class DutyEditor : IAsyncDisposable
                     _message = "Некорректная дата дежурства в ссылке.";
                     return;
                 }
-                date = parsed;
+                _routeDate = parsed;
             }
+
             CurrentUser = await Employee.GetCurrentAsync(Db, await PrincipalAsync(), ct);
             if (CurrentUser is null)
             {
                 _message = "Не удалось подтвердить текущего сотрудника.";
                 return;
             }
-            _context = await DutyData.ReadContextAsync(Db, ct);
-            if (date is { } existing)
-            {
-                _original = await DutyData.ReadAsync(Db, existing, ct);
-                if (_original is null)
-                {
-                    _message = "Дежурство на указанную дату не найдено.";
-                    return;
-                }
-                _baseline = DutyDraft.FromRow(_original);
-                if (_original is { Closed: 1, EmployerId: > 0 })
-                    _employerName = await ReadEmployerNameAsync(_original.EmployerId.Value, ct);
-            }
+
+            if (_routeDate is { } existing)
+                await LoadExistingAsync(existing, ct);
             else
+            {
+                _context = await DutyData.ReadContextAsync(Db, ct);
                 _baseline = new DutyDraft(await DutyData.NextDayAsync(Db, _context.BusinessDay, ct), null);
+            }
 
             _draft = _baseline;
-            if (_original?.Closed != 1)
-            {
-                var entityKey = date?.ToString("yyyyMMdd", CultureInfo.InvariantCulture) ?? "new";
-                var registration = await Drafts.RegisterHandleAsync("duty", entityKey,
-                    CurrentUser.Id.ToString(CultureInfo.InvariantCulture), 1, "." + _formOptions.Class, ct);
-                if (_disposed)
-                {
-                    await registration.DisposeAsync();
-                    return;
-                }
-                _registration = registration;
-                _unknown = registration.Restore.Operation is not null;
-                if (registration.Restore.OperationSnapshot is { Kind: OperationKind } operation)
-                    _attemptDate = JsonSerializer.Deserialize<DutySnapshot>(operation.Data)?.Draft.Date;
-                if (registration.Restore.TypedScopes?.TryGetValue(Scope, out var json) == true)
-                {
-                    var snapshot = JsonSerializer.Deserialize<DutySnapshot>(json) ?? throw new JsonException();
-                    if (snapshot.Draft is null || (date.HasValue && snapshot.Draft.Date != date))
-                        throw new JsonException();
-                    _conflict = snapshot.Original != _original;
-                    _draft = snapshot.Draft;
-                    _restoreRaw = registration.Restore.HasDraft && !_conflict && !_unknown && HasWriteAccess;
-                }
-                else if (!_unknown && registration.Restore.HasDraft)
-                    _conflict = true;
-                else if (!_unknown && HasWriteAccess)
-                    await PersistAsync(ct);
-            }
+            await RestoreDraftAsync(CurrentUser.Id, ct);
+            if (_disposed) return;
 
             if (_unknown)
                 _message = "Исход предыдущего сохранения неизвестен. Доступна сверка без повторной записи.";
-            else if (_conflict)
+            else if (_freshReadError is not null)
+                _message = _freshReadError;
+            else if (_conflict && HasWriteAccess)
                 _message = "Дежурство изменилось после создания черновика. Введённые данные сохранены.";
             else if (_original?.Closed != 1 && !HasWriteAccess)
                 _message = "Редактирование недоступно для текущей учётной записи или конфигурации БД.";
@@ -218,6 +203,108 @@ public partial class DutyEditor : IAsyncDisposable
             _loading = false;
             UpdateOptions();
         }
+    }
+
+    private async Task LoadExistingAsync(DateOnly date, CancellationToken ct)
+    {
+        try
+        {
+            _context = await DutyData.ReadContextAsync(Db, ct);
+            _original = await DutyData.ReadAsync(Db, date, ct);
+        }
+        catch (SqlException e) when (e.Number == 229)
+        {
+            _failedLoad = true;
+            _freshReadError = "У вас нет права прочитать актуальное дежурство.";
+            return;
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            _failedLoad = true;
+            _freshReadError = "Не удалось прочитать актуальное дежурство.";
+            return;
+        }
+
+        if (_original is null)
+        {
+            _freshReadError = "Дежурство на указанную дату не найдено.";
+            return;
+        }
+
+        _baseline = DutyDraft.FromRow(_original);
+        if (_original.Closed == 1 && DutyClosedSummary.FromRow(_original).EmployerId is { } employer)
+            _employerName = await ReadEmployerNameAsync(employer, ct);
+    }
+
+    private async Task RestoreDraftAsync(int employeeId, CancellationToken ct)
+    {
+        var entityKey = _routeDate?.ToString("yyyyMMdd", CultureInfo.InvariantCulture) ?? "new";
+        var registration = await Drafts.RegisterHandleAsync("duty", entityKey,
+            employeeId.ToString(CultureInfo.InvariantCulture), 1, "." + _formOptions.Class, ct);
+        var restore = registration.Restore;
+        if (_disposed || !HasWriteAccess && !restore.HasDraft && restore.Operation is null)
+        {
+            await registration.DisposeAsync();
+            return;
+        }
+
+        _registration = registration;
+        if (restore.OperationSnapshot is { } operation)
+            RememberUnknown(operation);
+
+        if (restore.TypedScopes?.TryGetValue(Scope, out var json) == true)
+        {
+            var snapshot = ReadSnapshot(json);
+            if (HasWriteAccess)
+            {
+                _conflict = !DutyRow.MatchesVersion(snapshot.Original, _original);
+                _draft = snapshot.Draft;
+                _restoreRaw = restore.HasDraft && !_conflict && !_unknown;
+            }
+            else
+            {
+                _recoverySnapshot = snapshot;
+                _conflict = true;
+            }
+        }
+        else if (!_unknown && restore.HasDraft)
+            _conflict = true;
+        else if (!_unknown && HasWriteAccess)
+            await PersistAsync(ct);
+
+        if (!HasWriteAccess && restore.HasDraft)
+        {
+            // Общий API сообщает о pending, сырые значения остаются в защищённом хранилище.
+            _rawRecoveryPending = true;
+            _rawRecoveryPending = !(await registration.GetRestoreReadinessAsync(ct)).Complete;
+        }
+    }
+
+    private DutySnapshot ReadSnapshot(string json)
+    {
+        var snapshot = JsonSerializer.Deserialize<DutySnapshot>(json);
+        if (snapshot?.Draft is null || _routeDate is { } date && snapshot.Draft.Date != date)
+            throw new JsonException("Недопустимый снимок дежурства.");
+        return snapshot;
+    }
+
+    private void RememberUnknown(ClayDraftOperation operation)
+    {
+        _unknown = true;
+        _recoveredOperation = operation;
+        _attemptDate = _routeDate;
+        _sentSnapshot = operation.Kind == OperationKind ? ReadSnapshot(operation.Data) : null;
+        _attemptDate = _sentSnapshot?.Draft.Date ?? _routeDate;
+    }
+
+    private string? ReadOnlyReason => _freshReadError ?? (_original?.Closed == 1
+        ? "Дежурство закрыто на сервере."
+        : !HasWriteAccess ? "Актуальная карточка доступна только для чтения." : null);
+
+    private IEnumerable<(string Title, DutySnapshot Snapshot)> RecoverySnapshots()
+    {
+        if (_recoverySnapshot is { } local) yield return ("Локальный черновик", local);
+        if (_sentSnapshot is { } sent) yield return ("Отправленный снимок", sent);
     }
 
     private async Task RetryRawAsync()
@@ -313,7 +400,8 @@ public partial class DutyEditor : IAsyncDisposable
     private async Task SaveAsync()
     {
         if (!CanSave || _draft is not { } draft || _registration is not { } registration) return;
-        var validation = draft.Validate(IsFact, _workDay);
+        var fact = IsFact;
+        var validation = draft.Validate(fact, _workDay);
         if (validation is not null)
         {
             _message = validation;
@@ -351,7 +439,7 @@ public partial class DutyEditor : IAsyncDisposable
             _attemptDate = draft.Date;
             attempt = await registration.BeginOperationAsync(
                 new ClayDraftOperationIntent(OperationKind, SnapshotJson(), [Scope], preparingAttemptId), ct);
-            var saved = await DutyData.SaveAsync(Db, principal, CurrentUser!.Id, _original, draft, ct);
+            var saved = await DutyData.SaveAsync(Db, principal, CurrentUser!.Id, _original, draft, ct, expectedFact: fact);
             _completed = true;
             _original = saved;
             _draft = _baseline = DutyDraft.FromRow(saved);
@@ -363,9 +451,18 @@ public partial class DutyEditor : IAsyncDisposable
         }
         catch (DutyRejectedException e)
         {
-            if (attempt is not null)
-                _unknown = !await TryMarkAsync(() => registration.RejectOperationAsync(attempt.Revision, ct));
-            _message = e.Message;
+            if (attempt is not null && !await TryMarkAsync(() => registration.RejectOperationAsync(attempt.Revision, ct)))
+                RememberUnknown(attempt);
+
+            if (!_unknown && e.Kind is DutyRejectionKind.Stale or DutyRejectionKind.Closed or DutyRejectionKind.DateOccupied
+                or DutyRejectionKind.CalendarChanged or DutyRejectionKind.AccessDenied)
+            {
+                _conflict = true;
+                _recoverySnapshot = new DutySnapshot(_original, draft);
+                _message = $"{e.Message} Сверьте состояние записи. Черновик сохранён.";
+            }
+            else
+                _message = e.Message;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception)
@@ -377,7 +474,10 @@ public partial class DutyEditor : IAsyncDisposable
                 _storageError = true;
             }
             if (_unknown && attempt is not null)
+            {
+                RememberUnknown(attempt);
                 await TryMarkAsync(() => registration.UnknownOperationAsync(attempt.Revision, ct));
+            }
             _message = _completed ? "Дежурство сохранено. Завершение работы с черновиком или окном требует проверки."
                 : _unknown ? "Состояние попытки требует сверки. Повторная запись заблокирована."
                 : "Подготовка к сохранению завершилась ошибкой. Запись не начата.";
@@ -406,9 +506,7 @@ public partial class DutyEditor : IAsyncDisposable
             }
             if (await registration.RetryStorageAsync(_notSentAttemptId, ct) is { } remaining)
             {
-                _unknown = true;
-                _attemptDate = remaining.Kind == OperationKind
-                    ? JsonSerializer.Deserialize<DutySnapshot>(remaining.Data)?.Draft.Date : null;
+                RememberUnknown(remaining);
                 _message = "В хранилище есть незавершённая попытка. Повторная запись заблокирована.";
                 return;
             }
@@ -428,7 +526,7 @@ public partial class DutyEditor : IAsyncDisposable
 
     private async Task CompareAsync()
     {
-        if (_busy || (_unknown ? _attemptDate : _draft?.Date) is not { } date) return;
+        if (_busy || (_unknown ? _attemptDate : _recoverySnapshot?.Draft.Date ?? _draft?.Date ?? _routeDate) is not { } date) return;
         _busy = true;
         var ct = _lifetime.Token;
         try
@@ -438,16 +536,19 @@ public partial class DutyEditor : IAsyncDisposable
                 _message = "Не удалось подтвердить текущего сотрудника для сверки.";
                 return;
             }
+            var context = await DutyData.ReadContextAsync(Db, ct);
             var row = await DutyData.ReadAsync(Db, date, ct);
+            _context = context;
             _message = row is null ? "Запись на эту дату не найдена."
                 : $"Запись на эту дату есть. Плановый инженер: {EmployeeText(row.PlannedId, row.PlannedName)}. " +
                   $"Фактический инженер: {EmployeeText(row.ActualId, row.ActualName)}. " +
                   (row.Closed == 1 ? "Дежурство закрыто." : "Дежурство открыто.");
+            _message += $" Серверный день: {context.BusinessDay.ToString("dd.MM.yyyy", Russian)}.";
             if (_unknown) _message += " Для подтверждения исхода требуется проверка журнала.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception) { _message = "Не удалось прочитать актуальную запись для сверки."; }
-        finally { _busy = false; }
+        finally { _busy = false; UpdateOptions(); }
     }
 
     private async Task DiscardConflictAsync()

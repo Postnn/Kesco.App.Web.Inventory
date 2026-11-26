@@ -43,6 +43,38 @@
             <MudButton OnClick="LoadAsync" Disabled="@_loading">Повторить загрузку</MudButton>
         }
 
+        @if (_registration is not null && ReadOnlyReason is { } reason && reason != _message)
+        {
+            <MudText Typo="Typo.body2">@reason</MudText>
+        }
+        @if (_recoveredOperation is { } operation)
+        {
+            <MudText Typo="Typo.body2">Попытка @operation.AttemptId, ревизия @operation.Revision.</MudText>
+        }
+        @foreach (var (title, snapshot) in RecoverySnapshots())
+        {
+            var local = snapshot.Draft;
+            <section aria-label="@title" class="mb-2">
+                <MudText Typo="Typo.subtitle2" HtmlTag="h2">@title</MudText>
+                <div>Дата дежурства: @local.Date?.ToString("dd.MM.yyyy", Russian)</div>
+                <div>Плановый инженер: @EmployeeText(local.PlannedId, null)</div>
+                <div>Фактический инженер: @EmployeeText(local.ActualId, null)</div>
+                <div>Подтверждение: @(ConfirmationOptions.FirstOrDefault(item => item.Value == local.Confirmation)?.Text ?? "—")</div>
+                <div>Отгул вместо оплаты: @(local.WantsTimeOff ? "да" : "нет")</div>
+                <div>Дата отгула: @(local.TimeOff?.ToString("dd.MM.yyyy", Russian) ?? "—")</div>
+                <div>Закрытие дежурства: @(local.Close ? "да" : "нет")</div>
+                @if (snapshot.Original is { } baseline)
+                {
+                    <div>Исходный плановый инженер: @EmployeeText(baseline.PlannedId, null)</div>
+                    <div>Исходный фактический инженер: @EmployeeText(baseline.ActualId, null)</div>
+                }
+            </section>
+        }
+        @if (_rawRecoveryPending)
+        {
+            <MudText Typo="Typo.body2">Незавершённый ввод сохранён в черновике. Просмотр этой части ввода пока недоступен.</MudText>
+        }
+
         @if (_draft is { } draft)
         {
             <MudForm @ref="_form">
@@ -109,47 +141,54 @@
                     }
                     @if (_original is { Closed: 1 } closed)
                     {
+                        var result = DutyClosedSummary.FromRow(closed);
                         <MudText Color="Color.Warning">Закрыто</MudText>
-                        <MudText>Фактическая информация о дежурстве:</MudText>
-                        @if (closed.ActualId is { } employeeId)
-                        {
-                            <div>
-                                @if (EmployeeUrl(employeeId) is { } employee)
-                                {
-                                    <a href="@employee" @onclick:preventDefault @onclick="@(() => OpenEmployeeAsync(employeeId))">@EmployeeText(employeeId, closed.ActualName)</a>
-                                }
-                                else
-                                {
-                                    @EmployeeText(employeeId, closed.ActualName)
-                                }
-                            </div>
-                        }
-                        else
-                        {
-                            <MudText>Никто не дежурил</MudText>
-                        }
-                        @if (closed.EmployerId is > 0)
-                        {
-                            <div>Работодатель:
-                                @if (PersonUrl(closed.EmployerId.Value) is { } person)
-                                {
-                                    <a href="@person" @onclick:preventDefault
-                                       @onclick="@(() => OpenAsync(person, $"duty-employer-{closed.EmployerId}"))">@EmployeeText(closed.EmployerId, _employerName)</a>
-                                }
-                                else
-                                {
-                                    @EmployeeText(closed.EmployerId, _employerName)
-                                }
-                            </div>
-                        }
-                        @if (closed.TimeOff is { } timeOff)
-                        {
-                            <div>Дата отгула: @timeOff.ToString("dd.MM.yyyy", Russian)</div>
-                        }
-                        @if (closed.Payment is { } payment)
-                        {
-                            <div>Оплата: @payment.ToString("F2", Russian)</div>
-                        }
+                        <section aria-label="Фактическая информация о дежурстве">
+                            <MudText>Фактическая информация о дежурстве:</MudText>
+                            @if (result.Confirmation == DutyConfirmation.Nobody)
+                            {
+                                <MudText Color="Color.Error">Никто не дежурил</MudText>
+                            }
+                            else if (result.Confirmation == DutyConfirmation.Planned)
+                            {
+                                <MudText>Замечаний к дежурству нет</MudText>
+                            }
+                            else if (result.ReplacementId is { } employeeId)
+                            {
+                                <div>Дежурный инженер:
+                                    @if (EmployeeUrl(employeeId) is { } employee)
+                                    {
+                                        <a href="@employee" @onclick:preventDefault @onclick="@(() => OpenEmployeeAsync(employeeId))">@EmployeeText(employeeId, closed.ActualName)</a>
+                                    }
+                                    else
+                                    {
+                                        @EmployeeText(employeeId, closed.ActualName)
+                                    }
+                                </div>
+                            }
+                            @if (result.EmployerId is { } employer)
+                            {
+                                <div>Работодатель:
+                                    @if (PersonUrl(employer) is { } person)
+                                    {
+                                        <a href="@person" @onclick:preventDefault
+                                           @onclick="@(() => OpenAsync(person, $"duty-employer-{employer}"))">@EmployeeText(employer, _employerName)</a>
+                                    }
+                                    else
+                                    {
+                                        @EmployeeText(employer, _employerName)
+                                    }
+                                </div>
+                            }
+                            @if (result.TimeOff is { } timeOff)
+                            {
+                                <div>Дата отгула: @timeOff.ToString("dd.MM.yyyy", Russian)</div>
+                            }
+                            @if (result.Payment is { } payment)
+                            {
+                                <div>Оплата: @payment.ToString("F2", Russian)</div>
+                            }
+                        </section>
                     }
                 </div>
             </MudForm>
