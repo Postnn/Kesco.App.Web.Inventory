@@ -23,6 +23,9 @@ public partial class BeelineParamsForm
         Text = "OK", Icon = Icons.Material.Filled.Check, Color = Color.Primary, Variant = Variant.Filled,
     };
     private static readonly ClayToolbarButtonOptions SaveButton = new() { Text = "Сохранить", Icon = Icons.Material.Filled.Save };
+    private static readonly ClayToolbarButtonOptions RetryRecoveryButton = new() { Text = "Повторить чтение договора", Icon = Icons.Material.Filled.Refresh };
+    private static readonly ClayTextBoxOptions RecoveryZoneOptions = new() { Label = "Time zone, ввод из браузера", ReadOnly = true, DraftKey = ZoneDraftKey };
+    private static readonly ClayTextBoxOptions RecoveryEmailOptions = new() { Label = "Email менеджера, ввод из браузера", ReadOnly = true, DraftKey = EmailDraftKey };
     private static readonly ClayTextBoxOptions BaseNumberOptions = new() { Label = "Договор основной:", ReadOnly = true };
     private static readonly ClayTextBoxOptions BudgetNumberOptions = new() { Label = "Договор МБ:", ReadOnly = true };
     private static readonly ClayTextBoxOptions BudgetPhoneOptions = new() { ReadOnly = true };
@@ -52,6 +55,13 @@ public partial class BeelineParamsForm
     private bool _openingSim;
     private long _simRevision;
     private string? _freshReadFailure;
+    private BeelineDraft? _freshRecovery;
+    private bool _retryingRecovery;
+
+    private bool ShowRecovery => !Loading && CurrentUser is not null && CanReadMissingDraft &&
+        (Draft is not null || StorageBlocked) && (_contract is null || !Editable && StorageBlocked);
+
+    private bool CanRetryRecovery => ShowRecovery && !Busy && !_retryingRecovery && !ConfirmedCleanupPending;
 
     private bool CanSave => !_openingSim && CanCommit && Editable && Dirty;
     private IEnumerable<string> ZoneChoices => Draft?.TimeZone is { Length: > 0 } zone && !_zones.Contains(zone, StringComparer.Ordinal)
@@ -90,6 +100,8 @@ public partial class BeelineParamsForm
     {
         _contract = null;
         _freshReadFailure = null;
+        _freshRecovery = null;
+        _retryingRecovery = false;
         _canUpdate = false;
         ++_simRevision;
         _openingSim = false;
@@ -123,12 +135,7 @@ public partial class BeelineParamsForm
         catch (Exception e) when (e is UnauthorizedAccessException or SqlException or TimeoutException)
         {
             routeToken.ThrowIfCancellationRequested();
-            _freshReadFailure = e switch
-            {
-                SqlException { Number: 229 } => "Нет доступа к данным договора Билайн.",
-                SqlException or TimeoutException => "Не удалось прочитать актуальные параметры договора Билайн.",
-                _ => e.Message,
-            };
+            _freshReadFailure = DescribeReadFailure(e);
             Message = _freshReadFailure;
             return null;
         }
@@ -142,6 +149,58 @@ public partial class BeelineParamsForm
         var result = await BeelineData.ReadAsync(Db, actor, number!, token);
         return new(result.Contract is { } contract ? DraftFrom(contract) : null);
     }
+
+    private Task RefreshBeelineAsync() => CanRefresh ? RefreshAsync() : RetryRecoveryReadAsync();
+
+    private async Task RetryRecoveryReadAsync()
+    {
+        if (!CanRetryRecovery || CurrentUser is not { } openedBy)
+            return;
+
+        var generation = EditorGeneration;
+        var number = Id!;
+        var token = Lifetime;
+        _retryingRecovery = true;
+        _freshRecovery = null;
+        _freshReadFailure = null;
+        try
+        {
+            var principal = await ReadPrincipalAsync();
+            if (generation != EditorGeneration || token.IsCancellationRequested) return;
+            var actor = await Employee.GetCurrentWithRolesAsync(Db, principal, token);
+            if (generation != EditorGeneration || token.IsCancellationRequested) return;
+            if (actor is null || actor.Id != openedBy.Id)
+            {
+                _freshReadFailure = "Не удалось подтвердить сотрудника для чтения договора Билайн.";
+                return;
+            }
+
+            var result = await BeelineData.ReadAsync(Db, actor, number, token);
+            if (generation != EditorGeneration || token.IsCancellationRequested) return;
+            if (result.Contract is { } contract)
+                _freshRecovery = DraftFrom(contract);
+            else
+                _freshReadFailure = "Договор Билайн не найден или недоступен.";
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception e) when (e is UnauthorizedAccessException or SqlException or TimeoutException)
+        {
+            if (generation == EditorGeneration && !token.IsCancellationRequested)
+                _freshReadFailure = DescribeReadFailure(e);
+        }
+        finally
+        {
+            if (generation == EditorGeneration)
+                _retryingRecovery = false;
+        }
+    }
+
+    private static string DescribeReadFailure(Exception error) => error switch
+    {
+        SqlException { Number: 229 } => "Нет доступа к данным договора Билайн.",
+        SqlException or TimeoutException => "Не удалось прочитать актуальные параметры договора Билайн.",
+        _ => error.Message,
+    };
 
     private Task ChangeZoneAsync(string? zone) => Draft is { } draft && !_openingSim
         ? UpdateDraftAsync(draft with { TimeZone = zone ?? "" }) : Task.CompletedTask;

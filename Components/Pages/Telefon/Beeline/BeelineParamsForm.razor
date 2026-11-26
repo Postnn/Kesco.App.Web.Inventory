@@ -14,7 +14,7 @@
             <ClayToolbarButton Options="Ok" Disabled="@(Busy || Loading || _openingSim || ConfirmedCleanupPending || _contract is null || Draft is null || Dirty && !CanSave)"
                                OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="SaveButton" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
-            <ClayToolbarButton Options="ReloadButton" Disabled="@(!CanRefresh || _openingSim)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="ReloadButton" Disabled="@(!(CanRefresh || CanRetryRecovery) || _openingSim || _retryingRecovery)" OnClick="RefreshBeelineAsync" />
             <ClayToolbarButton Options="CancelButton" Disabled="@(Busy || _openingSim)" OnClick="CancelAsync" />
         </ClayToolbar>
     </Toolbar>
@@ -34,7 +34,7 @@
                 <ul>@foreach (var error in Validation) { <li>@error</li> }</ul>
             </MudAlert>
         }
-        @if (_contract is { } contract && Draft is { } draft)
+        @if (_contract is { } contract && Draft is { } draft && !ShowRecovery)
         {
             @if (_zones.Length == 0)
             {
@@ -71,9 +71,9 @@
                 <ClayTextBox Options="_emailOptions" Value="@draft.EmailManager" ValueChanged="ChangeEmailAsync" />
             </div>
         }
-        else if (!Loading && CanReadMissingDraft && (Draft is not null || StorageBlocked))
+        else if (ShowRecovery)
         {
-            <section aria-label="Восстановление параметров договора" class="d-flex flex-column gap-2">
+            <section aria-label="Восстановление параметров договора" class="d-flex flex-column gap-2" data-draft-scope="main">
                 @if (_freshReadFailure is { } reason && reason != Message)
                 {
                     <MudText Typo="Typo.body2">@reason</MudText>
@@ -83,6 +83,18 @@
                 {
                     <div>Time zone из черновика: @recovered.TimeZone</div>
                     <div>Email менеджера из черновика: @recovered.EmailManager</div>
+                }
+                <ClayTextBox Options="RecoveryZoneOptions" Value="@Draft?.TimeZone" />
+                <ClayTextBox Options="RecoveryEmailOptions" Value="@Draft?.EmailManager" />
+                <div>
+                    <ClayToolbarButton Options="RetryRecoveryButton" Disabled="@(!CanRetryRecovery)"
+                                       OnClick="RetryRecoveryReadAsync" />
+                </div>
+                @if (_freshRecovery is { } fresh)
+                {
+                    <div>Актуальные параметры для сверки:</div>
+                    <div>Time zone из базы: @fresh.TimeZone</div>
+                    <div>Email менеджера из базы: @fresh.EmailManager</div>
                 }
             </section>
         }

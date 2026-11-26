@@ -111,6 +111,7 @@ public partial class EquipmentIns : IDisposable
     private string? _createdEditUrl;
     private string? _sourceKey;
     private bool _initialRenderCompleted;
+    private bool _loadedFromCopy;
     private string? _validationMessage;
     private string _originalSnapshot = string.Empty;
 
@@ -120,7 +121,8 @@ public partial class EquipmentIns : IDisposable
         Services.GetRequiredKeyedService<DocumentSelectDataSource>("accounting");
 
     private bool IsModified => _loaded && _createdEquipmentId is null && Snapshot() != _originalSnapshot;
-    private bool CanSave => _loaded && _canEdit && !_loading && !_saving && IsModified;
+    private bool HasPendingCreation => _createdEquipmentId is null && (_loadedFromCopy || IsModified);
+    private bool CanSave => _loaded && _canEdit && !_loading && !_saving && HasPendingCreation;
     private bool ShowNetworkName => _selectedType?.HasNetworkName > 0;
     private int MacCount => Math.Min(3, _selectedModel?.NetworkInterfaces ?? 0);
     private Func<Employee, Task>? EmployeeViewItem =>
@@ -165,6 +167,7 @@ public partial class EquipmentIns : IDisposable
         _ownerVersion++;
         _loading = true;
         _loaded = false;
+        _loadedFromCopy = false;
         _notFound = false;
         _allowNavigation = false;
         _createdEquipmentId = null;
@@ -223,6 +226,7 @@ public partial class EquipmentIns : IDisposable
             UpdateOptions();
             _validationMessage = null;
             _loaded = true;
+            _loadedFromCopy = copyId > 0;
             _originalSnapshot = Snapshot();
         }
         catch (OperationCanceledException) when (_disposed || !IsCurrent(version))
@@ -471,7 +475,7 @@ public partial class EquipmentIns : IDisposable
         }
         if (_saving)
             return;
-        if (!IsModified)
+        if (!HasPendingCreation)
         {
             if (closeAfterSave)
                 await CloseAsync();

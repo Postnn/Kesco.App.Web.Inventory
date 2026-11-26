@@ -3,19 +3,20 @@
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
 @using Clayzor.Lib.Web.Controls.Components.Select
-@implements IDisposable
+@using Clayzor.Lib.Web.Controls.Services
 
 <PageTitle>Локальная сеть</PageTitle>
+<span hidden data-net-operation="@_operationRoot"></span>
 <NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
 <ClayEntityForm Options="_entityFormOptions">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || _poeRunning || !_loaded || CurrentUser is null || _requiresReconciliation)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || _poeRunning || !_loaded || CurrentUser is null || RequiresReconciliation || OperationBlocked)" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
             @if (_model?.Poe == 1)
             {
-                <ClayToolbarButton Options="_poeOptions" Disabled="@(_loading || _saving || _poeRunning || CurrentUser is null)" OnClick="RestartPoeAsync" />
+                <ClayToolbarButton Options="_poeOptions" Disabled="@(_loading || _saving || _poeRunning || CurrentUser is null || OperationBlocked)" OnClick="RestartPoeAsync" />
             }
             <ClayToolbarButton Options="_cancelOptions" Disabled="@(_saving || _poeRunning)" OnClick="CancelAsync" />
         </ClayToolbar>
@@ -47,6 +48,51 @@
             @if (!string.IsNullOrWhiteSpace(_parentRefreshWarning))
             {
                 <MudAlert Severity="Severity.Warning">@_parentRefreshWarning</MudAlert>
+            }
+            @if (_operationNotice is not null)
+            {
+                <section aria-label="Журнал операций" data-testid="net-operation-journal">
+                    <MudAlert Severity="Severity.Warning">@_operationNotice</MudAlert>
+                    <ClayToolbarButton Options="RetryJournalOptions" Disabled="@(!CanInspectOperation)" OnClick="CheckOperationJournalAsync" />
+                    @if (_operationContext is { } context)
+                    {
+                        @foreach (var candidate in context.OtherAttempts.Where(candidate => candidate.CanRecover))
+                        {
+                            <ClayToolbarButton Options="RecoverOperationOptions" Disabled="@(!CanInspectOperation || context.Attempt is not null)"
+                                               OnClick="() => RecoverOperationAsync(candidate)" />
+                        }
+                        @if (context.Attempt is { Status: not ClayDraftOperationStatus.Confirmed })
+                        {
+                            <ClayToolbarButton Options="ReadOutcomeOptions" Disabled="@(!CanInspectOperation)" OnClick="ReadObservedOutcomeAsync" />
+                        }
+                    }
+                    @if (_observedOutcome is not null)
+                    {
+                        <MudText>@_observedOutcome</MudText>
+                    }
+                </section>
+            }
+            @if (_reconciliation is { } reconciliation)
+            {
+                <section aria-label="Сверка после сохранения" data-testid="net-reconciliation">
+                    <ClayToolbarButton Options="ReconcileOptions" Disabled="@(!CanReconcile)" OnClick="ReviewReconciliationAsync" />
+                    @if (reconciliation.Review is { } review)
+                    {
+                        @foreach (var field in review.Conflicts)
+                        {
+                            <fieldset @key="field" disabled="@_loading">
+                                <legend>@field.Label</legend>
+                                <div>Отправлено: @field.Sent</div>
+                                <div>Мой ввод: @field.Local</div>
+                                <div>Из БД: @field.Fresh</div>
+                                <ClayRadioGroup TValue="bool?" Items="ReconciliationChoices" @bind-Value="field.KeepLocal" />
+                            </fieldset>
+                        }
+                        <ClayToolbarButton Options="AcceptReconcileOptions"
+                            Disabled="@(!CanReconcile || review.Conflicts.Any(field => field.KeepLocal is null))"
+                            OnClick="ResolveReconciliationAsync" />
+                    }
+                </section>
             }
             <MudText Typo="Typo.subtitle1" Class="font-weight-bold" data-testid="net-port-caption">@PortCaption</MudText>
             <MudGrid Spacing="2">
