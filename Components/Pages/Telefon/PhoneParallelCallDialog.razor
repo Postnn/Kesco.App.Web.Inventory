@@ -6,18 +6,18 @@
 <MudDialog>
     <TitleContent>@(IsEdit ? "Параллельный вызов" : "Новый параллельный вызов")</TitleContent>
     <DialogContent>
-        <div class="equipment-ins-fields">
+        <div class="equipment-ins-fields @TelDraft?.RootClass" data-draft-scope="@TelDraft?.Scope" inert="@(TelDraft?.Busy == true)">
             <div class="equipment-ins-row">
                 <span class="equipment-ins-label">Номер:</span>
                 <ClayTextBox @bind-Value="Value.CallNumber" Options="_numberOptions" />
             </div>
             <div class="equipment-ins-row">
                 <span class="equipment-ins-label">Задержка перед вызовом:</span>
-                <ClayNumber Value="@((decimal?)Value.DelayBeforeCall)" ValueChanged="OnDelayBeforeChanged" Options="_delayOptions" />
+                <ClayNumber Value="@((decimal?)Value.DelayBeforeCall)" ValueChanged="OnDelayBeforeChanged" Options="_delayBeforeOptions" />
             </div>
             <div class="equipment-ins-row">
                 <span class="equipment-ins-label">Задержка быстрого ответа:</span>
-                <ClayNumber Value="@((decimal?)Value.DelayTooQuickResponse)" ValueChanged="OnDelayQuickChanged" Options="_delayOptions" />
+                <ClayNumber Value="@((decimal?)Value.DelayTooQuickResponse)" ValueChanged="OnDelayQuickChanged" Options="_delayQuickOptions" />
             </div>
             <ClayCheckbox State="Value.NotUsed" StateChanged="OnNotUsedChanged" Label="Не использовать" />
         </div>
@@ -25,17 +25,27 @@
         {
             <MudAlert Severity="Severity.Error" Class="mt-2">@_errorMessage</MudAlert>
         }
+        @if (TelDraft?.Error is { } message)
+        {
+            <MudAlert Severity="Severity.Error">@message</MudAlert>
+            @if (TelDraft.NeedsRawRestore)
+            {
+                <ClayToolbarButton Options="_restoreOptions" OnClick="TelDraft.RestoreAsync" Disabled="TelDraft.Busy" />
+            }
+        }
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButton" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButton" OnClick="Apply" />
+        <ClayToolbarButton Options="_cancelButton" OnClick="Cancel" Disabled="@(TelDraft?.Busy == true)" />
+        <ClayToolbarButton Options="_okButton" OnClick="Apply" Disabled="@(TelDraft?.CanApply == false)" />
         <ClayFormActions Form="InventoryFormHelp.Tel" />
     </DialogActions>
 </MudDialog>
 
 @code {
-    private readonly ClayTextBoxOptions _numberOptions = new() { Required = true, RequiredError = "Укажите номер", MaxLength = 50 };
-    private readonly ClayNumberOptions _delayOptions = new() { Min = 0, Max = 255, Precision = 0, HideSpinButtons = true };
+    private readonly ClayTextBoxOptions _numberOptions = new() { DraftKey = "parallel.number", Required = true, RequiredError = "Укажите номер", MaxLength = 50 };
+    private readonly ClayNumberOptions _delayBeforeOptions = new() { DraftKey = "parallel.delay-before", Min = 0, Max = 255, Precision = 0, HideSpinButtons = true };
+    private readonly ClayNumberOptions _delayQuickOptions = new() { DraftKey = "parallel.delay-quick", Min = 0, Max = 255, Precision = 0, HideSpinButtons = true };
+    private readonly ClayToolbarButtonOptions _restoreOptions = new() { Text = "Повторить восстановление ввода" };
     private readonly ClayToolbarButtonOptions _cancelButton = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButton = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
     private string? _errorMessage;
@@ -54,13 +64,39 @@
     /// <summary>Номера других параллельных вызовов.</summary>
     [Parameter] public IReadOnlyCollection<string> OtherNumbers { get; set; } = [];
 
-    private void Cancel() => Dialog.Cancel();
+    /// <summary>Область черновика текущего редактора Tel.</summary>
+    [Parameter] public TelRelationDraftSession<PhoneParallelCall>? TelDraft { get; set; }
 
-    private void Apply()
+    /// <inheritdoc />
+    protected override void OnParametersSet()
+    {
+        if (TelDraft is null)
+            return;
+        _numberOptions.DraftKey = TelDraft.Scope + ".number";
+        _delayBeforeOptions.DraftKey = TelDraft.Scope + ".delay-before";
+        _delayQuickOptions.DraftKey = TelDraft.Scope + ".delay-quick";
+    }
+
+    /// <inheritdoc />
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (TelDraft is not null && await TelDraft.RenderedAsync(Value.Clone()))
+            StateHasChanged();
+    }
+
+    private async Task Cancel()
+    {
+        if (TelDraft is null || await TelDraft.CancelAsync())
+            Dialog.Cancel();
+    }
+
+    private async Task Apply()
     {
         var errors = PhoneFormValidator.ValidateParallelCall(Value, CurrentNumber, OtherNumbers);
         _errorMessage = string.Join(" ", errors);
-        if (errors.Count == 0) Dialog.Close(DialogResult.Ok(Value.Clone()));
+        var value = Value.Clone();
+        if (errors.Count == 0 && (TelDraft is null || await TelDraft.ApplyAsync(value)))
+            Dialog.Close(DialogResult.Ok(value));
     }
 
     private void OnDelayBeforeChanged(decimal? value) => Value.DelayBeforeCall = (int)Math.Round(value ?? 0, 0, MidpointRounding.ToEven);

@@ -4,12 +4,19 @@
 @using Clayzor.Lib.Web.Controls.Components.Form
 @using Clayzor.Lib.Web.Controls.Components.Select
 @using Clayzor.Lib.Web.DBSelect.Equipment
+@using Kesco.App.Web.Inventory.Components.Layout
 @inject IServiceProvider Services
 @inject IDialogService DialogService
 
 <MudDialog>
     <TitleContent>Подключение UPS #@UpsEquipmentId</TitleContent>
     <DialogContent>
+        <ClayFormActions Form="InventoryFormHelp.EquipmentUps" />
+        <div data-draft-scope="@DraftScope">
+        @if (BaselineError is not null)
+        {
+            <MudAlert Severity="Severity.Warning">@BaselineError</MudAlert>
+        }
         @if (!string.IsNullOrWhiteSpace(_error))
         {
             <MudAlert Severity="Severity.Error">@_error</MudAlert>
@@ -79,10 +86,11 @@
                 <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить тест" OnClick="() => EditTest(item)" />
             </RowActions>
         </ClayGrid>
+        </div>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked)" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelUps" Disabled="@_saving" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked || BaselineError is not null)" />
     </DialogActions>
 </MudDialog>
 
@@ -110,9 +118,14 @@
     };
     private int? _serverToAdd;
     private bool _addingServer;
+    private bool _openingTest;
+    private EquipmentUpsTestDraft? _pendingTestDraft;
 
     /// <summary>Идентификатор UPS.</summary>
     [Parameter] public int UpsEquipmentId { get; set; }
+
+    /// <summary>Сообщение восстановления, если сохранённый ввод не имеет исходной версии для записи.</summary>
+    [Parameter] public string? BaselineError { get; set; }
 
     /// <summary>Возвращает актуальное локальное время браузера.</summary>
     [Parameter] public Func<Task<DateTime>>? GetNow { get; set; }
@@ -123,11 +136,26 @@
     /// <summary>Идентификатор вложенного теста для восстановления.</summary>
     [Parameter] public int? RestoreTestId { get; set; }
 
-    /// <summary>Уведомляет DR-01 об открытии восстановленного вложенного теста.</summary>
-    [Parameter] public Func<Task>? NotifyTestOpened { get; set; }
+    /// <summary>Черновик ранее открытого вложенного теста.</summary>
+    [Parameter] public EquipmentUpsTestDraft? RestoredTestDraft { get; set; }
 
-    /// <summary>Устанавливает идентификатор открытого вложенного теста DR-01.</summary>
-    [Parameter] public Func<int?, Task>? NestedTestChanged { get; set; }
+    /// <summary>Стабильная область родительского диалога.</summary>
+    [Parameter] public string? DraftScope { get; set; }
+
+    /// <summary>Класс DOM-владельца для портала вложенного диалога.</summary>
+    [Parameter] public string? DraftOwnerClass { get; set; }
+
+    /// <summary>Сохраняет незавершённый typed ввод вложенного теста.</summary>
+    [Parameter] public Func<EquipmentUpsTestDraft, Task>? PublishTestDraft { get; set; }
+
+    /// <summary>Восстанавливает raw ввод после отрисовки вложенного теста.</summary>
+    [Parameter] public Func<string, bool, Task<bool>>? RestoreTestRaw { get; set; }
+
+    /// <summary>Проверяет, что raw ввод вложенного теста можно принять.</summary>
+    [Parameter] public Func<string, Task<bool>>? CanAcceptTest { get; set; }
+
+    /// <summary>Завершает область вложенного теста после принятия или отмены.</summary>
+    [Parameter] public Func<int, bool, Task<bool>>? FinishTestDraft { get; set; }
 
     /// <summary>Редактируемые серверы.</summary>
     [Parameter] public List<UpsServerLink> Servers { get; set; } = [];
@@ -141,19 +169,18 @@
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         await base.OnAfterRenderAsync(firstRender);
+        if (firstRender)
+            _pendingTestDraft = RestoredTestDraft;
         if (firstRender && RestoreTestId is not null)
         {
             var testId = RestoreTestId.Value;
             var item = Tests.FirstOrDefault(test => test.Id == testId);
-            var isNew = item is null;
             item ??= new UpsTest
             {
                 UpsEquipmentId = UpsEquipmentId,
                 TestedAt = GetNow is null ? DateTime.Now : await GetNow(),
             };
-            var updated = await EditTest(item);
-            if (isNew && updated is not null)
-                Tests.Add(updated);
+            await EditTest(item);
         }
         if (DraftChanged is not null)
             await DraftChanged();
@@ -206,56 +233,131 @@
     {
         var now = GetNow is null ? DateTime.Now : await GetNow();
         var item = new UpsTest { UpsEquipmentId = UpsEquipmentId, TestedAt = now };
-        var updated = await EditTest(item);
-        if (updated is not null)
-            Tests.Add(updated);
+        await EditTest(item);
     }
 
-    private async Task<UpsTest?> EditTest(UpsTest item)
+    private async Task EditTest(UpsTest item)
     {
-        var value = new UpsTest
+        if (_openingTest)
+            return;
+        if (_pendingTestDraft is { } pending && pending.Original.Id != item.Id)
         {
-            Id = item.Id,
-            UpsEquipmentId = UpsEquipmentId,
-            TestedAt = item.TestedAt,
-            BatteryTime = item.BatteryTime,
-            Servers = item.Servers,
-            Issues = item.Issues,
-            ChangedByName = item.ChangedByName,
-            ChangedAt = item.ChangedAt,
-        };
-        var parameters = new DialogParameters<EquipmentUpsTestDialog>
-        {
-            { dialog => dialog.Value, value },
-            { dialog => dialog.Date, value.TestedAt.Date },
-            { dialog => dialog.Time, value.TestedAt.TimeOfDay },
-            { dialog => dialog.AvailableServers, Servers },
-        };
-        if (NestedTestChanged is not null)
-            await NestedTestChanged(item.Id);
+            _error = "Сначала завершите открытый черновик теста UPS.";
+            return;
+        }
+        _openingTest = true;
+        _error = null;
         try
         {
-            var dialog = await DialogService.ShowExAsync<EquipmentUpsTestDialog>(
-                "Тестирование UPS", parameters, new DialogOptionsEx { DragMode = MudDialogDragMode.Simple });
-            if (RestoreTestId == item.Id && NotifyTestOpened is not null)
+            var original = new UpsTest
             {
-                RestoreTestId = null;
-                await NotifyTestOpened();
+                Id = item.Id,
+                UpsEquipmentId = UpsEquipmentId,
+                TestedAt = item.TestedAt,
+                BatteryTime = item.BatteryTime,
+                Servers = item.Servers,
+                Issues = item.Issues,
+                ChangedByName = item.ChangedByName,
+                ChangedAt = item.ChangedAt,
+            };
+            var restored = _pendingTestDraft is { } draft && draft.Original.Id == item.Id &&
+                draft.Original.UpsEquipmentId == UpsEquipmentId ? draft : null;
+            var current = restored ?? new EquipmentUpsTestDraft(original, original.TestedAt.Date,
+                original.TestedAt.TimeOfDay, original.BatteryTime, original.Servers, original.Issues);
+            var value = new UpsTest
+            {
+                Id = item.Id,
+                UpsEquipmentId = UpsEquipmentId,
+                TestedAt = item.TestedAt,
+                BatteryTime = current.BatteryTime,
+                Servers = current.Servers,
+                Issues = current.Issues,
+                ChangedByName = item.ChangedByName,
+                ChangedAt = item.ChangedAt,
+            };
+            var scope = DraftScope is null ? null : $"{DraftScope[..^"root".Length]}{item.Id}";
+            Func<Task<bool>>? restoreRaw = null;
+            var rawReady = scope is null || RestoreTestRaw is null;
+            if (scope is not null && RestoreTestRaw is { } restoreTestRaw)
+            {
+                var requested = false;
+                restoreRaw = async () =>
+                {
+                    var retry = requested;
+                    requested = true;
+                    rawReady = false;
+                    rawReady = await restoreTestRaw(scope, retry);
+                    return rawReady;
+                };
             }
-            var result = await dialog.Result;
-            if (result is null || result.Canceled || result.Data is not UpsTest updated)
-                return null;
-            var index = Tests.IndexOf(item);
-            if (index >= 0)
-                Tests[index] = updated;
-            return updated;
+            Func<Task<bool>>? canAccept = scope is null || CanAcceptTest is null ? null : () => CanAcceptTest(scope);
+            var parameters = new DialogParameters<EquipmentUpsTestDialog>
+            {
+                { dialog => dialog.Value, value },
+                { dialog => dialog.Date, current.Date },
+                { dialog => dialog.Time, current.Time },
+                { dialog => dialog.AvailableServers, Servers },
+                { dialog => dialog.Original, current.Original },
+                { dialog => dialog.DraftScope, scope },
+                { dialog => dialog.DraftOwnerClass, DraftOwnerClass },
+                { dialog => dialog.PublishDraft, PublishTestDraft is null ? null : SaveTestDraftAsync },
+                { dialog => dialog.RestoreRaw, restoreRaw },
+                { dialog => dialog.CanAcceptDraft, canAccept },
+            };
+            if (PublishTestDraft is not null)
+                await SaveTestDraftAsync(current);
+
+            var reference = await DialogService.ShowExAsync<EquipmentUpsTestDialog>("Тестирование UPS", parameters,
+                new DialogOptionsEx { DragMode = MudDialogDragMode.Simple });
+            var result = await reference.Result;
+            if (result is null)
+                return;
+
+            var accepted = !result.Canceled && result.Data is UpsTest;
+            if (!accepted && !rawReady)
+            {
+                _error = "Ввод теста сохранён. Откройте этот же тест для восстановления.";
+                return;
+            }
+            if (accepted && result.Data is UpsTest updated)
+            {
+                var index = Tests.IndexOf(item);
+                if (index >= 0)
+                    Tests[index] = updated;
+                else
+                    Tests.Add(updated);
+            }
+            if (FinishTestDraft is null || await FinishTestDraft(item.Id, accepted))
+                _pendingTestDraft = null;
+            else
+                _error = "Не удалось завершить черновик теста UPS. Откройте этот же тест для сверки.";
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Microsoft.JSInterop.JSException or
+            Microsoft.JSInterop.JSDisconnectedException or OperationCanceledException)
+        {
+            if (!_disposed)
+                _error = "Не удалось завершить черновик вложенного теста UPS.";
         }
         finally
         {
-            if (NestedTestChanged is not null)
-                await NestedTestChanged(null);
+            _openingTest = false;
         }
     }
 
-    private Task Apply() => ApplyAsync(new EquipmentUpsDialogResult(Servers, Tests), () => null);
+    private async Task SaveTestDraftAsync(EquipmentUpsTestDraft draft)
+    {
+        _pendingTestDraft = draft;
+        await PublishTestDraft!(draft);
+    }
+
+    private void CancelUps()
+    {
+        if (_pendingTestDraft is not null)
+            _error = "Сначала завершите открытый черновик теста UPS.";
+        else
+            Cancel();
+    }
+
+    private Task Apply() => ApplyAsync(new EquipmentUpsDialogResult(Servers, Tests), () =>
+        BaselineError ?? (_pendingTestDraft is not null ? "Сначала завершите открытый черновик теста UPS." : null));
 }

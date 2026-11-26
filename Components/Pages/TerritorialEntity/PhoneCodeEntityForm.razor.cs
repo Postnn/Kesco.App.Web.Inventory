@@ -1,4 +1,7 @@
+using System.Data.SqlTypes;
 using System.Globalization;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Entities.TerritorialEntity;
 using Clayzor.Lib.Web.Controls.Components.Form;
@@ -6,6 +9,7 @@ using Clayzor.Lib.Web.Controls.Components.Select;
 using Clayzor.Lib.Web.Controls.Services;
 using Clayzor.Lib.Web.DBSelect.TerritorialEntity;
 using Microsoft.AspNetCore.Components;
+using Microsoft.JSInterop;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.TerritorialEntity;
 
@@ -13,7 +17,12 @@ namespace Kesco.App.Web.Inventory.Components.Pages.TerritorialEntity;
 public partial class PhoneCodeEntityForm
 {
     /// <summary>Черновик сохраняет даже ещё не разобранную длину области.</summary>
-    public sealed record FormState(int? TerritoryId, string Code, string? Length, int? TypeId, string Comment);
+    public sealed record FormState(int? TerritoryId, string Code, string? Length, int? TypeId, string Comment)
+    {
+        /// <summary>Идентификатор привязки поиска к текущей редакции формы.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? SearchEpoch { get; init; }
+    }
 
     /// <summary>Строковый код, который передал query parser, включая ведущие нули.</summary>
     [SupplyParameterFromQuery(Name = "id")] public string? QueryId { get; set; }
@@ -42,8 +51,66 @@ public partial class PhoneCodeEntityForm
     protected override bool Editable => !_deleted && (_original is null ? string.IsNullOrEmpty(QueryId) && Access.PhoneInsert : Access.PhoneUpdate);
     private bool CanDelete => !_deleted && _original is not null && Access.PhoneDelete;
     protected override bool CanRegisterDraft => Editable || CanDelete;
-    protected override DraftRowVersion? ReadDraftRowVersion() => _original is { } row
-        ? new(row.Code, row.ChangedBy, row.ChangedByName, row.ChangedAt) : null;
+    /// <inheritdoc />
+    protected override bool SupportsEditorCancellation => true;
+
+    /// <inheritdoc />
+    protected override bool HasEditorTransientChanges => _activeSearch is not null && Draft?.SearchEpoch is not null;
+
+    /// <inheritdoc />
+    protected override DraftRowVersion? ReadDraftRowVersion() => _original is { } row ? VersionOf(row) : null;
+
+    private static DraftRowVersion VersionOf(PhoneCodeEntityRecord row) =>
+        new(row.Code, row.ChangedBy, row.ChangedByName, row.ChangedAt);
+
+    /// <inheritdoc />
+    protected override bool StatesEqual(FormState? left, FormState? right) =>
+        base.StatesEqual(left is null ? null : ForBusinessIntent(left), right is null ? null : ForBusinessIntent(right));
+
+    /// <inheritdoc />
+    protected override FormState ForBusinessIntent(FormState state) =>
+        state.SearchEpoch is null ? state : state with { SearchEpoch = null };
+
+    /// <inheritdoc />
+    protected override async Task<FreshEditorState?> ReadFreshEditorAsync(Employee actor, CancellationToken token)
+    {
+        var code = QueryId;
+        var queryTerritory = QueryTerritory;
+        var access = await TerritorialEntityData.ReadAccessAsync(Db, actor, token);
+        if (code is null ? !access.PhoneInsert : !access.PhoneUpdate) return null;
+
+        PhoneCodeEntityRecord? original = null;
+        int? defaultTerritory = null;
+        var territoryConflict = false;
+        if (code is not null)
+        {
+            if (string.IsNullOrWhiteSpace(code) || code.Length > 20 || _original?.Code != code) return null;
+            original = await TerritorialEntityData.ReadPhoneAsync(Db, code, token);
+            if (original is null || original.Code != code || original.ChangedAt < SqlDateTime.MinValue.Value ||
+                original.ChangedAt > SqlDateTime.MaxValue.Value)
+                return null;
+            var territory = await _territorySource.GetByIdAsync(original.TerritoryId, token);
+            territoryConflict = territory?.IsPhoneCodeTerritory != true;
+        }
+        else if (queryTerritory is not null)
+        {
+            if (!TerritorialEntityRoutes.TryPositiveId(queryTerritory, out var id)) return null;
+            var territory = await _territorySource.GetByIdAsync(id, token);
+            if (territory?.IsPhoneCodeTerritory != true) return null;
+            defaultTerritory = territory.Id;
+        }
+
+        var types = (await TerritorialEntityData.ReadPhoneTypesAsync(Db, token)).ToArray();
+        token.ThrowIfCancellationRequested();
+        var state = original is null ? new FormState(defaultTerritory, "", null, null, "") : ToState(original);
+        return new FreshEditorState(state, access, original is null ? null : VersionOf(original), () =>
+        {
+            _original = original;
+            _types = types;
+            _territoryConflict = territoryConflict;
+            UpdateAccess();
+        });
+    }
 
     protected override IReadOnlyList<DraftMergeField> MergeFields =>
     [
@@ -126,7 +193,10 @@ public partial class PhoneCodeEntityForm
         await UpdateDraftAsync(Draft with { TerritoryId = value });
     }
 
+    private const string TerritorySearchScope = "phone-code.territory-search";
     private CancellationTokenSource? _activeSearch;
+    private int _activeSearchGeneration;
+    private ClayDraftRegistration? _resumedSearch;
     private string? _searchRoute;
 
     protected override void OnParametersSet()
@@ -139,52 +209,143 @@ public partial class PhoneCodeEntityForm
         base.OnParametersSet();
     }
 
+    /// <inheritdoc />
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        await base.OnAfterRenderAsync(firstRender);
+        if (_activeSearch is not null && _activeSearchGeneration != EditorGeneration)
+            _activeSearch.Cancel();
+        if (!CanSearchTerritory || _activeSearch is not null || EditorDraftRegistration is not { } registration ||
+            ReferenceEquals(_resumedSearch, registration))
+            return;
+        _resumedSearch = registration;
+        if (registration.Restore.TypedScopes?.TryGetValue(TerritorySearchScope, out var payload) != true)
+            return;
+        TerritorySearchLease? lease;
+        try { lease = JsonSerializer.Deserialize<TerritorySearchLease>(payload!); }
+        catch (JsonException) { return; }
+        if (lease is { Version: 1 } && lease.Actor == CurrentUser?.Id && lease.Route == RouteKey &&
+            lease.PreviousTerritory == Draft?.TerritoryId && lease.Epoch is { } epoch && Draft?.SearchEpoch == epoch)
+            await RunTerritorySearchAsync(registration, null, lease);
+    }
+
+    private bool CanSearchTerritory => Editable && CanCommit && !DraftInputSuppressed && Draft is not null;
+
     private async Task<ClaySelectExternalResult<TerritorialEntityLookup, int?>?> FindTerritoryAsync(ClaySelectAdvancedSearchContext context)
     {
-        if (!Editable || Busy || Loading || Draft is null) return null;
+        if (CanSearchTerritory && _activeSearch is null && EditorDraftRegistration is { } registration)
+            await RunTerritorySearchAsync(registration, context, null);
+        return null;
+    }
+
+    private async Task RunTerritorySearchAsync(ClayDraftRegistration registration,
+        ClaySelectAdvancedSearchContext? context, TerritorySearchLease? restored)
+    {
+        if (CurrentUser is not { } actor) return;
         using var request = CancellationTokenSource.CreateLinkedTokenSource(Lifetime);
-        _activeSearch?.Cancel();
         _activeSearch = request;
         var ct = request.Token;
         var route = RouteKey;
+        var generation = _activeSearchGeneration = EditorGeneration;
         var source = _territorySource;
-        var previous = Draft.TerritoryId;
-        bool Current() => !ct.IsCancellationRequested && Editable && !Busy && !Loading && !DraftInputSuppressed &&
-            route == RouteKey && ReferenceEquals(source, _territorySource) && Draft?.TerritoryId == previous;
+        var previous = Draft?.TerritoryId;
+        var url = Navigation.ToAbsoluteUri(TerritorialEntityRoutes.Search).AbsoluteUri;
+        var proof = restored?.Proof ?? Guid.NewGuid().ToString("N");
+        var epoch = restored?.Epoch ?? Guid.NewGuid().ToString("N");
+        bool EditorCurrent() => !ct.IsCancellationRequested && CanSearchTerritory && CurrentUser?.Id == actor.Id &&
+            route == RouteKey && generation == EditorGeneration && ReferenceEquals(registration, EditorDraftRegistration) &&
+            ReferenceEquals(source, _territorySource) && Draft?.TerritoryId == previous;
+        bool Current() => EditorCurrent() && Draft?.SearchEpoch == epoch;
+
+        async Task<bool> Ready(CancellationToken token)
+        {
+            var ready = false;
+            await InvokeAsync(() => { ready = !token.IsCancellationRequested && Current(); });
+            return ready;
+        }
+
+        async Task<ClaySelectReturnDecision> Apply(JsonElement value, CancellationToken token)
+        {
+            var decision = ClaySelectReturnDecision.Stale;
+            await InvokeAsync(async () =>
+            {
+                if (!Current()) return;
+                if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt32(out var id) || id <= 0)
+                {
+                    decision = ClaySelectReturnDecision.Rejected;
+                    return;
+                }
+
+                TerritorialEntityLookup? item;
+                try { item = await source.GetByIdAsync(id, token); }
+                catch (Exception) when (!token.IsCancellationRequested)
+                {
+                    Message = "Не удалось проверить выбранную территорию. Повторите выбор в окне поиска.";
+                    StateHasChanged();
+                    decision = ClaySelectReturnDecision.Rejected;
+                    return;
+                }
+
+                if (!Current()) return;
+                if (item?.IsPhoneCodeTerritory != true)
+                {
+                    Message = "Выбранная территория недоступна или не подходит для телефонного кода.";
+                    StateHasChanged();
+                    decision = ClaySelectReturnDecision.Rejected;
+                    return;
+                }
+
+                if (context is null)
+                {
+                    await ChangeTerritoryAsync(item.Id);
+                    StateHasChanged();
+                    decision = ClaySelectReturnDecision.Accepted;
+                }
+                else
+                    decision = await context.ApplyAsync(
+                        ClaySelectExternalResult<TerritorialEntityLookup, int?>.FromItem(item), token);
+
+                if (decision == ClaySelectReturnDecision.Accepted &&
+                    (token.IsCancellationRequested || !ReferenceEquals(registration, EditorDraftRegistration) ||
+                     route != RouteKey || Draft?.TerritoryId != item.Id || StorageBlocked))
+                    decision = ClaySelectReturnDecision.Indeterminate;
+            });
+            return decision;
+        }
+
+        async Task SaveRequest(string requestId, CancellationToken token)
+        {
+            if (!EditorCurrent() || Draft is not { } state) throw new OperationCanceledException(token);
+            await UpdateDraftAsync(state with { SearchEpoch = epoch });
+            if (!Current()) throw new OperationCanceledException(token);
+            var lease = new TerritorySearchLease(1, actor.Id, route, previous, requestId, proof, epoch);
+            await registration.OpenScopeAsync(TerritorySearchScope, token);
+            if (await registration.SaveTypedScopeAsync(TerritorySearchScope, JsonSerializer.Serialize(lease), token) <= 0)
+                throw new InvalidOperationException("Не удалось подтвердить контекст поиска.");
+            if (!Current()) throw new OperationCanceledException(token);
+        }
+
         try
         {
-            await TerritorySearch.OpenAcknowledgedAsync<TerritorialEntityLookup, int?>(
-                Navigation.ToAbsoluteUri(TerritorialEntityRoutes.Search).AbsoluteUri, async (result, token) =>
-                {
-                    if (!Current()) return ClaySelectReturnDecision.Stale;
-                    TerritorialEntityLookup? item;
-                    try { item = result.Value is int id && id > 0 ? await source.GetByIdAsync(id, token) : null; }
-                    catch (Exception) when (!token.IsCancellationRequested)
-                    {
-                        Message = "Не удалось проверить выбранную территорию. Повторите выбор в окне поиска.";
-                        StateHasChanged();
-                        return ClaySelectReturnDecision.Rejected;
-                    }
-
-                    if (!Current()) return ClaySelectReturnDecision.Stale;
-                    if (item?.IsPhoneCodeTerritory != true)
-                    {
-                        Message = "Выбранная территория недоступна или не подходит для телефонного кода.";
-                        StateHasChanged();
-                        return ClaySelectReturnDecision.Rejected;
-                    }
-
-                    var decision = await context.ApplyAsync(
-                        ClaySelectExternalResult<TerritorialEntityLookup, int?>.FromItem(item), token);
-                    return decision == ClaySelectReturnDecision.Accepted && Draft?.TerritoryId != item.Id
-                        ? ClaySelectReturnDecision.Indeterminate : decision;
-                }, ct);
+            var accepted = restored is null
+                ? await TerritorySearch.OpenRecoverableAsync(url, false, proof, Ready, SaveRequest, Apply, ct)
+                : await TerritorySearch.ResumeUndispatchedAsync(url, false, restored.RequestId, proof, Ready, Apply, ct);
+            if (accepted && !ct.IsCancellationRequested && ReferenceEquals(registration, EditorDraftRegistration))
+            {
+                var state = await registration.ReadEditorScopeAsync(TerritorySearchScope, ct);
+                await registration.ReplaceEditorScopeAsync(TerritorySearchScope, state.Revision, null, ct);
+            }
         }
         catch (OperationCanceledException) { }
-        catch (Exception) when (!ct.IsCancellationRequested) { Message = "Не удалось завершить поиск территории."; StateHasChanged(); }
+        catch (Exception ex) when (!ct.IsCancellationRequested && ex is InvalidOperationException or ArgumentException or JSException or JSDisconnectedException)
+        {
+            Message = "Не удалось завершить поиск территории.";
+            StateHasChanged();
+        }
         finally { if (ReferenceEquals(_activeSearch, request)) _activeSearch = null; }
-        return null;
     }
+
+    private sealed record TerritorySearchLease(int Version, int Actor, string Route, int? PreviousTerritory, string RequestId, string Proof, string? Epoch);
 
     private async Task ViewSavedTerritoryAsync(int id)
     {

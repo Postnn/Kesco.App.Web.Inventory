@@ -1,3 +1,5 @@
+using System.Data;
+using System.Data.SqlTypes;
 using System.Text;
 using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.Inventory;
@@ -8,9 +10,11 @@ namespace Kesco.App.Web.Inventory.Services;
 /// <summary>Строит атомарный параметризованный diff основной записи телефона и её связей.</summary>
 public static class PhoneSaveBuilder
 {
+    internal const int VersionConflictStatus = -1;
     /// <summary>Создаёт транзакционный batch; при INSERT использует @@IDENTITY для всех связей.</summary>
     public static PhoneSaveCommand Build(PhoneSaveRequest request)
     {
+        RequireOriginalVersion(request);
         var phone = request.Phone;
         var parameters = MainParameters(phone);
         var sql = new StringBuilder();
@@ -25,9 +29,15 @@ public static class PhoneSaveBuilder
         }
         else
         {
+            parameters.Add("ExpectedChangedAt", request.OriginalPhone.ChangedAtUtc, DbType.DateTime);
+            parameters.Add("VersionConflictStatus", VersionConflictStatus, DbType.Int32);
+            sql.AppendLine(SQLQueries.CHECK_ТелефонИсходнаяВерсияДляСохранения);
             AppendGroupDiff(sql, parameters, request.OriginalRelations.GroupMembers, request.Relations.GroupMembers);
             if (!MainEquals(request.OriginalPhone, phone))
+            {
                 sql.AppendLine(SQLQueries.UPDATE_ТелефонДляФормы).AppendLine(";");
+                sql.AppendLine(SQLQueries.CHECK_ТелефонОбновленаОднаСтрока);
+            }
         }
 
         AppendParallelDiff(sql, parameters, request.OriginalRelations.ParallelCalls, request.Relations.ParallelCalls);
@@ -41,6 +51,15 @@ public static class PhoneSaveBuilder
         sql.AppendLine("    RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);");
         sql.AppendLine("END CATCH;");
         return new PhoneSaveCommand(sql.ToString(), parameters);
+    }
+
+    internal static void RequireOriginalVersion(PhoneSaveRequest request)
+    {
+        var original = request.OriginalPhone;
+        if (request.Phone.Id > 0 &&
+            (original.Id != request.Phone.Id || original.ChangedAtUtc < SqlDateTime.MinValue.Value ||
+             original.ChangedAtUtc > SqlDateTime.MaxValue.Value))
+            throw new InvalidOperationException("Исходная версия номера недоступна. Перечитайте номер перед сохранением.");
     }
 
     /// <summary>Сравнивает только 20 сохраняемых полей, исключая технические timestamps.</summary>

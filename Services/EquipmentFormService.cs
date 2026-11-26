@@ -15,6 +15,7 @@ public class EquipmentFormService
     private readonly ILogger<EquipmentFormService>? _logger;
     private readonly Dictionary<string, EquipmentPhoneSyncIntent> _confirmedPhoneIntents = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PhoneSyncAttempt> _phoneSyncAttempts = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim _phoneSyncPlanningGate = new(1, 1);
 
     /// <summary>Создаёт сервис без UI-авторизации для тестов и небезопасных для ролей вызовов.</summary>
     public EquipmentFormService(DbManager db) : this(db, (ICurrentUserPrincipalProvider?)null) { }
@@ -184,24 +185,30 @@ public class EquipmentFormService
             new { EquipmentId = equipmentId }, commandType: CommandType.Text) > 0;
 
     /// <summary>Проверяет роль 43 и добавляет расположение и при необходимости ответственного.</summary>
-    public virtual async Task AddLocationAsync(
+    public virtual Task AddLocationAsync(
         EquipmentLocationPeriod location,
-        EquipmentResponsiblePeriod? responsible = null)
-    {
-        await EnsureInventoryEditAsync();
-        ValidateLocationAddition(location, responsible);
-        await AddLocationCoreAsync(location, responsible, await HasCurrentResponsibleAsync(location.EquipmentId));
-    }
+        EquipmentResponsiblePeriod? responsible = null) =>
+        AddLocationCheckedAsync(location, responsible, expectedActiveResponsible: null);
 
     /// <summary>Атомарно проверяет ожидаемое active-состояние перед добавлением расположения и выдачи.</summary>
-    public virtual async Task AddLocationAsync(
+    public virtual Task AddLocationAsync(
         EquipmentLocationPeriod location,
         EquipmentResponsiblePeriod? responsible,
-        bool expectedActiveResponsible)
+        bool expectedActiveResponsible) =>
+        AddLocationCheckedAsync(location, responsible, expectedActiveResponsible);
+
+    private Task AddLocationCheckedAsync(
+        EquipmentLocationPeriod location,
+        EquipmentResponsiblePeriod? responsible,
+        bool? expectedActiveResponsible)
     {
-        await EnsureInventoryEditAsync();
-        ValidateLocationAddition(location, responsible);
-        await AddLocationCoreAsync(location, responsible, expectedActiveResponsible);
+        var activeResponsible = false;
+        return RunPeriodWriteAsync(async () =>
+        {
+            await EnsureInventoryEditAsync();
+            ValidateLocationAddition(location, responsible);
+            activeResponsible = expectedActiveResponsible ?? await HasCurrentResponsibleAsync(location.EquipmentId);
+        }, () => AddLocationCoreAsync(location, responsible, activeResponsible));
     }
 
     private async Task AddLocationCoreAsync(
@@ -225,11 +232,8 @@ public class EquipmentFormService
     }
 
     /// <summary>Проверяет роль 43 и обновляет срок возврата и примечания расположения.</summary>
-    public virtual async Task UpdateLocationAsync(EquipmentLocationPeriod location)
-    {
-        await EnsureInventoryEditAsync();
-        await location.UpdateAsync(_db);
-    }
+    public virtual Task UpdateLocationAsync(EquipmentLocationPeriod location) =>
+        RunPeriodWriteAsync(EnsureInventoryEditAsync, () => location.UpdateAsync(_db));
 
     /// <summary>Загружает историю ответственных сотрудников.</summary>
     public virtual async Task<IReadOnlyList<EquipmentResponsiblePeriod>> GetResponsiblesAsync(int equipmentId) =>
@@ -237,18 +241,12 @@ public class EquipmentFormService
             SQLQueries.SELECT_ОборудованиеСотрудники, new { EquipmentId = equipmentId })).ToList();
 
     /// <summary>Проверяет роль 43 и добавляет нового ответственного.</summary>
-    public virtual async Task IssueResponsibleAsync(EquipmentResponsiblePeriod responsible)
-    {
-        await EnsureInventoryEditAsync();
-        await responsible.InsertAsync(_db);
-    }
+    public virtual Task IssueResponsibleAsync(EquipmentResponsiblePeriod responsible) =>
+        RunPeriodWriteAsync(EnsureInventoryEditAsync, () => responsible.InsertAsync(_db));
 
     /// <summary>Проверяет роль 43 и обновляет срок возврата, примечания и окончание ответственного.</summary>
-    public virtual async Task UpdateResponsibleAsync(EquipmentResponsiblePeriod responsible)
-    {
-        await EnsureInventoryEditAsync();
-        await responsible.UpdateAsync(_db);
-    }
+    public virtual Task UpdateResponsibleAsync(EquipmentResponsiblePeriod responsible) =>
+        RunPeriodWriteAsync(EnsureInventoryEditAsync, () => responsible.UpdateAsync(_db));
 
     /// <summary>Проверяет роль 43 и атомарно сохраняет изъятие и связанные записи.</summary>
     public virtual Task WithdrawResponsibleAsync(
@@ -258,7 +256,16 @@ public class EquipmentFormService
         WithdrawResponsibleAsync(current, next, location, null);
 
     /// <summary>Проверяет срок возврата по локальному календарному дню начала следующего периода.</summary>
-    public virtual async Task WithdrawResponsibleAsync(
+    public virtual Task WithdrawResponsibleAsync(
+        EquipmentResponsiblePeriod current,
+        EquipmentResponsiblePeriod? next,
+        EquipmentLocationPeriod? location,
+        DateTime? nextFromLocalDate) =>
+        RunPeriodWriteAsync(
+            () => PrepareWithdrawalAsync(current, next, location, nextFromLocalDate),
+            () => current.WithdrawAsync(_db, next, location));
+
+    private async Task PrepareWithdrawalAsync(
         EquipmentResponsiblePeriod current,
         EquipmentResponsiblePeriod? next,
         EquipmentLocationPeriod? location,
@@ -282,7 +289,6 @@ public class EquipmentFormService
             if (next.ReturnDate.Value.Date < nextFromLocalDate.Value.Date)
                 throw new InvalidOperationException("Срок возврата следующего ответственного не может быть раньше его выдачи.");
         }
-        await current.WithdrawAsync(_db, next, location);
     }
 
     private static void ValidateWithdrawal(
@@ -299,6 +305,24 @@ public class EquipmentFormService
         if (location is not null &&
             (location.EquipmentId != current.EquipmentId || location.LocationId <= 0 || location.FromUtc == default))
             throw new InvalidOperationException("Новое расположение не соответствует оборудованию или имеет недопустимую дату.");
+    }
+
+    private static async Task RunPeriodWriteAsync(Func<Task> preflight, Func<Task> write)
+    {
+        try { await preflight(); }
+        catch (Microsoft.Data.SqlClient.SqlException ex)
+        {
+            throw new EquipmentOperationException(EquipmentWritePhase.NotSent,
+                "Не удалось проверить исходные данные периода. Команда записи не отправлена.", ex);
+        }
+
+        try { await write(); }
+        catch (Microsoft.Data.SqlClient.SqlException ex)
+        {
+            // RAISERROR 50000 и текст исключения не подтверждают rollback полученной команды.
+            throw new EquipmentOperationException(EquipmentWritePhase.Unknown,
+                "Результат записи периода неизвестен. Перед повторной записью требуется сверка.", ex);
+        }
     }
 
     /// <summary>Загружает учётные записи без паролей после проверки роли 102.</summary>
@@ -326,31 +350,59 @@ public class EquipmentFormService
         });
     }
 
+    /// <summary>Читает защищённый снимок одной учётной записи с непрозрачной исходной версией.</summary>
+    public virtual async Task<EquipmentAccount> GetAccountEditSnapshotAsync(int equipmentId, string login)
+    {
+        await EnsureAccountAccessAsync(false);
+        return await EquipmentAccount.ReadEditorSnapshotAsync(_db, equipmentId, login)
+            ?? throw new InvalidOperationException("Учётная запись не найдена или была удалена. Сверьте актуальные данные.");
+    }
+
     /// <summary>Добавляет учётную запись после проверки ролей 102 и 43 и фактического типа.</summary>
     public virtual async Task AddAccountAsync(EquipmentAccount account)
     {
-        await EnsureAccountAccessAsync(true);
-        if ((await GetRequiredChildWriteTypeAsync(account.EquipmentId)).MacAddressCount == 0)
-            throw new InvalidOperationException("Учётные записи недоступны для фактического типа оборудования.");
-        await account.InsertAsync(_db);
+        await EnsureAccountWriteAccessAsync(account.EquipmentId);
+        await ExecuteAccountWriteAsync(() => account.InsertAsync(_db));
     }
 
     /// <summary>Обновляет учётную запись после проверки ролей 102 и 43 и фактического типа.</summary>
     public virtual async Task UpdateAccountAsync(EquipmentAccount account)
     {
-        await EnsureAccountAccessAsync(true);
-        if ((await GetRequiredChildWriteTypeAsync(account.EquipmentId)).MacAddressCount == 0)
-            throw new InvalidOperationException("Учётные записи недоступны для фактического типа оборудования.");
-        await account.UpdateAsync(_db);
+        await EnsureAccountWriteAccessAsync(account.EquipmentId);
+        await ExecuteAccountWriteAsync(() => account.UpdateAsync(_db));
     }
 
     /// <summary>Удаляет учётную запись после проверки ролей 102 и 43 и фактического типа.</summary>
     public virtual async Task DeleteAccountAsync(EquipmentAccount account)
     {
-        await EnsureAccountAccessAsync(true);
-        if ((await GetRequiredChildWriteTypeAsync(account.EquipmentId)).MacAddressCount == 0)
-            throw new InvalidOperationException("Учётные записи недоступны для фактического типа оборудования.");
-        await account.DeleteAsync(_db);
+        await EnsureAccountWriteAccessAsync(account.EquipmentId);
+        await ExecuteAccountWriteAsync(() => account.DeleteAsync(_db));
+    }
+
+    private static async Task ExecuteAccountWriteAsync(Func<Task> write)
+    {
+        try { await write(); }
+        catch (EquipmentAccountStorageException ex)
+        {
+            var phase = ex.MayHaveWritten ? EquipmentWritePhase.Unknown
+                : ex.WasDispatched ? EquipmentWritePhase.Rejected : EquipmentWritePhase.NotSent;
+            throw new EquipmentOperationException(phase, ex.Message, ex);
+        }
+    }
+
+    private async Task EnsureAccountWriteAccessAsync(int equipmentId)
+    {
+        try
+        {
+            await EnsureAccountAccessAsync(true);
+            if ((await GetRequiredChildWriteTypeAsync(equipmentId)).MacAddressCount == 0)
+                throw new InvalidOperationException("Учётные записи недоступны для фактического типа оборудования.");
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex)
+        {
+            throw new EquipmentOperationException(EquipmentWritePhase.NotSent,
+                "Не удалось проверить права или тип оборудования. Команда не отправлена.", ex);
+        }
     }
 
     /// <summary>Загружает сведения SIM без PIN/PUK.</summary>
@@ -405,33 +457,62 @@ public class EquipmentFormService
         });
     }
 
+    /// <summary>Читает защищённый исходный снимок только после проверки права просмотра кодов SIM.</summary>
+    public virtual async Task<EquipmentSimCard?> GetSimEditorSnapshotAsync(int equipmentId)
+    {
+        if (!await HasRoleAsync(Роли.Администратор_тарифов_связи))
+            throw new UnauthorizedAccessException("Недостаточно прав для просмотра кодов SIM.");
+        return await EquipmentSimCard.ReadEditorSnapshotAsync(_db, equipmentId);
+    }
+
     /// <summary>Ищет другую активную SIM с тем же номером.</summary>
     public virtual async Task<int?> GetDuplicateSimIdAsync(int equipmentId, string phoneNumber) =>
         await ExecuteRequiredScalarAsync<int?>(SQLQueries.SELECT_SimКарты_Другая_С_Тем_Же_Номером,
             new { EquipmentId = equipmentId, PhoneNumber = phoneNumber }, commandType: CommandType.Text);
 
-    /// <summary>Проверяет роль 42 и фактический тип, атомарно списывает подтверждённый дубликат и сохраняет SIM.</summary>
-    public virtual async Task SaveSimAsync(EquipmentSimCard sim, int? duplicateEquipmentId = null)
+    /// <summary>Сохраняет SIM в явном режиме после свежей проверки права и фактического типа.</summary>
+    public virtual async Task SaveSimAsync(EquipmentSimCard sim, EquipmentSimWriteMode mode, string? expectedVersion,
+        int? duplicateEquipmentId = null)
     {
-        if (!await HasRoleAsync(Роли.Администратор_тарифов_связи))
-            throw new UnauthorizedAccessException("Недостаточно прав для изменения SIM.");
-        if ((await GetRequiredChildWriteTypeAsync(sim.EquipmentId)).HasSimCharacteristics == 0)
-            throw new InvalidOperationException("Сведения SIM недоступны для фактического типа оборудования.");
+        await EnsureSimWriteAccessAsync(sim.EquipmentId);
         var validation = sim.Validate();
         if (validation is not null)
             throw new InvalidOperationException(validation);
-        await sim.SaveAsync(_db, duplicateEquipmentId);
+        await ExecuteSimWriteAsync(() => sim.SaveAsync(_db, mode, expectedVersion, duplicateEquipmentId));
     }
 
-    /// <summary>Проверяет роль 42 и фактический тип, затем удаляет только сведения SIM.</summary>
-    public virtual async Task DeleteSimAsync(int equipmentId)
+    /// <summary>Удаляет проверенную исходную строку после свежей проверки права и фактического типа.</summary>
+    public virtual async Task DeleteSimAsync(int equipmentId, string? expectedVersion)
     {
-        if (!await HasRoleAsync(Роли.Администратор_тарифов_связи))
-            throw new UnauthorizedAccessException("Недостаточно прав для удаления SIM.");
-        if ((await GetRequiredChildWriteTypeAsync(equipmentId)).HasSimCharacteristics == 0)
-            throw new InvalidOperationException("Сведения SIM недоступны для фактического типа оборудования.");
-        await _db.ExecuteAsync(
-            SQLQueries.DELETE_ID_SIMКарты, new { EquipmentId = equipmentId }, commandType: CommandType.Text);
+        await EnsureSimWriteAccessAsync(equipmentId);
+        await ExecuteSimWriteAsync(() => EquipmentSimCard.DeleteAsync(_db, equipmentId, expectedVersion));
+    }
+
+    private async Task EnsureSimWriteAccessAsync(int equipmentId)
+    {
+        try
+        {
+            if (!await HasRoleAsync(Роли.Администратор_тарифов_связи))
+                throw new UnauthorizedAccessException("Недостаточно прав для изменения SIM.");
+            if ((await GetRequiredChildWriteTypeAsync(equipmentId)).HasSimCharacteristics == 0)
+                throw new InvalidOperationException("Сведения SIM недоступны для фактического типа оборудования.");
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            var error = new EquipmentSimStorageException(false, false);
+            throw new EquipmentOperationException(EquipmentWritePhase.NotSent, error.Message, error);
+        }
+    }
+
+    private static async Task ExecuteSimWriteAsync(Func<Task> write)
+    {
+        try { await write(); }
+        catch (EquipmentSimStorageException error)
+        {
+            var phase = error.MayHaveWritten ? EquipmentWritePhase.Unknown
+                : error.WasDispatched ? EquipmentWritePhase.Rejected : EquipmentWritePhase.NotSent;
+            throw new EquipmentOperationException(phase, error.Message, error);
+        }
     }
 
     /// <summary>Возвращает лицо сотрудника для заполнения ПДн.</summary>
@@ -792,7 +873,7 @@ public class EquipmentFormService
     {
         try
         {
-            return ToLegacyResults((await ConfigurePhoneEquipmentAttemptAsync(equipmentId)).Operations);
+            return ToLegacyResults(await ConfigurePhoneEquipmentAttemptAsync(equipmentId));
         }
         catch (EquipmentOperationException ex)
         {
@@ -801,11 +882,12 @@ public class EquipmentFormService
     }
 
     /// <summary>Создаёт либо продолжает explicit Configure attempt с owner/global43 и IP-phone scope.</summary>
-    public virtual async Task<PhoneSyncAttempt> ConfigurePhoneEquipmentAttemptAsync(int equipmentId)
+    public virtual async Task<PhoneSyncAttempt> ConfigurePhoneEquipmentAttemptAsync(int equipmentId,
+        Func<PhoneSyncAttempt, Task>? checkpoint = null)
     {
         var pending = _phoneSyncAttempts.Values.LastOrDefault(item =>
             item.Intent.EquipmentId == equipmentId && item.Intent.Origin == EquipmentPhoneSyncOrigin.ExplicitConfigure &&
-            item.Operations.Any(operation => operation.IsUnknown || operation.CanRetry));
+            (item.PlanningError is not null || item.Operations.Any(operation => operation.IsUnknown || operation.CanRetry)));
         if (pending is not null)
             return await RetryPhoneSyncAttemptAsync(pending);
 
@@ -821,7 +903,7 @@ public class EquipmentFormService
                 equipment.ChangedAtUtc, equipment.OwnerId, equipment.EquipmentTypeId, [], current);
         });
         _confirmedPhoneIntents[intent.AttemptId] = intent;
-        return await SynchronizePhoneAttemptCoreAsync(intent, validateContext: false);
+        return await SynchronizePhoneAttemptCoreAsync(intent, validateContext: false, checkpoint);
     }
 
     /// <summary>Синхронизирует изменённые номера и оборудование с подтверждёнными АТС.</summary>
@@ -846,7 +928,7 @@ public class EquipmentFormService
             var attempt = _phoneSyncAttempts.TryGetValue(intent.AttemptId, out var pending)
                 ? await RetryPhoneSyncAttemptAsync(pending)
                 : await SynchronizePhoneAttemptAsync(intent);
-            return ToLegacyResults(attempt.Operations);
+            return ToLegacyResults(attempt);
         }
         catch (EquipmentOperationException ex)
         {
@@ -855,12 +937,14 @@ public class EquipmentFormService
     }
 
     /// <summary>Планирует и выполняет ATS operations для подтверждённого trusted intent.</summary>
-    public virtual async Task<PhoneSyncAttempt> SynchronizePhoneAttemptAsync(EquipmentPhoneSyncIntent intent) =>
-        await SynchronizePhoneAttemptCoreAsync(intent, validateContext: true);
+    public virtual async Task<PhoneSyncAttempt> SynchronizePhoneAttemptAsync(EquipmentPhoneSyncIntent intent,
+        Func<PhoneSyncAttempt, Task>? checkpoint = null) =>
+        await SynchronizePhoneAttemptCoreAsync(intent, validateContext: true, checkpoint);
 
     private async Task<PhoneSyncAttempt> SynchronizePhoneAttemptCoreAsync(
         EquipmentPhoneSyncIntent intent,
-        bool validateContext)
+        bool validateContext,
+        Func<PhoneSyncAttempt, Task>? checkpoint)
     {
         if (validateContext)
             _ = await RunPhasedAsync(async _ =>
@@ -869,11 +953,37 @@ public class EquipmentFormService
                 return true;
             });
         if (_phoneSyncAttempts.TryGetValue(intent.AttemptId, out var existing))
-            return await RetryPhoneSyncAttemptAsync(existing);
+            return await RetryPhoneSyncAttemptAsync(existing, checkpoint);
 
-        var results = new List<PhoneSyncOperationResult>();
-        var pendingAttempt = new PhoneSyncAttempt(intent, results);
-        _phoneSyncAttempts[intent.AttemptId] = pendingAttempt;
+        return await PlanPhoneSyncAttemptAsync(intent, previous: null, checkpoint);
+    }
+
+    private async Task<PhoneSyncAttempt> PlanPhoneSyncAttemptAsync(
+        EquipmentPhoneSyncIntent intent, PhoneSyncAttempt? previous,
+        Func<PhoneSyncAttempt, Task>? checkpoint)
+    {
+        if (!_phoneSyncPlanningGate.Wait(0))
+            throw new InvalidOperationException("Дождитесь завершения планирования синхронизации АТС.");
+        try
+        {
+            if (_phoneSyncAttempts.TryGetValue(intent.AttemptId, out var current) && !ReferenceEquals(current, previous))
+                throw new InvalidOperationException("Состояние планирования АТС изменилось. Повтор не отправлен.");
+            return await PlanAndDispatchPhoneSyncAsync(intent, checkpoint);
+        }
+        finally { _phoneSyncPlanningGate.Release(); }
+    }
+
+    private async Task<PhoneSyncAttempt> PlanAndDispatchPhoneSyncAsync(EquipmentPhoneSyncIntent intent,
+        Func<PhoneSyncAttempt, Task>? checkpoint)
+    {
+        PhoneSyncAttempt Complete(IReadOnlyCollection<PhoneSyncOperationResult> results, string? planningError = null)
+        {
+            var attempt = new PhoneSyncAttempt(intent, results) { PlanningError = planningError };
+            _phoneSyncAttempts[intent.AttemptId] = attempt;
+            return attempt;
+        }
+
+        var pendingAttempt = Complete([]);
         var currentIds = intent.Current.Select(item => item.PhoneId).ToHashSet();
         var originalIds = intent.Original.Select(item => item.PhoneId).ToHashSet();
         var originalById = intent.Original.ToDictionary(item => item.PhoneId);
@@ -902,66 +1012,71 @@ public class EquipmentFormService
         var hasXorcom = false;
         foreach (var phone in phones)
         {
-            var operation = new PhoneSyncOperation(PhoneSyncKind.Xorcom, phone.PhoneId.ToString(), phone.Deleted);
+            PhoneNumberLookup? lookup;
             try
             {
-                var lookup = (await _db.QueryRequiredAsync<PhoneNumberLookup>(
+                lookup = (await _db.QueryRequiredAsync<PhoneNumberLookup>(
                     SQLQueries.SELECT_ТелефонныйНомерПоИдентификатору, new { Id = phone.PhoneId })).SingleOrDefault();
-                if (lookup is null)
-                {
-                    results.Add(new PhoneSyncOperationResult(intent.AttemptId, operation, PhoneSyncPhase.Rejected,
-                        $"Телефонный номер #{phone.PhoneId} не найден для синхронизации."));
-                    continue;
-                }
-                needsCcm |= lookup.StationId == 0;
-                if (string.IsNullOrWhiteSpace(lookup.XorcomName))
-                    continue;
-                hasXorcom = true;
-                operations.Add(operation);
             }
             catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
             {
-                results.Add(new PhoneSyncOperationResult(intent.AttemptId, operation,
-                    ex is Microsoft.Data.SqlClient.SqlException ? PhoneSyncPhase.NotSent : PhoneSyncPhase.Rejected, ex.Message));
+                return Complete([], $"Не удалось определить АТС номера #{phone.PhoneId}. Команды АТС не отправлены.");
             }
+
+            if (lookup is null)
+                return Complete([], $"Телефонный номер #{phone.PhoneId} не найден для планирования. Команды АТС не отправлены.");
+
+            needsCcm |= lookup.StationId == 0;
+            if (string.IsNullOrWhiteSpace(lookup.XorcomName))
+                continue;
+            hasXorcom = true;
+            operations.Add(new PhoneSyncOperation(PhoneSyncKind.Xorcom, phone.PhoneId.ToString(), phone.Deleted));
         }
         if (needsCcm && !hasXorcom)
             operations.AddRange(equipmentIds.Select(id => new PhoneSyncOperation(PhoneSyncKind.Ccm, id.ToString())));
         EnsureOperationsBelongToDiff(intent.EquipmentId, intent.Original, intent.Current, operations);
-        results.AddRange(await ExecutePhoneSyncOperationsCoreAsync(intent.AttemptId, operations));
-        var completed = new PhoneSyncAttempt(intent, OrderOperationResults(results));
-        _phoneSyncAttempts[intent.AttemptId] = completed;
-        return completed;
+        return await ExecutePhoneSyncOperationsCoreAsync(intent, operations, checkpoint);
     }
 
-    /// <summary>Повторяет только подтверждённые Failed/NotSent operations без основного UPDATE.</summary>
-    public virtual async Task<PhoneSyncAttempt> RetryPhoneSyncAttemptAsync(PhoneSyncAttempt attempt)
+    /// <summary>Перепланирует попытку без dispatch либо повторяет подтверждённые Failed/NotSent операции без основного UPDATE.</summary>
+    public virtual async Task<PhoneSyncAttempt> RetryPhoneSyncAttemptAsync(PhoneSyncAttempt attempt,
+        Func<PhoneSyncAttempt, Task>? checkpoint = null)
     {
+        if (_phoneSyncPlanningGate.CurrentCount == 0)
+            throw new InvalidOperationException("Дождитесь завершения планирования синхронизации АТС.");
         if (!_phoneSyncAttempts.TryGetValue(attempt.Intent.AttemptId, out var current) ||
-            !IntentMatches(current.Intent, attempt.Intent) || !OperationResultsMatch(current.Operations, attempt.Operations))
+            !IntentMatches(current.Intent, attempt.Intent) || current.PlanningError != attempt.PlanningError ||
+            !OperationResultsMatch(current.Operations, attempt.Operations))
             throw new UnauthorizedAccessException("Контекст синхронизации не подтверждён текущим серверным контекстом.");
         _ = await RunPhasedAsync(async _ =>
         {
             await ValidateTrustedIntentAsync(current.Intent);
             return true;
         });
+        if (current.PlanningError is not null)
+            return await PlanPhoneSyncAttemptAsync(current.Intent, current, checkpoint);
+
         var retryOperations = current.Operations.Where(item => item.CanRetry).Select(item => item.Operation).ToList();
         if (retryOperations.Count == 0)
             return current;
         EnsureOperationsBelongToDiff(current.Intent.EquipmentId, current.Intent.Original, current.Intent.Current, retryOperations);
-        var retryKeys = retryOperations.ToHashSet();
-        var results = current.Operations.Where(item => !retryKeys.Contains(item.Operation)).ToList();
-        results.AddRange(await ExecutePhoneSyncOperationsCoreAsync(current.Intent.AttemptId, retryOperations));
-        var completed = new PhoneSyncAttempt(current.Intent, OrderOperationResults(results));
-        _phoneSyncAttempts[current.Intent.AttemptId] = completed;
-        return completed;
+        if (!_phoneSyncPlanningGate.Wait(0))
+            throw new InvalidOperationException("Подождите завершения синхронизации АТС.");
+        try
+        {
+            if (!_phoneSyncAttempts.TryGetValue(current.AttemptId, out var live) || !ReferenceEquals(live, current))
+                throw new InvalidOperationException("Состояние операции АТС изменилось. Команда не отправлена.");
+            return await ExecutePhoneSyncOperationsCoreAsync(current.Intent, retryOperations, checkpoint, current.Operations);
+        }
+        finally { _phoneSyncPlanningGate.Release(); }
     }
 
     /// <summary>Только читает фактическое состояние; не изменяет outcomes и не выполняет DML/ATS replay.</summary>
     public virtual async Task<PhoneSyncReconciliation> ReconcilePhoneSyncAttemptAsync(PhoneSyncAttempt attempt)
     {
         if (!_phoneSyncAttempts.TryGetValue(attempt.Intent.AttemptId, out var current) ||
-            !IntentMatches(current.Intent, attempt.Intent) || !OperationResultsMatch(current.Operations, attempt.Operations))
+            !IntentMatches(current.Intent, attempt.Intent) || current.PlanningError != attempt.PlanningError ||
+            !OperationResultsMatch(current.Operations, attempt.Operations))
             throw new UnauthorizedAccessException("Контекст сверки не подтверждён текущим серверным контекстом.");
         var equipment = await GetAsync(current.Intent.EquipmentId);
         if (equipment is null)
@@ -1006,6 +1121,8 @@ public class EquipmentFormService
             var intent = GetConfirmedIntent(equipmentId, EquipmentPhoneSyncOrigin.EquipmentSave, original, current);
             if (!_phoneSyncAttempts.TryGetValue(intent.AttemptId, out var attempt))
                 throw new UnauthorizedAccessException("Повтор возможен только для зарегистрированного ATS attempt.");
+            if (attempt.PlanningError is { } planningError)
+                throw new InvalidOperationException(planningError);
             var requested = operations.Distinct().ToHashSet();
             var allowed = attempt.Operations.Where(item => item.CanRetry).Select(item => item.Operation).ToHashSet();
             if (!requested.SetEquals(allowed))
@@ -1168,18 +1285,47 @@ public class EquipmentFormService
             $"{item.EquipmentId}:{item.PhoneId}:{item.ConnectionEquipmentId}:{item.AutoDialNumber}:{item.AutoDialDelay}:" +
             $"{item.IsDefault}:{item.ReturnDate?.Ticks}:{item.Notes}"));
 
-    private async Task<IReadOnlyList<PhoneSyncOperationResult>> ExecutePhoneSyncOperationsCoreAsync(
-        string attemptId,
-        IEnumerable<PhoneSyncOperation> operations)
+    private async Task<PhoneSyncAttempt> ExecutePhoneSyncOperationsCoreAsync(
+        EquipmentPhoneSyncIntent intent,
+        IEnumerable<PhoneSyncOperation> operations,
+        Func<PhoneSyncAttempt, Task>? checkpoint,
+        IReadOnlyCollection<PhoneSyncOperationResult>? previous = null)
     {
-        var results = new List<PhoneSyncOperationResult>();
+        var plan = operations.Distinct().ToArray();
+        var results = previous?.ToDictionary(item => item.Operation) ?? [];
+        foreach (var operation in plan)
+            results.TryAdd(operation, new PhoneSyncOperationResult(intent.AttemptId, operation, PhoneSyncPhase.NotSent));
+
+        PhoneSyncAttempt Snapshot() => new(intent, OrderOperationResults(results.Values));
         var service = new PhoneFormService(_db);
-        foreach (var operation in operations.Distinct())
+        foreach (var operation in plan)
         {
+            // Until a response is stored, the durable plan cannot attest that dispatch did not happen.
+            results[operation] = new PhoneSyncOperationResult(intent.AttemptId, operation, PhoneSyncPhase.Unknown,
+                "Команда АТС подготовлена к отправке. Подтверждённого ответа пока нет.");
+            var sending = Snapshot();
+            if (checkpoint is not null)
+                await checkpoint(sending);
+            _phoneSyncAttempts[intent.AttemptId] = sending;
+
             var phoneId = operation.Kind == PhoneSyncKind.Xorcom ? int.Parse(operation.Key) : 0;
-            results.AddRange(await service.SynchronizePhasedAsync(attemptId, phoneId, [operation]));
+            var outcome = await service.SynchronizePhasedAsync(intent.AttemptId, phoneId, [operation]);
+            results[operation] = outcome.Single();
+            var completed = Snapshot();
+            _phoneSyncAttempts[intent.AttemptId] = completed;
+            if (checkpoint is not null)
+                await checkpoint(completed);
         }
-        return results;
+        var final = Snapshot();
+        _phoneSyncAttempts[intent.AttemptId] = final;
+        return final;
+    }
+
+    private static IReadOnlyList<PhoneSyncResult> ToLegacyResults(PhoneSyncAttempt attempt)
+    {
+        if (attempt.PlanningError is { } error)
+            throw new InvalidOperationException(error);
+        return ToLegacyResults(attempt.Operations);
     }
 
     private static IReadOnlyList<PhoneSyncResult> ToLegacyResults(IEnumerable<PhoneSyncOperationResult> results) =>
@@ -1383,6 +1529,9 @@ public sealed record PhoneSyncAttempt(
     EquipmentPhoneSyncIntent Intent,
     IReadOnlyCollection<PhoneSyncOperationResult> Operations)
 {
+    /// <summary>Причина незавершённого планирования до отправки какой-либо операции АТС.</summary>
+    public string? PlanningError { get; init; }
+
     /// <summary>Стабильный идентификатор попытки и всех её операций.</summary>
     public string AttemptId => Intent.AttemptId;
 }

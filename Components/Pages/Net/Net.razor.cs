@@ -6,7 +6,6 @@ using Clayzor.Lib.Web.Controls.Components.Select;
 using Clayzor.Lib.Web.Controls.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Authorization;
-using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.JSInterop;
 using MudBlazor;
 
@@ -17,15 +16,20 @@ public partial class Net : IAsyncDisposable
 {
     private readonly CancellationTokenSource _pageCts = new();
     private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "net-form", MaxWidth = "100%" };
-    private readonly ClaySelectOptions _selectOptions = new() { AutoSelectSingle = true };
+    private readonly ClaySelectOptions _socketOptions = new() { AutoSelectSingle = true, DraftKey = "net.socket" };
+    private readonly ClaySelectOptions _employeeOptions = new() { AutoSelectSingle = true, DraftKey = "net.employee" };
     private readonly ClaySelectOptions _customerOptions = new()
     {
         AutoSelectSingle = true,
         Required = true,
         RequiredError = "Не выбран заказчик.",
+        DraftKey = "net.customer",
     };
-    private readonly ClayTextAreaOptions _textAreaOptions = new() { Lines = 4 };
-    private readonly ClayDatePickerOptions _dateOptions = new();
+    private readonly ClayTextAreaOptions _connectedOptions = new() { Lines = 4, DraftKey = "net.connected" };
+    private readonly ClayTextAreaOptions _descriptionOptions = new() { Lines = 4, DraftKey = "net.description" };
+    private readonly ClayDatePickerOptions _dateOptions = new() { DraftKey = "net.return-date" };
+    private readonly ClayDropDownListOptions _switchOptions = new() { DraftKey = "net.switch" };
+    private readonly ClayDropDownListOptions _exchangeOptions = new() { DraftKey = "net.exchange" };
     private readonly ClayToolbarButtonOptions _okOptions = new()
     {
         Text = "ОК",
@@ -105,7 +109,7 @@ public partial class Net : IAsyncDisposable
     private string PortCaption => $"{_equipmentNetworkName}_{_model?.Port}";
     private string? _equipmentNetworkName;
     private bool IsModified => _loaded && _model is not null && _originalSnapshot != Snapshot(_model);
-    private bool CanSave => IsModified && CurrentUser is not null && !_loading && !_saving && !_poeRunning && !RequiresReconciliation && !OperationBlocked;
+    private bool CanSave => IsModified && CurrentUser is not null && !_loading && !_saving && !_poeRunning && !RequiresReconciliation && !OperationBlocked && !InputBlocked;
     private bool ShowSwitch => _exchangeWithId is not > 0;
     private bool ShowExchange => _switchToId is not > 0;
     private string? ChangedByUrl => _model?.ChangedById is > 0 && !string.IsNullOrWhiteSpace(Configuration["URI_user_form"])
@@ -121,10 +125,15 @@ public partial class Net : IAsyncDisposable
     /// <summary>Загружает запись после интерактивного рендера и повторно загружает её при смене ID.</summary>
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (_loadedId == Id)
+        if (_loadedId != Id)
+        {
+            _loadedId = Id;
+            await LoadCurrentAsync(Id);
             return;
-        _loadedId = Id;
-        await LoadCurrentAsync(Id);
+        }
+        if (_readOnlyRecovery is { RestoreRaw: true } recovery)
+            await RestoreReadOnlyNetRawAsync(recovery);
+        await TrackNetInputAsync();
     }
 
     private Task LoadCurrentAsync(int id) => LoadAsync(id, ++_loadVersion, null);
@@ -162,6 +171,7 @@ public partial class Net : IAsyncDisposable
         try
         {
             await RetireOperationContextAsync(retired);
+            if (submitted is null && IsCurrent(version, id)) await ResetReadOnlyRecoveryAsync();
             await LoadDataAsync(id, version, submitted, resolution);
         }
         catch (OperationCanceledException) when (_disposed || version != _loadVersion)
@@ -190,8 +200,10 @@ public partial class Net : IAsyncDisposable
 
     private Task RetryLoadAsync() => _loading ? Task.CompletedTask : LoadCurrentAsync(Id);
 
-    private async Task LoadDataAsync(int id, int version, NetDraft? submitted, NetResolution? resolution)
+    private async Task LoadDataAsync(int id, int version, NetDraft? submitted, NetResolution? resolution,
+        Func<LocalNetworkPort, Employee, NetDraft, Task<bool>>? acceptReset = null, CancellationToken? cancellationToken = null)
     {
+        var token = cancellationToken ?? _pageCts.Token;
         if (!IsCurrent(version, id))
             return;
         if (id <= 0)
@@ -203,23 +215,43 @@ public partial class Net : IAsyncDisposable
         var authentication = await AuthenticationStateProvider.GetAuthenticationStateAsync();
         if (!IsCurrent(version, id))
             return;
-        var principal = authentication.User.Identity?.Name;
-        var currentUser = await Employee.GetCurrentAsync(Db, principal, _pageCts.Token);
+        var identity = authentication.User.Identity;
+        var principal = identity?.IsAuthenticated == true ? identity.Name : null;
+        var currentUser = await Employee.GetCurrentAsync(Db, principal, token);
         if (!IsCurrent(version, id))
             return;
+        if (acceptReset is not null && currentUser is null) return;
         if (submitted is not null && currentUser is null)
         {
             CurrentUser = null;
             AcceptWithoutReload(submitted, "Изменения сохранены, но текущий пользователь не подтверждён. Поздний ввод оставлен в форме.");
             return;
         }
-        var port = await LocalNetworkPort.GetAsync(Db, id, _pageCts.Token);
+        LocalNetworkPort? port;
+        try
+        {
+            port = await LocalNetworkPort.GetAsync(Db, id, token);
+        }
+        catch (Microsoft.Data.SqlClient.SqlException error) when (error.Number == 229 && acceptReset is null && submitted is null && currentUser is not null)
+        {
+            if (IsCurrent(version, id))
+            {
+                _loadError = "Нет доступа к записи порта локальной сети.";
+                await LoadReadOnlyRecoveryAsync(id, version, currentUser);
+            }
+            return;
+        }
         if (!IsCurrent(version, id))
             return;
         if (port is null)
         {
+            if (acceptReset is not null) return;
             if (submitted is null)
+            {
                 _notFound = true;
+                if (currentUser is not null)
+                    await LoadReadOnlyRecoveryAsync(id, version, currentUser);
+            }
             else
             {
                 CurrentUser = null;
@@ -228,27 +260,27 @@ public partial class Net : IAsyncDisposable
             return;
         }
 
-        var networkName = await LocalNetworkPort.GetEquipmentNetworkNameAsync(Db, port.EquipmentId, _pageCts.Token);
+        var networkName = await LocalNetworkPort.GetEquipmentNetworkNameAsync(Db, port.EquipmentId, token);
         if (!IsCurrent(version, id))
             return;
-        var officeId = await LocalNetworkPort.GetOfficeLocationIdAsync(Db, port.EquipmentId, _pageCts.Token);
+        var officeId = await LocalNetworkPort.GetOfficeLocationIdAsync(Db, port.EquipmentId, token);
         if (!IsCurrent(version, id))
             return;
-        var freePorts = await LocalNetworkPort.GetNeighborsAsync(Db, id, true, _pageCts.Token);
+        var freePorts = await LocalNetworkPort.GetNeighborsAsync(Db, id, true, token);
         if (!IsCurrent(version, id))
             return;
-        var allPorts = await LocalNetworkPort.GetNeighborsAsync(Db, id, false, _pageCts.Token);
+        var allPorts = await LocalNetworkPort.GetNeighborsAsync(Db, id, false, token);
         if (!IsCurrent(version, id))
             return;
 
         NetSocketLookup? socket = null;
         if (port.SocketId is > 0)
-            socket = await SocketSource.GetByIdAsync(port.SocketId, _pageCts.Token);
+            socket = await SocketSource.GetByIdAsync(port.SocketId, token);
         if (!IsCurrent(version, id))
             return;
         Employee? employee = null;
         if (port.EmployeeId is > 0)
-            employee = await EmployeeSource.GetByIdAsync(port.EmployeeId, _pageCts.Token);
+            employee = await EmployeeSource.GetByIdAsync(port.EmployeeId, token);
         if (!IsCurrent(version, id))
             return;
 
@@ -257,7 +289,7 @@ public partial class Net : IAsyncDisposable
         string? linkError = null;
         try
         {
-            var links = await NetEquipmentLinkResolver.ResolveAsync(Db, port.Connected, port.Description, _pageCts.Token);
+            var links = await NetEquipmentLinkResolver.ResolveAsync(Db, port.Connected, port.Description, token);
             connectedLinks = links.Connected;
             descriptionLinks = links.Description;
         }
@@ -268,7 +300,7 @@ public partial class Net : IAsyncDisposable
         if (!IsCurrent(version, id))
             return;
 
-        if (submitted is null && currentUser is not null)
+        if (acceptReset is null && submitted is null && currentUser is not null)
         {
             await InitializeOperationContextAsync(port, currentUser, version);
             if (!IsCurrent(version, id))
@@ -276,6 +308,9 @@ public partial class Net : IAsyncDisposable
         }
 
         var fresh = NetDraft.From(port, port.ReturnDate.HasValue);
+        if (acceptReset is not null && (port.Id != id || currentUser is null ||
+            !await acceptReset(port, currentUser, fresh) || !IsCurrent(version, id) || token.IsCancellationRequested))
+            return;
         var edited = submitted is not null && _model is not null ? Snapshot(_model) : fresh;
         var conflicts = submitted is null ? [] : fresh.GetConflicts(submitted, edited);
         var resolved = resolution is not null &&
@@ -290,8 +325,9 @@ public partial class Net : IAsyncDisposable
                 new NetReview(fresh, Snapshot(_model!), port.ChangedAtUtc, conflicts));
             return;
         }
-        var visible = submitted is null ? fresh :
-            fresh.WithLaterEdits(submitted, edited, resolved ? resolution!.UseFresh : null);
+        var visible = submitted is null
+            ? acceptReset is null && _operationContext is { } restored ? RestoreNetInput(restored, fresh, port.ChangedAtUtc) : fresh
+            : fresh.WithLaterEdits(submitted, edited, resolved ? resolution!.UseFresh : null);
         var employeeEdited = visible.EmployeeId != fresh.EmployeeId;
         var socketEdited = visible.SocketId != fresh.SocketId;
         _reconciliation = null;
@@ -299,7 +335,13 @@ public partial class Net : IAsyncDisposable
         CurrentUser = currentUser;
         _model = port;
         visible.ApplyTo(port);
-        _originalSnapshot = fresh;
+        _originalSnapshot = _operationContext is { InputConflict: true, InputBaseline: { } original } ? original : fresh;
+        if (submitted is not null && _operationContext is { } active)
+        {
+            active.InputBaseline = fresh;
+            active.InputVersion = port.ChangedAtUtc;
+            active.VerifiedAfterWrite = true;
+        }
         _equipmentNetworkName = networkName ?? string.Empty;
         _switchPorts = WithPortPrompt(freePorts);
         _exchangePorts = WithPortPrompt(allPorts);
@@ -399,12 +441,12 @@ public partial class Net : IAsyncDisposable
 
     private async Task SaveAsync(bool closeAfterSave)
     {
-        if (_model is null || _loading || _saving || _poeRunning || CurrentUser is null || RequiresReconciliation || OperationBlocked)
+        if (_model is null || _loading || _saving || _poeRunning || CurrentUser is null || RequiresReconciliation || OperationBlocked || InputBlocked)
             return;
         if (!IsModified)
         {
             if (closeAfterSave)
-                await CloseAsync();
+                await CancelAsync();
             return;
         }
 
@@ -442,7 +484,7 @@ public partial class Net : IAsyncDisposable
                     DescribeSaveIntent(model, expectedChangedAt, submitted),
                     () => LocalNetworkPort.SaveAsync(Db, command, expectedChangedAt,
                         submitted.SwitchToId is > 0 ? submitted.SwitchToId : null,
-                        submitted.ExchangeWithId is > 0 ? submitted.ExchangeWithId : null)) ||
+                        submitted.ExchangeWithId is > 0 ? submitted.ExchangeWithId : null), submitted) ||
                 !IsCurrentSave(model, version))
                 return;
 
@@ -463,12 +505,13 @@ public partial class Net : IAsyncDisposable
 
             if (!closeAfterSave || !IsCurrentSave(model, version))
                 return;
-            if (Snapshot(model) == submitted && !OperationBlocked)
+            if (!OperationBlocked && _operationContext is { } context && !await HasLateRawAsync(context) &&
+                IsCurrentSave(model, version) && Snapshot(model) == submitted)
             {
                 AcceptWithoutReload(submitted, null);
                 await CloseAsync();
             }
-            else
+            else if (IsCurrentSave(model, version))
             {
                 await LoadAsync(model.Id, version, submitted);
             }
@@ -500,11 +543,13 @@ public partial class Net : IAsyncDisposable
     {
         var model = _model;
         var version = _loadVersion;
-        if (model?.Poe != 1 || model.Id != Id || CurrentUser is null || _saving || _poeRunning || OperationBlocked)
+        if (model?.Poe != 1 || model.Id != Id || CurrentUser is null || _loading || _saving || _poeRunning ||
+            OperationBlocked || _operationContext is not { } context || !await VerifyNetInputReadyAsync(context) ||
+            !IsCurrentSave(model, version) || _saving || _poeRunning)
             return;
         if (!await ConfirmAsync("Перезапустить PoE?", "Перезапустить PoE для этого порта?"))
             return;
-        if (!IsCurrentSave(model, version) || model.Poe != 1 || _saving || _poeRunning || OperationBlocked)
+        if (!IsCurrentSave(model, version) || model.Poe != 1 || _saving || _poeRunning || OperationBlocked || RawInputBlocked)
             return;
         _poeRunning = true;
         _validationMessage = null;
@@ -545,39 +590,10 @@ public partial class Net : IAsyncDisposable
         await WindowService.OpenAsync($"{url}?id={equipmentId}", "equipment-form", _pageCts.Token);
     }
 
-    private async Task CancelAsync()
-    {
-        if (IsModified && !await ConfirmAsync("Закрытие формы", "Закрыть форму без сохранения изменений?"))
-            return;
-        await CloseAsync();
-    }
-
     private async Task CloseAsync()
     {
         _allowNavigation = true;
         await JS.InvokeVoidAsync("clayModelEquipmentForm.close");
-    }
-
-    private async Task BeforeInternalNavigationAsync(LocationChangingContext context)
-    {
-        if (_allowNavigation)
-        {
-            _allowNavigation = false;
-            return;
-        }
-        if (_saving || _poeRunning)
-        {
-            context.PreventNavigation();
-            return;
-        }
-        if (!IsModified)
-            return;
-        context.PreventNavigation();
-        if (await ConfirmAsync("Закрытие формы", "Перейти без сохранения изменений?"))
-        {
-            _allowNavigation = true;
-            Navigation.NavigateTo(context.TargetLocation);
-        }
     }
 
     private async Task<bool> ConfirmAsync(string title, string message)
@@ -663,13 +679,15 @@ public partial class Net : IAsyncDisposable
             port.ReturnDate = ReturnDate;
         }
 
-        internal IReadOnlyList<NetConflict> GetConflicts(NetDraft submitted, NetDraft edited)
+        internal IReadOnlyList<NetConflict> GetConflicts(NetDraft submitted, NetDraft edited,
+            IReadOnlySet<NetField>? rawFields = null)
         {
             var fields = new List<NetConflict>();
             void Add<T>(NetField field, string label, T sent, T local, T fresh)
             {
                 var equality = EqualityComparer<T>.Default;
-                if (!equality.Equals(local, sent) && !equality.Equals(fresh, sent) && !equality.Equals(fresh, local))
+                var hasRaw = rawFields?.Contains(field) == true;
+                if ((hasRaw || !equality.Equals(local, sent)) && !equality.Equals(fresh, sent) && (hasRaw || !equality.Equals(fresh, local)))
                     fields.Add(new NetConflict(field, label, Convert.ToString(sent) ?? string.Empty,
                         Convert.ToString(local) ?? string.Empty, Convert.ToString(fresh) ?? string.Empty));
             }
@@ -677,25 +695,29 @@ public partial class Net : IAsyncDisposable
             Add(NetField.Customer, "Заказчик", submitted.CustomerId, edited.CustomerId, CustomerId);
             Add(NetField.Employee, "Сотрудник", submitted.EmployeeId, edited.EmployeeId, EmployeeId);
             Add(NetField.Socket, "Розетка", submitted.SocketId, edited.SocketId, SocketId);
-            Add(NetField.Connected, "Подключено", submitted.Connected?.Trim() ?? string.Empty, edited.Connected?.Trim() ?? string.Empty, Connected?.Trim() ?? string.Empty);
-            Add(NetField.Description, "Примечание", submitted.Description?.Trim() ?? string.Empty, edited.Description?.Trim() ?? string.Empty, Description?.Trim() ?? string.Empty);
-            Add(NetField.ReturnDate, "Срок возврата", submitted.ReturnDate?.ToString("dd.MM.yyyy"),
-                edited.ReturnDate?.ToString("dd.MM.yyyy"), ReturnDate?.ToString("dd.MM.yyyy"));
+            string Text(string? value) => (rawFields is null ? value?.Trim() : value) ?? string.Empty;
+            static string Date(NetDraft value) => value.HasReturnDate ? value.ReturnDate?.ToString("dd.MM.yyyy") ?? "Включён" : "Выключен";
+            Add(NetField.Connected, "Подключено", Text(submitted.Connected), Text(edited.Connected), Text(Connected));
+            Add(NetField.Description, "Примечание", Text(submitted.Description), Text(edited.Description), Text(Description));
+            Add(NetField.ReturnDate, "Срок возврата", Date(submitted), Date(edited), Date(this));
             return fields;
         }
 
-        internal NetDraft WithLaterEdits(NetDraft submitted, NetDraft edited, IReadOnlySet<NetField>? useFresh)
+        internal NetDraft WithLaterEdits(NetDraft submitted, NetDraft edited, IReadOnlySet<NetField>? useFresh,
+            IReadOnlySet<NetField>? rawFields = null)
         {
-            var dateChanged = useFresh?.Contains(NetField.ReturnDate) != true &&
-                (edited.ReturnDate, edited.HasReturnDate) != (submitted.ReturnDate, submitted.HasReturnDate);
+            bool UseLocal(NetField field, bool changed) =>
+                useFresh?.Contains(field) != true && (changed || rawFields?.Contains(field) == true);
+            var dateChanged = UseLocal(NetField.ReturnDate,
+                (edited.ReturnDate, edited.HasReturnDate) != (submitted.ReturnDate, submitted.HasReturnDate));
             var operationChanged = (edited.SwitchToId, edited.ExchangeWithId) != (submitted.SwitchToId, submitted.ExchangeWithId);
             return this with
             {
-                CustomerId = edited.CustomerId != submitted.CustomerId && useFresh?.Contains(NetField.Customer) != true ? edited.CustomerId : CustomerId,
-                EmployeeId = edited.EmployeeId != submitted.EmployeeId && useFresh?.Contains(NetField.Employee) != true ? edited.EmployeeId : EmployeeId,
-                SocketId = edited.SocketId != submitted.SocketId && useFresh?.Contains(NetField.Socket) != true ? edited.SocketId : SocketId,
-                Connected = edited.Connected != submitted.Connected && useFresh?.Contains(NetField.Connected) != true ? edited.Connected : Connected,
-                Description = edited.Description != submitted.Description && useFresh?.Contains(NetField.Description) != true ? edited.Description : Description,
+                CustomerId = UseLocal(NetField.Customer, edited.CustomerId != submitted.CustomerId) ? edited.CustomerId : CustomerId,
+                EmployeeId = UseLocal(NetField.Employee, edited.EmployeeId != submitted.EmployeeId) ? edited.EmployeeId : EmployeeId,
+                SocketId = UseLocal(NetField.Socket, edited.SocketId != submitted.SocketId) ? edited.SocketId : SocketId,
+                Connected = UseLocal(NetField.Connected, edited.Connected != submitted.Connected) ? edited.Connected : Connected,
+                Description = UseLocal(NetField.Description, edited.Description != submitted.Description) ? edited.Description : Description,
                 ReturnDate = dateChanged ? edited.ReturnDate : ReturnDate,
                 HasReturnDate = dateChanged ? edited.HasReturnDate : HasReturnDate,
                 SwitchToId = operationChanged ? edited.SwitchToId : SwitchToId,
@@ -716,6 +738,7 @@ public partial class Net : IAsyncDisposable
         _employeeVersion++;
         _socketVersion++;
         _pageCts.Cancel();
+        await ResetReadOnlyRecoveryAsync();
         _pageCts.Dispose();
         var context = _operationContext;
         _operationContext = null;

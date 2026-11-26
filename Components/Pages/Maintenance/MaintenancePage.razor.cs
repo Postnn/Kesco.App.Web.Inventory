@@ -344,6 +344,7 @@ public partial class MaintenancePage : IAsyncDisposable
         string? beginAttemptId = null;
         try
         {
+            await registration.OpenScopeAsync(ConfirmationScope, ct);
             await registration.EnsureScopesCanBeAcceptedAsync([ConfirmationScope], ct);
             _pendingConfirmation = id;
             await registration.SaveTypedScopeAsync(ConfirmationScope, JsonSerializer.Serialize(id), ct);
@@ -415,7 +416,18 @@ public partial class MaintenancePage : IAsyncDisposable
 
         _busy = true;
         var ct = _lifetime.Token;
-        try { await FinishConfirmedAsync(registration, attempt, ct); }
+        try
+        {
+            var employee = await Employee.GetCurrentAsync(Db, await PrincipalAsync(), ct);
+            if (_disposed || !ReferenceEquals(_registration, registration) || !ReferenceEquals(_confirmedOperation, attempt))
+                return;
+            if (employee?.Id != _registrationEmployee)
+            {
+                Report("Не удалось подтвердить владельца черновика. Подтверждение сохранено.", Severity.Error);
+                return;
+            }
+            await FinishConfirmedAsync(registration, attempt, ct);
+        }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception) when (!ct.IsCancellationRequested) { ReportRecovery(); }
         finally
@@ -427,7 +439,11 @@ public partial class MaintenancePage : IAsyncDisposable
 
     private async Task FinishConfirmedAsync(ClayDraftRegistration registration, ClayDraftOperation attempt, CancellationToken ct)
     {
-        await registration.RecordConfirmedOperationAsync(attempt.Revision, ct);
+        if (attempt.Status != ClayDraftOperationStatus.Confirmed)
+        {
+            await registration.RecordConfirmedOperationAsync(attempt.Revision, ct);
+            _confirmedOperation = attempt with { Status = ClayDraftOperationStatus.Confirmed };
+        }
         await registration.CommitOperationAsync(attempt.Revision, cancellationToken: ct);
         _confirmedOperation = null;
         try
@@ -495,19 +511,6 @@ public partial class MaintenancePage : IAsyncDisposable
             Report("Команда не отправлена. Хранилище не подтвердило начало операции.", Severity.Error);
     }
 
-    private async Task CancelPendingAsync()
-    {
-        if (IsBusy || RecoveryRequired || _registration is not { } registration) return;
-        _busy = true;
-        try { await ClearPendingAsync(registration, _lifetime.Token); }
-        catch (Exception) when (!_disposed) { Report("Не удалось удалить сохранённый вопрос."); }
-        finally
-        {
-            _busy = false;
-            await ApplyPendingQueryAsync();
-        }
-    }
-
     private async Task ClearPendingAsync(ClayDraftRegistration registration, CancellationToken ct)
     {
         await registration.SaveTypedScopeAsync(ConfirmationScope, "null", ct);
@@ -523,7 +526,8 @@ public partial class MaintenancePage : IAsyncDisposable
     }
 
     private bool CanConfirm(MaintenanceWork row) =>
-        !_disposed && !IsBusy && !RecoveryRequired && !_loadFailed && _canComplete && _registration is not null && row.IsApproved;
+        !_disposed && !IsBusy && !RecoveryRequired && !_loadFailed && _canComplete && _registration is not null &&
+        row.IsApproved && (_pendingConfirmation is null || _pendingConfirmation == row.Id);
 
     private async Task<string?> PrincipalAsync()
     {

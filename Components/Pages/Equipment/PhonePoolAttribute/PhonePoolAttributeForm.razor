@@ -13,12 +13,12 @@
         <ClayToolbar>
             <ClayToolbarButton Options="Ok" Disabled="@(!CanCloseOrSave)" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="ApplyButton" Disabled="@(!CanApply)" OnClick="@(() => SaveAsync(false))" />
-            <ClayToolbarButton Options="ReloadButton" Disabled="@(!CanRefresh || _confirmingDelete)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="ReloadButton" Disabled="@(!(CanRefresh || CanRetryRecovery) || _confirmingDelete || _retryingRecovery)" OnClick="RefreshAttributeAsync" />
             @if (_card?.Attribute is not null && !_deleted)
             {
                 <ClayToolbarButton Options="Delete" Disabled="@(!CanCommit || !CanDeleteAttribute || _confirmingDelete)" OnClick="DeleteAsync" />
             }
-            <ClayToolbarButton Options="CancelButton" Disabled="@(Busy || _confirmingDelete)" OnClick="CancelAsync" />
+            <ClayToolbarButton Options="CancelButton" Disabled="@(Loading || Busy || _confirmingDelete || _retryingRecovery)" OnClick="CancelAttributeAsync" />
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
@@ -37,16 +37,16 @@
         }
         @if (_card is { } card && Draft is { } draft)
         {
-            <div class="d-flex flex-column gap-2" data-draft-scope="main" inert="@(DraftInputSuppressed || _confirmingDelete)">
+            <div @key="EditorGeneration" class="d-flex flex-column gap-2" data-draft-scope="main" inert="@(DraftInputSuppressed || _confirmingDelete)">
                 <ClayTextBox Options="_poolOptions" Value="@card.PoolName" />
                 <ClayTextBox Options="_typeOptions" Value="@card.Key.Type" />
                 <ClayTextArea Options="_descriptionOptions" Value="@card.Description" />
                 <ClayTextBox Options="_valueOptions" Value="@draft.Value" ValueChanged="ChangeValueAsync" />
             </div>
         }
-        else if (!Loading && RequestedKey is { } key && (Draft is not null || StorageBlocked))
+        else if (ShowRecovery && RequestedKey is { } key)
         {
-            <section aria-label="Восстановление атрибута пула" class="d-flex flex-column gap-2">
+            <section aria-label="Восстановление атрибута пула" class="d-flex flex-column gap-2" data-draft-scope="main">
                 @if (_freshReadFailure is { } reason && reason != Message)
                 {
                     <MudText Typo="Typo.body2">@reason</MudText>
@@ -56,6 +56,21 @@
                 @if (Draft is { } recovered)
                 {
                     <div>Значение из черновика: @recovered.Value</div>
+                }
+                <ClayTextBox Options="RecoveryValueOptions" Value="@Draft?.Value" />
+                <div>
+                    <ClayToolbarButton Options="RetryRecoveryButton" Disabled="@(!CanRetryRecovery)" OnClick="RetryRecoveryReadAsync" />
+                </div>
+                @if (_freshRecovery is { } fresh)
+                {
+                    @if (fresh.Attribute is { } currentValue)
+                    {
+                        <div>Значение из базы для сверки: @currentValue.Value</div>
+                    }
+                    else
+                    {
+                        <div>Для этой пары значение атрибута в базе отсутствует.</div>
+                    }
                 }
             </section>
         }

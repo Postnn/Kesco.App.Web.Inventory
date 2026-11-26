@@ -1,9 +1,11 @@
 @inherits EquipmentEditorDialogBase<EquipmentAccounting>
+@implements IEquipmentDeferredRawRestore
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
 @using Clayzor.Lib.Web.Controls.Components.Select
 @using Clayzor.Lib.Web.DBSelect.Equipment
 @using Clayzor.Lib.Web.DBSelect.Persons
+@using Kesco.App.Web.Inventory.Components.Layout
 @inject AccountingPersonSelectDataSource OwnerSource
 @inject PersonSelectDataSource TenantSource
 @inject IServiceProvider Services
@@ -11,6 +13,8 @@
 <MudDialog>
     <TitleContent>Бухгалтерский учёт</TitleContent>
     <DialogContent>
+        <ClayFormActions Form="InventoryFormHelp.EquipmentAccounting" />
+        @RawRestoreNotice
         @if (!string.IsNullOrWhiteSpace(_error))
         {
             <MudAlert Severity="Severity.Error">@_error</MudAlert>
@@ -76,7 +80,7 @@
     </DialogContent>
     <DialogActions>
         <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked || RawRestoreBlocked)" />
     </DialogActions>
 </MudDialog>
 

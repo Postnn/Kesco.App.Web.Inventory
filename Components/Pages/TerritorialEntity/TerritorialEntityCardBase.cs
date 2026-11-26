@@ -49,6 +49,9 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     private bool _readOnlyDraft;
     private string? _notSentAttemptId;
     private long? _confirmedCleanupRevision;
+    private CardWriteReceipt? _confirmedWriteReceipt;
+    private bool _confirmedWriteMarkerSaved;
+    private const string ConfirmedResultScope = "card-result";
     private Func<Task>? _afterConfirmedCleanup;
     private bool _restoreRaw;
     private bool _restoreIncomplete;
@@ -84,6 +87,9 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected string? Message { get; set; }
     protected IReadOnlyList<string> Validation { get; set; } = [];
     protected CancellationToken Lifetime => _lifetime.Token;
+
+    /// <summary>Действующая регистрация карточки после загрузки и проверки владельца.</summary>
+    protected ClayDraftRegistration? EditorDraftRegistration => _registration;
     protected abstract string FormKey { get; }
     protected abstract string EntityKey { get; }
     protected abstract string RouteKey { get; }
@@ -93,6 +99,9 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
 
     /// <summary>Редактор предоставляет свежее чтение для безопасных команд отмены и обновления.</summary>
     protected virtual bool SupportsEditorCancellation => false;
+
+    /// <summary>Дополнительный живой ввод редактора, ожидающий явной отмены.</summary>
+    protected virtual bool HasEditorTransientChanges => false;
 
     /// <summary>Поколение полей редактора, меняющееся при принятии нового снимка или отказе от ввода.</summary>
     protected int EditorGeneration { get; private set; }
@@ -114,7 +123,22 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected virtual Task<CompareRead> ReadForComparisonAsync(TState proposed, Employee actor, CancellationToken token) =>
         Task.FromResult(new CompareRead(null));
 
+    private sealed record CardWriteReceipt(string AttemptId, long Revision, int ResultId);
+
+    /// <summary>Получает действие для точного результата подтверждённой операции.</summary>
+    protected virtual Func<Task>? RestoreConfirmedResult(string operation, int resultId) => null;
+
+    /// <summary>Меняет маршрут после подтверждённой и завершённой записи.</summary>
+    protected void NavigateAfterConfirmedWrite(string uri)
+    {
+        _navigationApproved = true;
+        Navigation.NavigateTo(uri, replace: true);
+    }
+
     protected virtual bool SameComparisonValues(TState actual, TState proposed) => StatesEqual(actual, proposed);
+
+    /// <summary>Возвращает часть снимка, относящуюся к бизнес-команде.</summary>
+    protected virtual TState ForBusinessIntent(TState state) => state;
 
     /// <summary>Сравнивает содержимое карточки после восстановления черновика.</summary>
     protected virtual bool StatesEqual(TState? left, TState? right) => EqualityComparer<TState>.Default.Equals(left, right);
@@ -155,6 +179,8 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         _notSentAttemptId = null;
         _confirmedCleanupRevision = null;
         _afterConfirmedCleanup = null;
+        _confirmedWriteReceipt = null;
+        _confirmedWriteMarkerSaved = false;
         CurrentUser = null;
         Access = new();
         _draftOriginal = Clean = Draft = null;
@@ -176,38 +202,66 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         }
         if (!_restoreRaw || _registration is null) return;
         _restoreRaw = false;
-        await RetryRawAsync();
+        await RestoreRawAsync(pendingOnly: false);
     }
 
-    private async Task RetryRawAsync()
+    private Task RetryRawAsync() => RestoreRawAsync(pendingOnly: true);
+
+    private async Task RestoreRawAsync(bool pendingOnly)
     {
-        if (_applyingRaw || _registration is not { } registration) return;
-        var token = _routeLoad!.Token;
+        if (_applyingRaw || _registration is not { } registration || _routeLoad is not { } route) return;
+        var token = route.Token;
+        var generation = EditorGeneration;
+        var employeeId = CurrentUser?.Id;
+        var local = Draft;
+        bool Current() => IsCurrentEditor(registration, generation, token) && CurrentUser?.Id == employeeId;
         _applyingRaw = _restoreIncomplete = true;
         try
         {
-            var result = await registration.ApplyRawWithResultAsync(DraftScope, token);
-            if (token.IsCancellationRequested) return;
+            if (pendingOnly)
+            {
+                var actor = await Employee.GetCurrentWithRolesAsync(Db, await ReadPrincipalAsync(), token);
+                if (!Current()) return;
+                if (actor is null || actor.Id != employeeId)
+                {
+                    if (!StorageBlocked) Message = "Не удалось подтвердить сотрудника для восстановления. Ввод сохранён.";
+                    return;
+                }
+                if (!ReferenceEquals(local, Draft))
+                {
+                    if (!StorageBlocked) Message = "Ввод изменился. Нажмите Обновить для повторной попытки.";
+                    return;
+                }
+            }
+
+            var result = pendingOnly
+                ? await registration.ApplyPendingRawAsync(DraftScope, token)
+                : await registration.ApplyRawWithResultAsync(DraftScope, token);
+            if (!Current()) return;
             var readiness = await registration.GetRestoreReadinessAsync(token);
-            if (token.IsCancellationRequested || !ReferenceEquals(registration, _registration)) return;
-            _restoreIncomplete = result.Pending.Count != 0 || !readiness.Complete;
+            if (!Current()) return;
+
+            _restoreIncomplete = result.Pending.Count != 0 || !MainRawReady(readiness);
             if (!StorageBlocked) Message = _restoreIncomplete ? "Часть ввода ожидает восстановления. Нажмите Обновить для повторной попытки." : null;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception e) when (e is JSException or InvalidOperationException)
+        catch (Exception e) when (e is JSException or InvalidOperationException or SqlException or UnauthorizedAccessException)
         {
-            if (!token.IsCancellationRequested && !StorageBlocked)
+            if (Current() && !StorageBlocked)
                 Message = "Не удалось восстановить ввод. Нажмите Обновить для повторной попытки.";
         }
         finally
         {
-            if (!token.IsCancellationRequested && ReferenceEquals(registration, _registration))
+            if (Current())
             {
                 _applyingRaw = false;
                 StateHasChanged();
             }
         }
     }
+
+    private static bool MainRawReady(ClayDraftRestoreReadiness readiness) =>
+        !readiness.PendingScopes.Contains(DraftScope) && !readiness.FailedScopes.Contains(DraftScope);
 
     protected async Task UpdateDraftAsync(TState value)
     {
@@ -328,7 +382,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
                 Message = "Сначала завершите сверку предыдущей операции.";
                 return;
             }
-            if (!Dirty && !scope.HasRaw && !_restoreRaw && !_restoreIncomplete && !_applyingRaw)
+            if (!Dirty && !HasEditorTransientChanges && !scope.HasRaw && !_restoreRaw && !_restoreIncomplete && !_applyingRaw)
             {
                 await CloseAsync();
                 return;
@@ -508,9 +562,14 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         return await dialog.Result is { Canceled: false };
     }
 
-    protected async Task<bool> ExecuteWriteAsync(string operation, Func<string?, Task> action)
+    protected async Task<bool> ExecuteWriteAsync(string operation, Func<string?, Task> action,
+        Func<int>? readConfirmedId = null)
     {
-        if (!CanCommit || _registration is null) return false;
+        if (!CanCommit || _registration is not { } registration) return false;
+        var token = _routeLoad?.Token ?? Lifetime;
+        var generation = EditorGeneration;
+        var employeeId = CurrentUser?.Id;
+        bool Current() => IsCurrentEditor(registration, generation, token) && CurrentUser?.Id == employeeId;
         Busy = true;
         Message = null;
         ClayDraftOperation? attempt = null;
@@ -518,26 +577,51 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         string? beginningAttemptId = null;
         try
         {
-            if (!(await _registration.GetRestoreReadinessAsync(Lifetime)).Complete)
+            var readiness = await registration.GetRestoreReadinessAsync(token);
+            if (!Current()) return false;
+            if (!MainRawReady(readiness))
             {
                 _restoreIncomplete = true;
                 Message = "Часть ввода ожидает восстановления. Нажмите Обновить.";
                 return false;
             }
-            await _registration.EnsureCommandAllowedAsync(Lifetime);
+            await registration.EnsureCommandAllowedAsync(token);
+            if (!Current()) return false;
             await PersistAsync();
-            var intentData = JsonSerializer.Serialize(new DraftSnapshot(_draftOriginal, Draft!, _originalVersion));
+            if (!Current()) return false;
+            var originalIntent = _draftOriginal is null ? null : ForBusinessIntent(_draftOriginal);
+            var intentData = JsonSerializer.Serialize(new DraftSnapshot(originalIntent, ForBusinessIntent(Draft!), _originalVersion));
             beginningAttemptId = Guid.NewGuid().ToString("N");
-            attempt = await _registration.BeginOperationAsync(
+            attempt = await registration.BeginOperationAsync(
                 new ClayDraftOperationIntent(operation, intentData, [DraftScope], beginningAttemptId), Lifetime);
-            await action(await ReadPrincipalAsync());
+            if (readConfirmedId is not null && (attempt.AttemptId != beginningAttemptId || attempt.Kind != operation ||
+                attempt.Data != intentData || attempt.Status != ClayDraftOperationStatus.Running ||
+                attempt.Scopes.Count != 1 || !attempt.Scopes.Any(scope => scope.Name == DraftScope)))
+            {
+                attempt = null;
+                throw new InvalidOperationException("Журнал не подтвердил исходную операцию. Запись не отправлена.");
+            }
+            var principal = await ReadPrincipalAsync();
+            if (token.IsCancellationRequested || !ReferenceEquals(registration, _registration))
+            {
+                await registration.RejectOperationAsync(attempt.Revision, Lifetime);
+                return false;
+            }
+            await action(principal);
             databaseConfirmed = true;
-            await _registration.CommitOperationAsync(attempt.Revision, cancellationToken: Lifetime);
+            if (token.IsCancellationRequested || !ReferenceEquals(registration, _registration)) return false;
+            if (readConfirmedId is not null)
+            {
+                _confirmedWriteReceipt = new CardWriteReceipt(attempt.AttemptId, attempt.Revision, readConfirmedId());
+                await PersistConfirmedReceiptAsync(registration, _confirmedWriteReceipt);
+            }
+            await registration.CommitOperationAsync(attempt.Revision, cancellationToken: Lifetime);
+            await ClearConfirmedReceiptAsync(registration);
             return true;
         }
         catch (Exception exception)
         {
-            if (_disposed) return false;
+            if (_disposed || token.IsCancellationRequested || !ReferenceEquals(registration, _registration)) return false;
             if (databaseConfirmed)
             {
                 _confirmedCleanupRevision = attempt!.Revision;
@@ -556,11 +640,11 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             {
                 try
                 {
-                    if (rejected) await _registration.RejectOperationAsync(attempt.Revision, Lifetime);
+                    if (rejected) await registration.RejectOperationAsync(attempt.Revision, Lifetime);
                     else
                     {
                         StorageBlocked = true;
-                        await _registration.UnknownOperationAsync(attempt.Revision, Lifetime);
+                        await registration.UnknownOperationAsync(attempt.Revision, Lifetime);
                     }
                 }
                 catch (Exception storeError) when (storeError is JSException or InvalidOperationException or OperationCanceledException)
@@ -750,14 +834,45 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         return Task.CompletedTask;
     }
 
+    private async Task PersistConfirmedReceiptAsync(ClayDraftRegistration registration, CardWriteReceipt receipt)
+    {
+        if (_confirmedWriteMarkerSaved) return;
+        await registration.OpenScopeAsync(ConfirmedResultScope, Lifetime);
+        await registration.OpenScopeAsync(DraftScope, Lifetime);
+        await registration.SaveTypedScopeAsync(ConfirmedResultScope, JsonSerializer.Serialize(receipt), Lifetime);
+        await registration.RecordConfirmedOperationAsync(receipt.Revision, Lifetime);
+        if (ReferenceEquals(registration, _registration))
+            _confirmedWriteMarkerSaved = true;
+    }
+
+    private async Task ClearConfirmedReceiptAsync(ClayDraftRegistration registration)
+    {
+        if (_confirmedWriteReceipt is null || !ReferenceEquals(registration, _registration)) return;
+        _confirmedWriteReceipt = null;
+        _confirmedWriteMarkerSaved = false;
+        try
+        {
+            await registration.DiscardScopeAsync(ConfirmedResultScope, Lifetime);
+            await registration.OpenScopeAsync(ConfirmedResultScope, Lifetime);
+            await registration.OpenScopeAsync(DraftScope, Lifetime);
+        }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException or OperationCanceledException)
+        {
+            // A completed journal is no longer tied to the leftover receipt.
+        }
+    }
+
     private async Task RetryConfirmedCleanupAsync(long revision, CancellationToken token)
     {
         if (_registration is not { } registration) return;
         Busy = true;
         try
         {
+            if (_confirmedWriteReceipt is { } receipt)
+                await PersistConfirmedReceiptAsync(registration, receipt);
             await registration.CommitOperationAsync(revision, cancellationToken: Lifetime);
-            if (token.IsCancellationRequested) return;
+            if (token.IsCancellationRequested || !ReferenceEquals(registration, _registration)) return;
+            await ClearConfirmedReceiptAsync(registration);
             _confirmedCleanupRevision = null;
             StorageBlocked = false;
             Message = null;
@@ -860,7 +975,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             if (!token.IsCancellationRequested && !canWrite)
             {
                 _readOnlyDraft = StorageBlocked = true;
-                if (_unresolvedOperation is null)
+                if (_unresolvedOperation is null && !ConfirmedCleanupPending)
                     Message = "Черновик доступен для просмотра. Сейчас запись запрещена.";
             }
         });
@@ -909,6 +1024,19 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         }
         if (restore.OperationSnapshot is { } pending)
         {
+            if (pending.Status == ClayDraftOperationStatus.Confirmed &&
+                restore.TypedScopes?.TryGetValue(ConfirmedResultScope, out var resultJson) == true &&
+                JsonSerializer.Deserialize<CardWriteReceipt>(resultJson) is { } receipt &&
+                receipt.AttemptId == pending.AttemptId && receipt.Revision == pending.Revision &&
+                RestoreConfirmedResult(pending.Kind, receipt.ResultId) is { } complete)
+            {
+                _confirmedWriteReceipt = receipt;
+                _confirmedWriteMarkerSaved = StorageBlocked = true;
+                _confirmedCleanupRevision = pending.Revision;
+                _afterConfirmedCleanup = complete;
+                Message = "Результат подтверждён. Нажмите «Обновить», чтобы завершить обработку журнала.";
+                return;
+            }
             _unresolvedOperation = pending;
             StorageBlocked = true;
             Message = "Обнаружена незавершённая операция. Нажмите «Обновить» для сверки.";

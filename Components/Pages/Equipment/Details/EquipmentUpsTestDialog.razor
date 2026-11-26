@@ -1,14 +1,21 @@
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
 @using Clayzor.Lib.Web.Controls.Components.Grid
+@using Kesco.App.Web.Inventory.Components.Layout
 @using Kesco.App.Web.Inventory.Rules
 
 <MudDialog>
     <TitleContent>Тестирование UPS</TitleContent>
     <DialogContent>
+        <ClayFormActions Form="InventoryFormHelp.EquipmentUps" />
+        <div class="@DraftOwnerClass" data-draft-scope="@DraftScope">
         @if (!string.IsNullOrWhiteSpace(_error))
         {
             <MudAlert Severity="Severity.Error">@_error</MudAlert>
+            @if (_restorePending)
+            {
+                <MudButton OnClick="RetryRawAsync" Disabled="@_restoringRaw">Повторить восстановление</MudButton>
+            }
         }
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Дата и время:</span>
@@ -45,10 +52,11 @@
             <span class="equipment-ins-label">Ошибки:</span>
             <ClayTextArea @bind-Value="Value.Issues" Options="_issuesOptions" />
         </div>
+        </div>
     </DialogContent>
     <DialogActions>
         <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@RawNotReady" />
     </DialogActions>
 </MudDialog>
 
@@ -70,10 +78,33 @@
         AllowSorting = false,
         ColumnMenuMode = ColumnMenuMode.Hidden,
     };
-    private readonly ClayTextAreaOptions _issuesOptions = new() { MaxLength = 4000, Lines = 3 };
+    private readonly ClayTextAreaOptions _issuesOptions = new() { MaxLength = 4000, Lines = 3, DraftKey = "ups-test.issues" };
     private readonly List<UpsTestServerSelectionItem> _selectedServers = [];
     private bool _selectionInitialized;
     private string? _error;
+    private EquipmentUpsTestDraft? _lastPublishedDraft;
+    private bool _restorePending;
+    private bool _restoreAttempted;
+    private bool _restoringRaw;
+    private bool RawNotReady => RestoreRaw is not null && (!_restoreAttempted || _restoringRaw || _restorePending);
+
+    /// <summary>Стабильная raw-область вложенного теста.</summary>
+    [Parameter] public string? DraftScope { get; set; }
+
+    /// <summary>Класс зарегистрированного DOM-владельца.</summary>
+    [Parameter] public string? DraftOwnerClass { get; set; }
+
+    /// <summary>Исходный тест до изменений.</summary>
+    [Parameter] public UpsTest? Original { get; set; }
+
+    /// <summary>Публикует typed ввод до подтверждения.</summary>
+    [Parameter] public Func<EquipmentUpsTestDraft, Task>? PublishDraft { get; set; }
+
+    /// <summary>Восстанавливает raw ввод после готовности DOM.</summary>
+    [Parameter] public Func<Task<bool>>? RestoreRaw { get; set; }
+
+    /// <summary>Проверяет готовность ввода перед принятием.</summary>
+    [Parameter] public Func<Task<bool>>? CanAcceptDraft { get; set; }
 
     [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
 
@@ -112,8 +143,71 @@
 
     private void Cancel() => Dialog.Cancel();
 
-    private void Apply()
+    /// <inheritdoc />
+    protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (firstRender && RestoreRaw is not null)
+            await RetryRawAsync();
+        if (PublishDraft is null || Original is null)
+            return;
+
+        var state = new EquipmentUpsTestDraft(Original, Date, Time, Value.BatteryTime,
+            UpsTestServerSelection.Format(_selectedServers), Value.Issues);
+        if (state == _lastPublishedDraft)
+            return;
+        try
+        {
+            await PublishDraft(state);
+            _lastPublishedDraft = state;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Microsoft.JSInterop.JSException or
+            Microsoft.JSInterop.JSDisconnectedException or OperationCanceledException)
+        {
+            const string message = "Не удалось сохранить черновик теста UPS.";
+            if (_error != message)
+            {
+                _error = message;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task RetryRawAsync()
+    {
+        if (!RawNotReady || _restoringRaw)
+            return;
+        _restoringRaw = true;
+        _restoreAttempted = true;
+        try
+        {
+            _restorePending = RestoreRaw is not null && !await RestoreRaw();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Microsoft.JSInterop.JSException or
+            Microsoft.JSInterop.JSDisconnectedException or OperationCanceledException)
+        {
+            _restorePending = true;
+        }
+        finally { _restoringRaw = false; }
+        _error = _restorePending ? "Восстановление ввода теста UPS не завершено." : null;
+        StateHasChanged();
+    }
+
+    private async Task Apply()
+    {
+        try
+        {
+            if (RawNotReady || CanAcceptDraft is not null && !await CanAcceptDraft())
+            {
+                _error = "Сначала восстановите ввод теста UPS.";
+                return;
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Microsoft.JSInterop.JSException or
+            Microsoft.JSInterop.JSDisconnectedException or OperationCanceledException)
+        {
+            _error = "Не удалось проверить черновик теста UPS.";
+            return;
+        }
         if (Date is null || Time is null)
         {
             _error = "Укажите дату и время тестирования.";

@@ -94,9 +94,15 @@ public sealed class PhoneSaveResult
     /// <summary>SQL-транзакция зафиксирована.</summary>
     public bool Saved { get; init; }
 
+    /// <summary>Сервер подтвердил откат записи из-за несовпадающей версии или отсутствия номера.</summary>
+    public bool VersionConflict { get; init; }
+
     /// <summary>Сообщения, из-за которых сохранение не выполнялось.</summary>
     public IReadOnlyList<PhoneValidationIssue> Issues { get; init; } = [];
 }
+
+/// <summary>Подтверждение попытки и уведомление о первой возможной отправке SQL.</summary>
+public sealed record TelSqlBoundary(Func<Task> Prepare, Action Dispatch);
 
 /// <summary>SQL batch и параметры сохранения.</summary>
 public sealed record PhoneSaveCommand(string Sql, DynamicParameters Parameters);

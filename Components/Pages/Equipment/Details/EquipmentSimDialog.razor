@@ -3,6 +3,7 @@
 @using Clayzor.Lib.Web.Controls.Components.Form
 @using Clayzor.Lib.Web.Controls.Components.Select
 @using Clayzor.Lib.Web.DBSelect.Equipment
+@using Kesco.App.Web.Inventory.Components.Layout
 @inject MobileContractSelectDataSource ContractSource
 @inject PersonalDataPersonSelectDataSource PersonalDataSource
 @inject Kesco.App.Web.Inventory.Services.EquipmentFormService Service
@@ -11,6 +12,7 @@
 <MudDialog>
     <TitleContent>SIM-карта</TitleContent>
     <DialogContent>
+        <ClayFormActions Form="InventoryFormHelp.EquipmentSim" />
         @if (!string.IsNullOrWhiteSpace(_loadError))
         {
             <MudAlert Severity="Severity.Error">@_loadError</MudAlert>
@@ -77,9 +79,9 @@
         <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
         @if (_loadError is not null)
         {
-            <ClayToolbarButton Options="_retryButtonOptions" OnClick="InitializeReadinessAsync" Disabled="@_loading" />
+            <ClayToolbarButton Options="_retryButtonOptions" OnClick="InitializeReadinessAsync" Disabled="@(_loading || _readinessInFlight)" />
         }
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || !_ready || _loadError is not null || _saving || _saveBlocked)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || _readinessInFlight || !_ready || _loadError is not null || _saving || _saveBlocked)" />
     </DialogActions>
 </MudDialog>
 
@@ -112,12 +114,23 @@
     private int? _resolvedContractId;
     private int? _resolvedPersonalDataPersonId;
     private string? _loadError;
+    private bool _draftRestored;
+    private bool _readinessInFlight;
+    private bool _pendingRawRetry;
+    private bool _retryRequiresReopen;
+    private bool _versionConflict;
 
     /// <summary>Идентификатор оборудования.</summary>
     [Parameter] public int EquipmentId { get; set; }
 
     /// <summary>Признак существующей SIM.</summary>
     [Parameter] public bool HasExisting { get; set; }
+
+    /// <summary>Неизменяемые исходные поля отображённой SIM, без PIN/PUK.</summary>
+    [Parameter] public EquipmentSimOriginal? Original { get; set; }
+
+    /// <summary>Непрозрачная исходная версия для защищённого редактирования и восстановления.</summary>
+    [Parameter] public string? OriginalVersion { get; set; }
 
     /// <summary>Текущее локальное время браузера.</summary>
     [Parameter] public DateTime Now { get; set; } = DateTime.Now;
@@ -159,6 +172,7 @@
     /// <inheritdoc />
     protected override void OnDraftStateRestored()
     {
+        _draftRestored = true;
         _resolvedContractId = ContractId;
         _resolvedPersonalDataPersonId = PersonalDataPersonId;
         _restoreContractPending = ContractId is not null;
@@ -175,6 +189,20 @@
 
     private async Task InitializeReadinessAsync()
     {
+        if (_readinessInFlight || _saving || !IsEditorCurrent())
+            return;
+        _readinessInFlight = true;
+        try { await ReadAuthorizedInputAsync(); }
+        finally
+        {
+            _readinessInFlight = false;
+            if (IsEditorCurrent())
+                StateHasChanged();
+        }
+    }
+
+    private async Task ReadAuthorizedInputAsync()
+    {
         var retry = _loadError is not null;
         var version = ++_readinessVersion;
         var equipmentId = EquipmentId;
@@ -183,7 +211,8 @@
         _secretReady = false;
         _contractReadFailed = false;
         _loadError = null;
-        ClearSecrets();
+        if (!_pendingRawRetry)
+            ClearSecrets();
         SetSecretInputsDisabled(true);
         if (retry && ContractId is not null)
             _restoreContractPending = true;
@@ -194,6 +223,13 @@
         await Task.WhenAll(secretsTask, contractTask);
         if (!IsReadinessCurrent(version, equipmentId))
             return;
+        if (_secretReady && _pendingRawRetry && (_retryRequiresReopen || _versionConflict))
+        {
+            _retryRequiresReopen = true;
+            _secretReady = false;
+            ClearSecrets();
+            _loadError = "Ввод сохранён в черновике. Откройте редактор для восстановления и сверки.";
+        }
         _loading = false;
         _ready = _secretReady && !_contractReadFailed;
         _contractOptions.ReadOnly = _personOptions.ReadOnly = false;
@@ -208,9 +244,20 @@
         try
         {
             if (EditorContext is not null)
-                await EditorContext.ApplyRawAsync();
+            {
+                if (_pendingRawRetry)
+                    await EditorContext.ApplyPendingRawAsync();
+                else
+                    await EditorContext.ApplyRawAsync();
+            }
             if (!IsReadinessCurrent(version, equipmentId))
                 return;
+            if (_versionConflict)
+            {
+                _saveBlocked = true;
+                _error = "Исходное состояние SIM не подтверждено. Ввод сохранён. Сверьте актуальные данные перед записью.";
+                await InvokeAsync(StateHasChanged);
+            }
             if (EditorContext is not null)
                 await EditorContext.ReportReadinessAsync(EquipmentEditorReadiness.Ready);
         }
@@ -218,11 +265,16 @@
         {
             if (!IsReadinessCurrent(version, equipmentId))
                 return;
-            ClearSecrets();
+            _pendingRawRetry = EditorContext?.PendingRawRestore is not null;
+            _retryRequiresReopen |= _pendingRawRetry && _versionConflict;
+            if (!_pendingRawRetry || _retryRequiresReopen)
+                ClearSecrets();
             _ready = false;
             _secretReady = false;
             SetSecretInputsDisabled(true);
-            _loadError = $"Не удалось восстановить коды SIM. {ex.Message}";
+            _loadError = _retryRequiresReopen
+                ? "Ввод сохранён в черновике. Откройте редактор для восстановления и сверки."
+                : "Не удалось восстановить все поля. Повторите восстановление.";
             if (EditorContext is not null)
                 await EditorContext.ReportReadinessAsync(EquipmentEditorReadiness.Failed);
             await InvokeAsync(StateHasChanged);
@@ -240,13 +292,19 @@
         }
         try
         {
-            var secrets = await Service.GetSimSecretsAsync(equipmentId);
+            var snapshot = await Service.GetSimEditorSnapshotAsync(equipmentId);
             if (!IsReadinessCurrent(version, equipmentId))
                 return;
-            Secrets.Pin = secrets.Pin;
-            Secrets.Pin2 = secrets.Pin2;
-            Secrets.Puk = secrets.Puk;
-            Secrets.Puk2 = secrets.Puk2;
+            if (!_draftRestored && OriginalVersion is null && snapshot is not null && snapshot.CaptureOriginal() == Original)
+                OriginalVersion = snapshot.EditorVersion;
+            _versionConflict = snapshot is null || OriginalVersion is null || OriginalVersion != snapshot.EditorVersion;
+            if (snapshot is not null && (!_pendingRawRetry || _retryRequiresReopen))
+            {
+                Secrets.Pin = snapshot.Secrets.Pin;
+                Secrets.Pin2 = snapshot.Secrets.Pin2;
+                Secrets.Puk = snapshot.Secrets.Puk;
+                Secrets.Puk2 = snapshot.Secrets.Puk2;
+            }
             _secretReady = true;
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
@@ -254,8 +312,9 @@
             if (!IsReadinessCurrent(version, equipmentId))
                 return;
             ClearSecrets();
+            _retryRequiresReopen |= _pendingRawRetry;
             _secretReady = false;
-            _loadError = ex is UnauthorizedAccessException or InvalidOperationException
+            _loadError = ex is UnauthorizedAccessException or InvalidOperationException and not EquipmentSimStorageException
                 ? ex.Message
                 : "Не удалось прочитать коды SIM. Повторите чтение; сохранение заблокировано.";
         }
@@ -410,7 +469,7 @@
 
     private Task Apply()
     {
-        if (_loading || !_ready || _loadError is not null)
+        if (_loading || _readinessInFlight || !_ready || _loadError is not null || _versionConflict)
             return Task.CompletedTask;
         var localActivation = ActivatedDate?.Date.Add(ActivatedTime ?? TimeSpan.Zero) ?? default;
         var candidate = new EquipmentSimCard
@@ -418,10 +477,14 @@
             PhoneNumber = PhoneNumber?.Trim() ?? string.Empty,
             ContractId = ContractId,
             ActivatedAtUtc = localActivation,
-            Secrets = Secrets,
+            Secrets = new EquipmentSimSecrets { Pin = Secrets.Pin, Pin2 = Secrets.Pin2, Puk = Secrets.Puk, Puk2 = Secrets.Puk2 },
         };
         var draft = new EquipmentSimDialogResult(
-            candidate.PhoneNumber, localActivation, ContractId, PersonalDataPersonId, Secrets);
+            candidate.PhoneNumber, localActivation, ContractId, PersonalDataPersonId, candidate.Secrets)
+        {
+            Mode = HasExisting ? EquipmentSimWriteMode.Edit : EquipmentSimWriteMode.Add,
+            OriginalVersion = OriginalVersion,
+        };
         return ApplyAsync(draft, () => ActivatedDate is null || ActivatedTime is null
             ? "Укажите дату и время активации."
             : candidate.Validate());

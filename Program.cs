@@ -141,7 +141,6 @@ builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Equipment.UpsEquipmentS
 builder.Services.AddKeyedScoped<Clayzor.Lib.Web.DBSelect.Equipment.UpsEquipmentSelectDataSource>("server", (sp, _) =>
     new Clayzor.Lib.Web.DBSelect.Equipment.UpsEquipmentSelectDataSource(
         sp.GetRequiredService<DbManager>(), upsOnly: false));
-builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.ModelEquipmentFormService>();
 builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.EquipmentInsService>();
 builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.EquipmentFormService>();
 builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.PhoneFormService>();

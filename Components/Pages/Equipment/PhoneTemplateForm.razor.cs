@@ -1,22 +1,24 @@
+using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Web.Controls.Components;
 using Clayzor.Lib.Web.Controls.Components.Form;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
-using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.JSInterop;
 using MudBlazor;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
 
 /// <summary>Отдельный редактор шаблона настройки IP-телефона.</summary>
-public partial class PhoneTemplateForm : IDisposable
+public partial class PhoneTemplateForm : IDisposable, IAsyncDisposable
 {
-    private const int DutyEngineerRoleId = 102;
-    private const int PhoneEquipmentTypeId = 30;
 
     private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "model-equipment-form" };
-    private readonly ClayTextAreaOptions _templateOptions = new() { Lines = 24, Class = "phone-template-editor" };
+    private readonly ClayTextAreaOptions _templateOptions = new()
+    {
+        Lines = 24, Class = "phone-template-editor", DraftKey = "phone-template.text",
+        BrowserManaged = true, BrowserLabel = "Шаблон телефона",
+    };
     private readonly ClayToolbarButtonOptions _okOptions = new()
     {
         Text = "OK", Icon = Icons.Material.Filled.Check, Title = "Сохранить и закрыть",
@@ -39,8 +41,10 @@ public partial class PhoneTemplateForm : IDisposable
         Text = "Отмена", Icon = Icons.Material.Filled.Close, Title = "Закрыть форму",
     };
 
+    private readonly CancellationTokenSource _pageCts = new();
     private EquipmentModel? _model;
-    private string _originalTemplate = string.Empty;
+    private Employee? CurrentUser;
+    private EquipmentModelWriteBaseline? _writeBaseline;
     private bool _canEdit;
     private bool _loaded;
     private bool _notFound;
@@ -57,8 +61,8 @@ public partial class PhoneTemplateForm : IDisposable
     public int Id { get; set; }
 
     private string Title => _model is null ? "Шаблон телефона" : $"Шаблон телефона — {_model.Name} #{_model.Id}";
-    private bool IsModified => _loaded && _model is not null && _model.PhoneTemplate != _originalTemplate;
-    private bool CanSave => IsModified && _canEdit && !_loading && !_saving;
+    private bool IsModified => _loaded && _model is not null && _model.PhoneTemplate != (_writeBaseline?.PhoneTemplate ?? string.Empty);
+    private bool CanSave => IsModified && _canEdit && !_loading && !_saving && !TemplateWriteBlocked;
     private string? ChangedByUrl => _model?.ChangedById is > 0 && !string.IsNullOrWhiteSpace(Configuration["URI_user_form"])
         ? $"{Configuration["URI_user_form"]}{(Configuration["URI_user_form"]!.Contains('?') ? '&' : '?')}id={_model.ChangedById}"
         : null;
@@ -66,9 +70,17 @@ public partial class PhoneTemplateForm : IDisposable
     /// <summary>Загружает модель после рендера и при изменении идентификатора.</summary>
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        await ReleaseTemplateTransitionAfterRenderAsync();
         if (_loadedId == Id)
+        {
+            await EnsureTemplateEditorWatcherAsync();
+            if (_restoreTemplateRawRequested && _editorWatchGeneration is not null)
+                await RestoreTemplateRawAsync();
             return;
+        }
         _loadedId = Id;
+        await ReleaseTemplateEditorWatcherAsync();
+        await ReleaseTemplateJournalAsync();
         await LoadCurrentAsync();
     }
 
@@ -78,27 +90,50 @@ public partial class PhoneTemplateForm : IDisposable
         _loading = true;
         _loaded = false;
         _notFound = false;
+        CurrentUser = null;
+        _errorMessage = null;
+        _templateInputDiscarded = false;
+        ClearTemplateAttribute();
+        _templateAttributeTypes = [];
         _model = null;
         StateHasChanged();
         await Task.Delay(100);
         try
         {
-            var model = Id > 0 ? await Service.GetModelAsync(Id) : null;
+            var model = Id > 0 ? await EquipmentModel.GetForEditAsync(Db, Id, _pageCts.Token) : null;
             if (version != _loadVersion)
                 return;
-            if (model is null || model.EquipmentTypeId != PhoneEquipmentTypeId)
+            if (model is null || model.EquipmentTypeId != (int)ТипыОборудования.IP_телефон)
             {
                 _notFound = true;
                 return;
             }
-            var canEdit = await Service.HasRoleAsync(DutyEngineerRoleId);
+            var actor = await Employee.GetCurrentWithRolesAsync(Db, await ReadPrincipalAsync(), _pageCts.Token);
             if (version != _loadVersion)
                 return;
             _model = model;
-            _originalTemplate = model.PhoneTemplate;
-            _canEdit = canEdit;
-            _templateOptions.ReadOnly = !canEdit;
+            _writeBaseline = model.CaptureWriteBaseline();
+            CurrentUser = actor;
+            _canEdit = actor?.HasRole(Роли.Дежурный_инженер) == true;
+            _templateOptions.ReadOnly = !_canEdit || _editorWatchGeneration is null;
             _loaded = true;
+            if (_templateJournal is not null && actor?.Id != _journalEmployeeId)
+            {
+                await ReleaseTemplateEditorWatcherAsync();
+                await ReleaseTemplateJournalAsync();
+            }
+            if (_disposed || version != _loadVersion)
+                return;
+            if (_canEdit && actor is not null && _templateJournal is null)
+                await InitializeTemplateJournalAsync(model.Id, actor.Id, version);
+            if (_canEdit && IsCurrentSave(model, version))
+                await LoadTemplateAttributeTypesAsync(model, version);
+        }
+        catch (OperationCanceledException) when (_disposed || version != _loadVersion) { }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            if (!_disposed && version == _loadVersion)
+                _errorMessage = "Не удалось загрузить шаблон или подтвердить текущего сотрудника.";
         }
         finally
         {
@@ -112,47 +147,79 @@ public partial class PhoneTemplateForm : IDisposable
 
     private async Task SaveAsync(bool closeAfterSave)
     {
-        if (_model is null || _saving || !_canEdit)
+        if (_model is not { } model || _writeBaseline is not { } baseline || CurrentUser is not { } actor ||
+            _saving || !_canEdit || TemplateWriteBlocked || _templateJournal is not { } journal)
             return;
-        if (!IsModified)
-        {
-            if (closeAfterSave)
-                await CloseAsync();
-            return;
-        }
 
-        var model = _model;
         var version = ++_loadVersion;
         _saving = true;
         _errorMessage = null;
         StateHasChanged();
+        var dispatched = false;
+        var noEffect = false;
         try
         {
-            await Task.Delay(100);
+            var snapshot = await ReadCurrentTemplateAsync(_pageCts.Token);
             if (!IsCurrentSave(model, version))
                 return;
-            if (!string.IsNullOrWhiteSpace(_originalTemplate) && string.IsNullOrWhiteSpace(model.PhoneTemplate) &&
+            var submitted = MatchesBrowserTemplateText(model.PhoneTemplate, snapshot.Text)
+                ? model.PhoneTemplate ?? string.Empty : snapshot.Text;
+            if (model.PhoneTemplate != submitted)
+            {
+                ++_templateInputEpoch;
+                model.PhoneTemplate = submitted;
+            }
+            if (!IsModified)
+            {
+                if (closeAfterSave)
+                    await CloseAtEditorRevisionAsync(snapshot.Revision);
+                return;
+            }
+            if (!string.IsNullOrWhiteSpace(baseline.PhoneTemplate) && string.IsNullOrWhiteSpace(submitted) &&
                 !await ConfirmAsync("Очистка шаблона", "Вы уверены, что хотите очистить шаблон телефона для данной модели?"))
                 return;
+            if (!IsCurrentSave(model, version) || model.PhoneTemplate != submitted)
+                return;
+
+            var principal = await ReadPrincipalAsync();
             if (!IsCurrentSave(model, version))
                 return;
-            await Service.SavePhoneTemplateAsync(model);
+            var command = new EquipmentModel { Id = model.Id, PhoneTemplate = submitted };
+            var boundary = new EquipmentModelWriteBoundary(
+                ct => BeginTemplateWriteAsync(journal, model, baseline, submitted, version, ct),
+                () =>
+                {
+                    if (!IsCurrentSave(model, version) || model.PhoneTemplate != submitted ||
+                        !ReferenceEquals(_templateJournal, journal))
+                        throw new InvalidOperationException("Ввод или контекст изменился. Запись не отправлена.");
+                    dispatched = true;
+                }, () => noEffect = true);
+            await command.SavePhoneTemplateAsync(Db, principal, actor.Id, baseline, _pageCts.Token, boundary);
             if (!IsCurrentSave(model, version))
                 return;
+
+            _knownWrite = true;
+            _confirmedStored = false;
+            _submittedTemplate = submitted;
+            await FinishKnownTemplateWriteAsync(journal);
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener");
             if (!IsCurrentSave(model, version))
                 return;
-            if (closeAfterSave)
-            {
-                await CloseAsync();
-                return;
-            }
-            await LoadCurrentAsync();
+            await ReloadKnownTemplateAsync(model, version);
+            if (closeAfterSave && IsCurrentSave(model, version) && !_knownWrite && !IsModified)
+                await CloseAtEditorRevisionAsync(snapshot.Revision);
         }
-        catch (Microsoft.Data.SqlClient.SqlException)
+        catch (Exception ex) when (IsJournalError(ex) || ex is IOException)
         {
-            if (IsCurrentSave(model, version))
-                _errorMessage = "Шаблон не сохранён. Подробности — в сообщении базы данных.";
+            if (!IsCurrentSave(model, version))
+                return;
+            if (!_knownWrite)
+                await RecordTemplateFailureAsync(journal, dispatched, noEffect);
+            ShowTemplateJournalState();
+            if (noEffect || ex is UnauthorizedAccessException)
+                _errorMessage = ex.Message;
+            else if (!_knownWrite && !dispatched && _notSentAttempt is null)
+                _errorMessage = "Не удалось подготовить сохранение. Запись не отправлена.";
         }
         finally
         {
@@ -164,62 +231,18 @@ public partial class PhoneTemplateForm : IDisposable
         }
     }
 
-    private bool IsCurrentSave(EquipmentModel model, int version) =>
-        !_disposed && version == _loadVersion && ReferenceEquals(model, _model);
-
-    private async Task LoadFileAsync(InputFileChangeEventArgs args)
+    private async Task<string?> ReadPrincipalAsync()
     {
-        if (_model is null || !_canEdit)
-            return;
-        await using var stream = args.File.OpenReadStream(maxAllowedSize: 10_000_000);
-        using var reader = new StreamReader(stream);
-        _model.PhoneTemplate = await reader.ReadToEndAsync();
+        var identity = (await Authentication.GetAuthenticationStateAsync()).User.Identity;
+        return identity?.IsAuthenticated == true ? identity.Name : null;
     }
+
+    private bool IsCurrentSave(EquipmentModel model, int version) =>
+        !_disposed && model.Id == Id && version == _loadVersion && ReferenceEquals(model, _model);
+
+    private Task LoadFileAsync(InputFileChangeEventArgs args) => ImportTemplateFileAsync(args);
 
     private async Task BrowseFileAsync() => await JS.InvokeVoidAsync("clayModelEquipmentForm.browseFile", "phoneTemplateFile");
-
-    private async Task RefreshAsync()
-    {
-        if (_model is null || _loading || _saving)
-            return;
-        if (IsModified && !await ConfirmAsync("Обновление", "Отменить несохранённые изменения и загрузить шаблон повторно?"))
-            return;
-        await LoadCurrentAsync();
-    }
-
-    private async Task CancelAsync()
-    {
-        if (IsModified && !await ConfirmAsync("Закрытие формы", "Закрыть форму без сохранения изменений?"))
-            return;
-        await CloseAsync();
-    }
-
-    private async Task CloseAsync()
-    {
-        _allowNavigation = true;
-        await JS.InvokeVoidAsync("clayModelEquipmentForm.close");
-    }
-
-    private async Task BeforeInternalNavigationAsync(LocationChangingContext context)
-    {
-        if (_allowNavigation)
-        {
-            _allowNavigation = false;
-            return;
-        }
-        if (_saving)
-        {
-            context.PreventNavigation();
-            return;
-        }
-        if (!IsModified)
-            return;
-        context.PreventNavigation();
-        if (!await ConfirmAsync("Переход на другую страницу", "Покинуть форму без сохранения изменений?"))
-            return;
-        _allowNavigation = true;
-        Navigation.NavigateTo(context.TargetLocation);
-    }
 
     private async Task<bool> ConfirmAsync(string title, string message)
     {
@@ -235,12 +258,25 @@ public partial class PhoneTemplateForm : IDisposable
         return result is not null && !result.Canceled;
     }
 
-    /// <summary>Блокирует продолжение сохранения и JS-вызовы после ухода со страницы.</summary>
-    public void Dispose()
+    /// <summary>Сохраняет существующий синхронный вход освобождения редактора.</summary>
+    public void Dispose() => _ = DisposeAsync();
+
+    /// <summary>Отменяет вызовы текущей формы и освобождает журнал без удаления попытки.</summary>
+    public async ValueTask DisposeAsync()
     {
         if (_disposed)
             return;
         _disposed = true;
         _loadVersion++;
+        _pageCts.Cancel();
+        try
+        {
+            await ReleaseTemplateEditorWatcherAsync();
+            await ReleaseTemplateJournalAsync();
+            if (_templateTextModule is not null)
+                await _templateTextModule.DisposeAsync();
+        }
+        catch (JSDisconnectedException) { }
+        finally { _pageCts.Dispose(); }
     }
 }

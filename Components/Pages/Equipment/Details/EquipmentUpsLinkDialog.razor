@@ -1,13 +1,17 @@
 @inherits EquipmentEditorDialogBase<int?>
+@implements IEquipmentDeferredRawRestore
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
 @using Clayzor.Lib.Web.Controls.Components.Select
 @using Clayzor.Lib.Web.DBSelect.Equipment
+@using Kesco.App.Web.Inventory.Components.Layout
 @inject IServiceProvider Services
 
 <MudDialog>
     <TitleContent>Подключение UPS</TitleContent>
     <DialogContent>
+        <ClayFormActions Form="InventoryFormHelp.Equipment" />
+        @RawRestoreNotice
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">UPS:</span>
             <ClaySelect TItem="UpsEquipmentLookup" TValue="int?"
@@ -20,7 +24,7 @@
     </DialogContent>
     <DialogActions>
         <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButtonOptions" Disabled="@(Value is null)" OnClick="Apply" />
+        <ClayToolbarButton Options="_okButtonOptions" Disabled="@(Value is null || RawRestoreBlocked)" OnClick="Apply" />
     </DialogActions>
 </MudDialog>
 

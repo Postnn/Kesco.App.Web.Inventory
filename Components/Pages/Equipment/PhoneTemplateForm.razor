@@ -1,30 +1,65 @@
 @page "/Equipment/PhoneTemplateForm"
 @layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
 @using Clayzor.Lib.Entities.Inventory
-@using Kesco.App.Web.Inventory.Services
-@implements IDisposable
-@inject ModelEquipmentFormService Service
+@inject Clayzor.Lib.DALC.DbManager Db
+@inject Microsoft.AspNetCore.Components.Authorization.AuthenticationStateProvider Authentication
 @inject IDialogService DialogService
 @inject NavigationManager Navigation
 @inject IConfiguration Configuration
 @inject IJSRuntime JS
 
 <PageTitle>@Title</PageTitle>
-<NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
+<NavigationLock ConfirmExternalNavigation="@(IsModified || _templateAttempt is not null || _knownWrite)" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
 <ClayEntityForm Options="_entityFormOptions">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit || TemplateWriteBlocked)" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
-            <ClayToolbarButton Options="_loadOptions" Disabled="@(_loading || _saving || !_canEdit)" OnClick="BrowseFileAsync" />
-            <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving)" OnClick="RefreshAsync" />
-            <ClayToolbarButton Options="_cancelOptions" Disabled="@_saving" OnClick="CancelAsync" />
+            <ClayToolbarButton Options="_loadOptions" Disabled="@(_loading || _saving || !_canEdit || TemplateWriteBlocked)" OnClick="BrowseFileAsync" />
+            <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || _journalBusy || _model is null)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="_cancelOptions" Disabled="@(_saving || _journalBusy)" OnClick="CancelAsync" />
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
+    @if (_journalNotice is not null)
+    {
+        <MudAlert Severity="Severity.Warning" Class="mb-3">
+            <div>@_journalNotice</div>
+            <ClayToolbarButton Options="RetryJournalOptions" OnClick="RetryTemplateJournalAsync" Disabled="@(_saving || _loading || _journalBusy)" />
+            @if (_templateAttempt is not null && !_knownWrite)
+            {
+                <ClayToolbarButton Options="ObserveTemplateOptions" OnClick="ObserveTemplateAsync" Disabled="@(_saving || _loading || _journalBusy)" />
+            }
+            @foreach (var candidate in _journalCandidates)
+            {
+                <ClayToolbarButton Options="AdoptJournalOptions" OnClick="@(() => AdoptTemplateJournalAsync(candidate))"
+                                   Disabled="@(_saving || _loading || _journalBusy || IsModified || _templateAttempt is not null || _knownWrite || !candidate.CanRecover)" />
+            }
+        </MudAlert>
+    }
+
+    @if (_inputNotice is not null)
+    {
+        <MudAlert Severity="Severity.Warning" Class="mb-3">
+            <div>@_inputNotice</div>
+            @if (_rawPending && !_editorWatchFailed)
+            {
+                <ClayToolbarButton Options="RetryInputOptions" OnClick="RetryTemplateRawAsync" Disabled="@(_saving || _loading || _journalBusy || _restoringTemplateRaw)" />
+            }
+            else if (_inputSaveFailed || _editorWatchFailed)
+            {
+                <ClayToolbarButton Options="RetryInputStorageOptions" OnClick="RetryTemplateInputAsync" Disabled="@(_saving || _loading || _journalBusy || _restoringTemplateRaw)" />
+            }
+        </MudAlert>
+    }
+
     <InputFile id="phoneTemplateFile" class="phone-template-file" OnChange="LoadFileAsync" accept=".txt,.cfg,.xml" />
 
+    @if (!string.IsNullOrWhiteSpace(_errorMessage))
+    {
+        <MudAlert Severity="Severity.Error" Class="mb-3">@_errorMessage</MudAlert>
+    }
     @if (_notFound)
     {
         <MudAlert Severity="Severity.Warning">Модель не найдена или не относится к типу IP-телефон.</MudAlert>
@@ -37,13 +72,32 @@
                 Для изменения шаблона требуется роль «Дежурный инженер» (102).
             </MudAlert>
         }
-        if (!string.IsNullOrWhiteSpace(_errorMessage))
-        {
-            <MudAlert Severity="Severity.Error" Class="mb-3">@_errorMessage</MudAlert>
-        }
-        <ClayTextArea @bind-Value="_model.PhoneTemplate" Options="_templateOptions" />
     }
 
+    @if (_canEdit && _model is not null)
+    {
+        <MudStack Row="true" Wrap="Wrap.Wrap" AlignItems="AlignItems.Center">
+            <ClaySelect TItem="PhoneTemplateAttributeType" TValue="string" Items="_templateAttributeTypes"
+                        Value="_templateAttributeType" ValueChanged="SelectTemplateAttributeAsync"
+                        Options="TemplateAttributeOptions" ValueSelector="@(item => item.Type)" TextSelector="@(item => item.Type)">
+                <ItemTemplate Context="item"><span title="@item.Description">@item.Type</span></ItemTemplate>
+            </ClaySelect>
+            <ClayToolbarButton Options="FindAttributeOptions" OnClick="FindTemplateAttributeAsync" Disabled="@(!CanUseTemplateAttribute)" />
+            <ClayToolbarButton Options="InsertAttributeOptions" OnClick="InsertTemplateAttributeAsync" Disabled="@(!CanUseTemplateAttribute || TemplateWriteBlocked)" />
+            <ClayToolbarButton Options="ClearAttributeOptions" OnClick="ClearTemplateAttribute" Disabled="@(_templateAttributeType is null)" />
+        </MudStack>
+        @if (_templateToolsNotice is not null)
+        {
+            <MudAlert Severity="Severity.Info">@_templateToolsNotice</MudAlert>
+        }
+    }
+    <div class="@_journalRoot" data-draft-scope="@TemplateInputScope" @ref="_editorRoot">
+        @if (_model is not null)
+        {
+            <ClayTextArea @key="_templateEditorRenderKey" Value="@_model.PhoneTemplate" Options="_templateOptions" />
+            <output data-template-line></output>
+        }
+    </div>
     </ChildContent>
     <Footer>
         <ClayChanged ChangedById="_model?.ChangedById"
@@ -53,7 +107,7 @@
     </Footer>
 </ClayEntityForm>
 
-<MudOverlay Visible="@(_loading || _saving)" DarkBackground="true">
+<MudOverlay Visible="@(_loading || _saving || _restoreTemplateRawRequested || _restoringTemplateRaw || _editorWatchStarting)" DarkBackground="true">
     <div class="clay-busy">
         <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" />
         <span>@(_saving ? "Сохранение шаблона…" : "Загрузка шаблона…")</span>

@@ -10,14 +10,15 @@ namespace Kesco.App.Web.Inventory.Services;
 public class PhoneFormService
 {
     private readonly DbManager _db;
+    private const Роли WriteRole = Роли.Специалист_по_инвентаризации_оборудования;
 
     /// <summary>Создаёт сервис с подключением текущего Blazor circuit.</summary>
     public PhoneFormService(DbManager db) => _db = db;
 
     /// <summary>Загружает основную запись и связанные наборы одним batch.</summary>
-    public virtual async Task<PhoneFormData?> GetAsync(int id, bool copy = false)
+    public virtual async Task<PhoneFormData?> GetAsync(int id, bool copy = false, Employee? currentUser = null)
     {
-        var canEdit = await HasRoleAsync((int)Роли.Специалист_по_инвентаризации_оборудования);
+        var canEdit = currentUser?.HasRole(WriteRole) == true;
         var result = await _db.RunAsync(async connection =>
         {
             var sql = string.Join("\n", SQLQueries.SELECT_ТелефонДляФормы,
@@ -67,10 +68,9 @@ public class PhoneFormService
         return new PhoneDeleteSnapshot { Phone = data.Phone, Station = station, Relations = data.Relations };
     }
 
-    /// <summary>Проверяет роль текущего пользователя с учётом замещений.</summary>
-    public virtual async Task<bool> HasRoleAsync(int roleId) =>
-        await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_ТекущийПользовательИмеетРоль,
-            new { RoleId = roleId }, commandType: CommandType.Text) == 1;
+    /// <summary>Подтверждает Windows/SQL principal и получает единый снимок действующих ролей.</summary>
+    public virtual Task<Employee?> GetCurrentUserAsync(string? windowsPrincipal, CancellationToken cancellationToken = default) =>
+        Employee.GetCurrentWithRolesAsync(_db, windowsPrincipal, cancellationToken);
 
     /// <summary>Вычисляет порты и автонабор без запросов при рендере.</summary>
     public virtual async Task<PhoneCapabilities> GetCapabilitiesAsync(int? stationId, int? phoneTypeId, int phoneId)
@@ -112,15 +112,28 @@ public class PhoneFormService
     }
 
     /// <summary>Повторно выполняет локальную и серверную валидацию, затем атомарно сохраняет diff.</summary>
-    public virtual async Task<PhoneSaveResult> SaveAsync(PhoneSaveRequest request)
+    public virtual async Task<PhoneSaveResult> SaveAsync(PhoneSaveRequest request, string? windowsPrincipal, int employeeId, TelSqlBoundary? boundary = null)
     {
-        await EnsureWriteAccessAsync();
+        await EnsureWriteAccessAsync(windowsPrincipal, employeeId, CancellationToken.None);
         var issues = PhoneFormValidator.Validate(request).ToList();
         issues.AddRange(await ValidateServerAsync(request));
         if (issues.Any(item => item.Severity == PhoneValidationSeverity.Blocking))
             return new PhoneSaveResult { PhoneId = request.Phone.Id, Issues = issues };
         var command = PhoneSaveBuilder.Build(request);
+        if (boundary is not null)
+        {
+            await boundary.Prepare();
+            await EnsureWriteAccessAsync(windowsPrincipal, employeeId, CancellationToken.None);
+            boundary.Dispatch();
+        }
         var id = await _db.ExecuteWriteScalarAsync<int>(command.Sql, command.Parameters);
+        if (request.Phone.Id > 0 && id == PhoneSaveBuilder.VersionConflictStatus)
+            return new PhoneSaveResult
+            {
+                PhoneId = request.Phone.Id,
+                VersionConflict = true,
+                Issues = [new PhoneValidationIssue("OriginalPhone", "Телефонный номер уже изменён или удалён. Проверьте исходную запись и свой ввод.")],
+            };
         if (id <= 0) throw new InvalidOperationException("База данных не вернула идентификатор телефонного номера.");
         return new PhoneSaveResult { PhoneId = id, Saved = true, Issues = issues };
     }
@@ -292,9 +305,9 @@ public class PhoneFormService
     }
 
     /// <summary>Проверяет зависимости и удаляет телефон со связями в короткой транзакции.</summary>
-    public virtual async Task DeleteAsync(int id)
+    public virtual async Task DeleteAsync(int id, string? windowsPrincipal, int employeeId, TelSqlBoundary? boundary = null)
     {
-        await EnsureWriteAccessAsync();
+        await EnsureWriteAccessAsync(windowsPrincipal, employeeId, CancellationToken.None);
         if (await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_ТелефонЗависимыеПриУдалении,
                 new { Id = id }, commandType: CommandType.Text) > 0)
             throw new InvalidOperationException("Номер нельзя удалить: от него зависят ведомые или отображаемые номера.");
@@ -302,6 +315,12 @@ public class PhoneFormService
                   "\nCOMMIT TRANSACTION; END TRY BEGIN CATCH IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; " +
                   "DECLARE @ErrorMessage nvarchar(4000) = ERROR_MESSAGE(), @ErrorSeverity int = ERROR_SEVERITY(), @ErrorState int = ERROR_STATE(); " +
                   "RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState); END CATCH;";
+        if (boundary is not null)
+        {
+            await boundary.Prepare();
+            await EnsureWriteAccessAsync(windowsPrincipal, employeeId, CancellationToken.None);
+            boundary.Dispatch();
+        }
         await _db.ExecuteAsync(sql, new { Id = id }, commandType: CommandType.Text);
     }
 
@@ -309,16 +328,36 @@ public class PhoneFormService
     public virtual async Task<IReadOnlyList<PhoneSyncResult>> SynchronizeAsync(int phoneId, IEnumerable<PhoneSyncOperation> operations)
     {
         var results = await SynchronizePhasedAsync(Guid.NewGuid().ToString("N"), phoneId, operations);
-        return results.Select(item => new PhoneSyncResult(item.Operation, item.Error,
-            item.Phase == PhoneSyncPhase.Unknown ? PhoneSyncOutcome.Unknown :
-            item.Phase == PhoneSyncPhase.Succeeded ? PhoneSyncOutcome.Succeeded : PhoneSyncOutcome.Failed)).ToList();
+        return ToSyncResults(results);
     }
 
+    /// <summary>Выполняет запланированные сервером команды Tel только после свежей проверки сотрудника и цели.</summary>
+    internal virtual async Task<IReadOnlyList<PhoneSyncResult>> SynchronizeTelAsync(
+        string? windowsPrincipal, int employeeId, int phoneId, IEnumerable<PhoneSyncOperation> operations,
+        CancellationToken cancellationToken)
+    {
+        var results = await SynchronizeTelPhasedAsync(Guid.NewGuid().ToString("N"), windowsPrincipal, employeeId, phoneId, operations, cancellationToken);
+        return ToSyncResults(results);
+    }
+
+    /// <summary>Оставляет вызывающей форме фактическую фазу каждого ATS вызова.</summary>
+    internal virtual Task<IReadOnlyList<PhoneSyncOperationResult>> SynchronizeTelPhasedAsync(
+        string attemptId, string? windowsPrincipal, int employeeId, int phoneId, IEnumerable<PhoneSyncOperation> operations,
+        CancellationToken cancellationToken, Func<PhoneSyncOperation, Task>? prepareDispatch = null) =>
+        SynchronizeCoreAsync(attemptId, phoneId, operations,
+            operation => AuthorizeTelDispatchAsync(windowsPrincipal, employeeId, phoneId, operation, cancellationToken),
+            prepareDispatch);
+
     /// <summary>Различает catalog/preflight до dispatch и неизвестный ответ после фактического Execute.</summary>
-    public virtual async Task<IReadOnlyList<PhoneSyncOperationResult>> SynchronizePhasedAsync(
+    public virtual Task<IReadOnlyList<PhoneSyncOperationResult>> SynchronizePhasedAsync(
         string attemptId,
         int phoneId,
-        IEnumerable<PhoneSyncOperation> operations)
+        IEnumerable<PhoneSyncOperation> operations) =>
+        SynchronizeCoreAsync(attemptId, phoneId, operations, null);
+
+    private async Task<IReadOnlyList<PhoneSyncOperationResult>> SynchronizeCoreAsync(
+        string attemptId, int phoneId, IEnumerable<PhoneSyncOperation> operations,
+        Func<PhoneSyncOperation, Task>? authorize, Func<PhoneSyncOperation, Task>? prepareDispatch = null)
     {
         var results = new List<PhoneSyncOperationResult>();
         foreach (var operation in operations.Distinct())
@@ -329,8 +368,14 @@ public class PhoneFormService
                 async Task ExecuteDispatchedAsync(
                     string procedure,
                     DynamicParameters parameters,
-                    Action<DynamicParameters> fill) =>
+                    Action<DynamicParameters> fill)
+                {
+                    if (prepareDispatch is not null)
+                        await prepareDispatch(operation);
+                    if (authorize is not null)
+                        await authorize(operation);
                     await ExecuteReturnCodeAsync(procedure, parameters, fill, () => dispatched = true);
+                }
                 switch (operation.Kind)
                 {
                     case PhoneSyncKind.Meridian:
@@ -357,6 +402,8 @@ public class PhoneFormService
                         await ExecuteDispatchedAsync(SQLQueries.SP_PhoneSync_Ccm, new DynamicParameters(),
                             parameters => parameters.Add("@КодОборудования", int.Parse(operation.Key)));
                         break;
+                    default:
+                        throw new InvalidOperationException("Неизвестный вид синхронизации АТС.");
                 }
                 results.Add(new PhoneSyncOperationResult(attemptId, operation, PhoneSyncPhase.Succeeded));
             }
@@ -364,6 +411,10 @@ public class PhoneFormService
             {
                 results.Add(new PhoneSyncOperationResult(attemptId, operation,
                     dispatched ? PhoneSyncPhase.Unknown : PhoneSyncPhase.NotSent, ex.Message));
+            }
+            catch (UnauthorizedAccessException ex) when (authorize is not null && !dispatched)
+            {
+                results.Add(new PhoneSyncOperationResult(attemptId, operation, PhoneSyncPhase.Rejected, ex.Message));
             }
             catch (InvalidOperationException ex)
             {
@@ -388,9 +439,37 @@ public class PhoneFormService
         if (code != 0) throw new InvalidOperationException($"Процедура вернула код {code}.");
     }
 
-    private async Task EnsureWriteAccessAsync()
+    private async Task AuthorizeTelDispatchAsync(string? windowsPrincipal, int employeeId, int phoneId,
+        PhoneSyncOperation operation, CancellationToken cancellationToken)
     {
-        if (!await HasRoleAsync((int)Роли.Специалист_по_инвентаризации_оборудования))
-            throw new UnauthorizedAccessException("Недостаточно прав для изменения телефонного номера (роль 43).");
+        if (phoneId <= 0 || string.IsNullOrWhiteSpace(operation.Key) ||
+            (operation.Kind == PhoneSyncKind.Ccm && (operation.Deleting || !int.TryParse(operation.Key, out var equipmentId) || equipmentId <= 0)))
+            throw new UnauthorizedAccessException("Цель команды АТС не подтверждена.");
+
+        if (operation.Kind == PhoneSyncKind.Xorcom)
+        {
+            var stored = (await _db.QueryRequiredAsync<Phone>(SQLQueries.SELECT_ТелефонДляФормы,
+                new { Id = phoneId }, cancellationToken)).SingleOrDefault();
+            var station = stored?.StationId is { } stationId
+                ? (await _db.QueryRequiredAsync<PhoneStationLookup>(SQLQueries.SELECT_ТелефонСтанцияПоИдентификатору,
+                    new { Id = stationId }, cancellationToken)).SingleOrDefault()
+                : null;
+            if (!string.Equals(station?.XorcomName, operation.Key, StringComparison.Ordinal))
+                throw new UnauthorizedAccessException("Сохранённая станция телефонного номера изменилась. Команда Xorcom не отправлена.");
+        }
+
+        await EnsureWriteAccessAsync(windowsPrincipal, employeeId, cancellationToken);
     }
+
+    private async Task EnsureWriteAccessAsync(string? windowsPrincipal, int employeeId, CancellationToken cancellationToken)
+    {
+        var employee = await GetCurrentUserAsync(windowsPrincipal, cancellationToken);
+        if (employee is null || employee.Id != employeeId || !employee.HasRole(WriteRole))
+            throw new UnauthorizedAccessException("Не удалось подтвердить сотрудника и его право на изменение телефонного номера (роль 43).");
+    }
+
+    private static IReadOnlyList<PhoneSyncResult> ToSyncResults(IEnumerable<PhoneSyncOperationResult> results) =>
+        results.Select(item => new PhoneSyncResult(item.Operation, item.Error,
+            item.Phase == PhoneSyncPhase.Unknown ? PhoneSyncOutcome.Unknown :
+            item.Phase == PhoneSyncPhase.Succeeded ? PhoneSyncOutcome.Succeeded : PhoneSyncOutcome.Failed)).ToList();
 }

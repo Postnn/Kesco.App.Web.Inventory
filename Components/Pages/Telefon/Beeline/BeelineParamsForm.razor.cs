@@ -1,3 +1,4 @@
+using System.Data.SqlTypes;
 using System.Globalization;
 using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Web.Controls.Components.Form;
@@ -8,6 +9,8 @@ using Microsoft.AspNetCore.Components;
 using Microsoft.Data.SqlClient;
 using Microsoft.JSInterop;
 using MudBlazor;
+using MudBlazor.Extensions;
+using MudBlazor.Extensions.Options;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Telefon.Beeline;
 
@@ -57,11 +60,12 @@ public partial class BeelineParamsForm
     private string? _freshReadFailure;
     private BeelineDraft? _freshRecovery;
     private bool _retryingRecovery;
+    private bool _choosingRecoveryCancel;
 
     private bool ShowRecovery => !Loading && CurrentUser is not null && CanReadMissingDraft &&
         (Draft is not null || StorageBlocked) && (_contract is null || !Editable && StorageBlocked);
 
-    private bool CanRetryRecovery => ShowRecovery && !Busy && !_retryingRecovery && !ConfirmedCleanupPending;
+    private bool CanRetryRecovery => ShowRecovery && !Busy && !_retryingRecovery && !_choosingRecoveryCancel && !ConfirmedCleanupPending;
 
     private bool CanSave => !_openingSim && CanCommit && Editable && Dirty;
     private IEnumerable<string> ZoneChoices => Draft?.TimeZone is { Length: > 0 } zone && !_zones.Contains(zone, StringComparer.Ordinal)
@@ -86,8 +90,45 @@ public partial class BeelineParamsForm
     protected override IReadOnlyList<DraftMergeField> MergeFields => Fields;
 
     /// <inheritdoc />
-    protected override DraftRowVersion? ReadDraftRowVersion() => _contract is { } contract
-        ? new(contract.Number, contract.ChangedBy, null, contract.ChangedAt) : null;
+    protected override bool SupportsEditorCancellation => true;
+
+    /// <inheritdoc />
+    protected override DraftRowVersion? ReadDraftRowVersion() => _contract is { } contract ? VersionOf(contract) : null;
+
+    private static DraftRowVersion VersionOf(BeelineContract contract) =>
+        new(contract.Number, contract.ChangedBy, null, contract.ChangedAt);
+
+    /// <inheritdoc />
+    protected override async Task<FreshEditorState?> ReadFreshEditorAsync(Employee actor, CancellationToken token)
+    {
+        var number = Id;
+        var zones = ReadConfiguredZones();
+        if (!BeelineRules.ValidNumber(number) || zones.Length == 0 || _contract?.Number != number)
+            return null;
+
+        try
+        {
+            var result = await BeelineData.ReadAsync(Db, actor, number!, token);
+            token.ThrowIfCancellationRequested();
+            if (!result.CanUpdate || result.Contract is not { } contract || contract.Number != number ||
+                contract.ChangedAt < SqlDateTime.MinValue.Value || contract.ChangedAt > SqlDateTime.MaxValue.Value)
+                return null;
+
+            return new FreshEditorState(DraftFrom(contract), Access, VersionOf(contract), () =>
+            {
+                _contract = contract;
+                _canUpdate = true;
+                _zones = zones;
+                _freshRecovery = null;
+                _freshReadFailure = null;
+                UpdateOptions();
+            });
+        }
+        catch (Exception error) when (error is UnauthorizedAccessException or TimeoutException)
+        {
+            return null;
+        }
+    }
 
     /// <inheritdoc />
     protected override Task LoadAccessAsync(Employee user, CancellationToken routeToken) => Task.CompletedTask;
@@ -105,9 +146,7 @@ public partial class BeelineParamsForm
         _canUpdate = false;
         ++_simRevision;
         _openingSim = false;
-        _zones = Config.GetSection("BeelineTimeZones").GetChildren()
-            .Select(entry => entry.Value).OfType<string>().Where(zone => !string.IsNullOrWhiteSpace(zone))
-            .Distinct(StringComparer.Ordinal).OrderByDescending(zone => zone, StringComparer.Ordinal).ToArray();
+        _zones = ReadConfiguredZones();
 
         if (!BeelineRules.ValidNumber(Id))
         {
@@ -148,6 +187,51 @@ public partial class BeelineParamsForm
         if (!BeelineRules.ValidNumber(number)) return new(null);
         var result = await BeelineData.ReadAsync(Db, actor, number!, token);
         return new(result.Contract is { } contract ? DraftFrom(contract) : null);
+    }
+
+    private string[] ReadConfiguredZones() => Config.GetSection("BeelineTimeZones").GetChildren()
+        .Select(entry => entry.Value).OfType<string>().Where(zone => !string.IsNullOrWhiteSpace(zone))
+        .Distinct(StringComparer.Ordinal).OrderByDescending(zone => zone, StringComparer.Ordinal).ToArray();
+
+    private async Task CancelBeelineAsync()
+    {
+        if (Busy || Loading || _openingSim || _retryingRecovery || _choosingRecoveryCancel) return;
+        if (!ShowRecovery || ConfirmedCleanupPending)
+        {
+            await CancelAsync();
+            return;
+        }
+
+        var generation = EditorGeneration;
+        var route = RouteKey;
+        var registration = EditorDraftRegistration;
+        var token = Lifetime;
+        bool Current() => generation == EditorGeneration && route == RouteKey &&
+            ReferenceEquals(registration, EditorDraftRegistration) && !token.IsCancellationRequested;
+
+        _choosingRecoveryCancel = true;
+        ClayEditorCancelChoice? choice = null;
+        try
+        {
+            var dialog = await Dialogs.ShowExAsync<ClayEditorCancelDialog>("Отмена изменений",
+                new DialogParameters(), new DialogOptionsEx
+                {
+                    DragMode = MudDialogDragMode.Simple, CloseOnEscapeKey = true, CloseButton = true,
+                });
+            if (await dialog.Result is { Canceled: false, Data: ClayEditorCancelChoice selected })
+                choice = selected;
+        }
+        finally { _choosingRecoveryCancel = false; }
+
+        if (!Current()) return;
+        if (choice == ClayEditorCancelChoice.CloseWithoutSaving)
+            await CloseAsync();
+        else if (choice == ClayEditorCancelChoice.ResetAndStay)
+        {
+            await RetryRecoveryReadAsync();
+            if (Current() && _freshRecovery is not null)
+                Message = "Договор перечитан для сверки. Восстановленный ввод сохранён.";
+        }
     }
 
     private Task RefreshBeelineAsync() => CanRefresh ? RefreshAsync() : RetryRecoveryReadAsync();

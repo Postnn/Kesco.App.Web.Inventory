@@ -6,22 +6,50 @@
 @using Clayzor.Lib.Web.Controls.Services
 
 <PageTitle>Локальная сеть</PageTitle>
-<span hidden data-net-operation="@_operationRoot"></span>
-<NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
+<div data-net-operation="@_operationRoot">
+<NavigationLock ConfirmExternalNavigation="@ConfirmNetExternalExit" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
 <ClayEntityForm Options="_entityFormOptions">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || _poeRunning || !_loaded || CurrentUser is null || RequiresReconciliation || OperationBlocked)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || _poeRunning || !_loaded || CurrentUser is null || RequiresReconciliation || OperationBlocked || InputBlocked)" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
             @if (_model?.Poe == 1)
             {
-                <ClayToolbarButton Options="_poeOptions" Disabled="@(_loading || _saving || _poeRunning || CurrentUser is null || OperationBlocked)" OnClick="RestartPoeAsync" />
+                <ClayToolbarButton Options="_poeOptions" Disabled="@(_loading || _saving || _poeRunning || CurrentUser is null || OperationBlocked || RawInputBlocked)" OnClick="RestartPoeAsync" />
             }
-            <ClayToolbarButton Options="_cancelOptions" Disabled="@(_saving || _poeRunning)" OnClick="CancelAsync" />
+            <ClayToolbarButton Options="_cancelOptions" Disabled="@(_loading || _saving || _poeRunning || _inspectingOperation)" OnClick="CancelAsync" />
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
+        @if (_readOnlyRecoveryNotice is not null)
+        {
+            <MudAlert Severity="Severity.Warning">@_readOnlyRecoveryNotice</MudAlert>
+        }
+        @if (_readOnlyRecovery is { } recovery && IsReadOnlyRecoveryCurrent(recovery))
+        {
+            <section @key="recovery.Version" data-net-recovery="@RecoveryOwner(recovery.Version)"
+                     data-draft-scope="@NetInputScope" aria-label="Локальный черновик порта" data-testid="net-readonly-recovery">
+                <MudAlert Severity="Severity.Warning">
+                    Локальный черновик порта. Ввод можно скопировать. Запись и перезапуск PoE недоступны.
+                    @if (recovery.HasOperation)
+                    {
+                        <p>Незавершённая операция остаётся в журнале.</p>
+                    }
+                    @if (recovery.RawPending)
+                    {
+                        <p>Часть незавершённого ввода осталась в защищённом черновике.</p>
+                    }
+                </MudAlert>
+                @foreach (var field in ReadOnlyNetFields(recovery.Input))
+                {
+                    <label class="d-block">
+                        <span>@field.Label</span>
+                        <textarea class="d-block" readonly rows="@field.Rows" data-draft-key="@field.Key">@field.Value</textarea>
+                    </label>
+                }
+            </section>
+        }
         @if (_loadError is not null)
         {
             <MudAlert Severity="Severity.Error">
@@ -95,6 +123,56 @@
                 </section>
             }
             <MudText Typo="Typo.subtitle1" Class="font-weight-bold" data-testid="net-port-caption">@PortCaption</MudText>
+            @if (InputNotice is { } inputNotice)
+            {
+                <MudAlert Severity="Severity.Warning" data-testid="net-input-notice">
+                    @inputNotice
+                    @if (_operationContext is { InputReady: false } or { InputFailed: true })
+                    {
+                        <ClayToolbarButton Options="RetryInputOptions" Disabled="@(_saving || _poeRunning || _operationContext?.InputApplying == true)" OnClick="RetryNetInputAsync" />
+                    }
+                    @if (_operationContext is { InputConflict: true, LastSavedInput: not null })
+                    {
+                        <ClayToolbarButton Options="ReviewStaleInputOptions" Disabled="@(!CanReviewStaleInput)" OnClick="ReviewStaleNetInputAsync" />
+                    }
+                </MudAlert>
+            }
+            @if (_operationContext?.InputReview is { } draftReview)
+            {
+                <section aria-label="Сверка устаревшего черновика" data-testid="net-input-review">
+                    @foreach (var field in draftReview.Conflicts)
+                    {
+                        <fieldset @key="field" disabled="@(!CanReviewStaleInput)">
+                            <legend>@field.Label</legend>
+                            <div>Исходное значение: @field.Sent</div>
+                            <div>Мой ввод: @field.Local</div>
+                            @if (draftReview.RawFields.Contains(field.Field))
+                            {
+                                <div>Для этого поля сохранён также незавершённый ввод.</div>
+                            }
+                            <div>Из БД: @field.Fresh</div>
+                            <ClayRadioGroup TValue="bool?" Items="ReconciliationChoices" @bind-Value="field.KeepLocal" />
+                        </fieldset>
+                    }
+                    @if (draftReview.Conflicts.Count == 0)
+                    {
+                        <MudText>Независимые изменения можно объединить.</MudText>
+                    }
+                    <ClayToolbarButton Options="AcceptStaleInputOptions"
+                        Disabled="@(!CanReviewStaleInput || draftReview.Conflicts.Any(field => field.KeepLocal is null))"
+                        OnClick="AcceptStaleNetInputAsync" />
+                </section>
+            }
+            @if (_operationContext is { } inputContext)
+            {
+                @foreach (var candidate in inputContext.OtherDrafts.Where(candidate => candidate.CanRecover))
+                {
+                    <ClayToolbarButton Options="RecoverInputOptions"
+                        Disabled="@(!CanInspectOperation || inputContext.Attempt is not null || IsModified)"
+                        OnClick="() => RecoverOperationAsync(candidate)" />
+                }
+            }
+            <div @key="_inputViewRevision" data-draft-scope="@NetInputScope" inert="@_cancellingInput">
             <MudGrid Spacing="2">
                 <MudItem xs="12" md="6">
                     <div class="equipment-ins-row">
@@ -106,7 +184,7 @@
                                         TextSelector="@(item => item.Name)"
                                         Value="_model.SocketId"
                                         ValueChanged="OnSocketChangedAsync"
-                                        Options="_selectOptions" />
+                                        Options="_socketOptions" />
                             @if (!string.IsNullOrWhiteSpace(_socketNotes))
                             {
                                 <MudText Typo="Typo.caption" Color="Color.Secondary" data-testid="net-socket-notes">@_socketNotes</MudText>
@@ -116,7 +194,7 @@
                     <div class="equipment-ins-row equipment-ins-row-top">
                         <span class="equipment-ins-label">Подключено:</span>
                         <div>
-                            <ClayTextArea @bind-Value="_model.Connected" Options="_textAreaOptions" />
+                            <ClayTextArea @bind-Value="_model.Connected" Options="_connectedOptions" />
                             @if (_connectedLinks.Count > 0)
                             {
                                 <div data-testid="net-connected-links">
@@ -132,7 +210,7 @@
                     <div class="equipment-ins-row equipment-ins-row-top">
                         <span class="equipment-ins-label">Примечание:</span>
                         <div>
-                            <ClayTextArea @bind-Value="_model.Description" Options="_textAreaOptions" />
+                            <ClayTextArea @bind-Value="_model.Description" Options="_descriptionOptions" />
                             @if (_descriptionLinks.Count > 0)
                             {
                                 <div data-testid="net-description-links">
@@ -159,7 +237,7 @@
                                     TextSelector="@(item => item.Name)"
                                     Value="_model.EmployeeId"
                                     ValueChanged="OnEmployeeChangedAsync"
-                                    Options="_selectOptions" />
+                                    Options="_employeeOptions" />
                     </div>
                     @if (ShowCompanyMismatch)
                     {
@@ -184,7 +262,7 @@
                                               ValueSelector="@(item => (int?)item.Id)"
                                               TextSelector="@(item => item.Name)"
                                               Value="_switchToId"
-                                              ValueChanged="OnSwitchChanged" />
+                                              ValueChanged="OnSwitchChanged" Options="_switchOptions" />
                         </div>
                     }
                     @if (ShowExchange)
@@ -196,7 +274,7 @@
                                               ValueSelector="@(item => (int?)item.Id)"
                                               TextSelector="@(item => item.Name)"
                                               Value="_exchangeWithId"
-                                              ValueChanged="OnExchangeChanged" />
+                                              ValueChanged="OnExchangeChanged" Options="_exchangeOptions" />
                         </div>
                     }
                     <div class="equipment-ins-row">
@@ -212,6 +290,7 @@
                     }
                 </MudItem>
             </MudGrid>
+            </div>
         }
     </ChildContent>
     <Footer>
@@ -228,3 +307,4 @@
         <span>@(_poeRunning ? "Перезапуск PoE…" : _saving ? "Сохранение локальной сети…" : "Загрузка локальной сети…")</span>
     </div>
 </MudOverlay>
+</div>

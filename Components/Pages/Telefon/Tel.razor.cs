@@ -12,33 +12,35 @@ using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.JSInterop;
 using MudBlazor;
+using MudBlazor.Extensions;
+using MudBlazor.Extensions.Options;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Telefon;
 
 /// <summary>Создание, просмотр, редактирование, копирование и удаление телефонного номера.</summary>
-public partial class Tel : IDisposable
+public partial class Tel : IDisposable, IAsyncDisposable
 {
     private readonly CancellationTokenSource _pageCts = new();
     private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "phone-form equipment-form", MaxWidth = "100%" };
-    private readonly ClayTextBoxOptions _numberOptions = new() { Required = true, RequiredError = "Укажите номер", MaxLength = 4, Immediate = false };
-    private readonly ClayTextBoxOptions _quickCallOptions = new() { MaxLength = 50 };
-    private readonly ClayTextBoxOptions _autoDialOptions = new() { MaxLength = 50 };
-    private readonly ClayTextBoxOptions _parallelQuickOptions = new() { MaxLength = 50, Placeholder = "Номер параллельного вызова" };
-    private readonly ClayTextBoxOptions _connectedOptions = new() { MaxLength = 100 };
-    private readonly ClayTextBoxOptions _atsDescriptionOptions = new() { MaxLength = 100 };
-    private readonly ClayTextAreaOptions _notesOptions = new() { MaxLength = 300, Lines = 3 };
-    private readonly ClayDatePickerOptions _returnDateOptions = new();
-    private readonly ClaySelectOptions _stationOptions = new() { Required = true, RequiredError = "Выберите станцию", AutoSelectSingle = true, MaxItems = 100, Placeholder = "Выберите станцию" };
-    private readonly ClaySelectOptions _typeOptions = new() { Required = true, RequiredError = "Выберите тип", AutoSelectSingle = true, MaxItems = 20, Placeholder = "Выберите тип номера" };
-    private readonly ClaySelectOptions _employeeOptions = new() { AutoSelectSingle = true, MaxItems = 50, Placeholder = "Выберите сотрудника" };
-    private readonly ClaySelectOptions _customerOptions = new() { Required = true, RequiredError = "Выберите заказчика", AutoSelectSingle = true, MaxItems = 50, Placeholder = "Выберите заказчика" };
-    private readonly ClaySelectOptions _drivenOptions = new() { AutoSelectSingle = true, MaxItems = 100, Placeholder = "Выберите ведущий номер" };
-    private readonly ClaySelectOptions _displayedOptions = new() { AutoSelectSingle = true, MaxItems = 100, Placeholder = "Выберите отображаемый номер" };
-    private readonly ClaySelectOptions _socketOptions = new() { AutoSelectSingle = true, MaxItems = 50, Placeholder = "Выберите розетку" };
-    private readonly ClaySelectOptions _groupChoiceOptions = new() { AutoSelectSingle = true, MaxItems = 50, Placeholder = "Добавить номер в группу" };
-    private readonly ClaySelectOptions _equipmentChoiceOptions = new() { AutoSelectSingle = true, AlwaysShowAdvancedSearch = true, MaxItems = 50, Placeholder = "Добавить оборудование" };
-    private readonly ClayDropDownListOptions _portSelectOptions = new();
-    private readonly ClayDropDownListOptions _pickupSelectOptions = new();
+    private readonly ClayTextBoxOptions _numberOptions = new() { DraftKey = "tel.number", Required = true, RequiredError = "Укажите номер", MaxLength = 4, Immediate = false };
+    private readonly ClayTextBoxOptions _quickCallOptions = new() { DraftKey = "tel.quick-call", MaxLength = 50 };
+    private readonly ClayTextBoxOptions _autoDialOptions = new() { DraftKey = "tel.auto-dial", MaxLength = 50 };
+    private readonly ClayTextBoxOptions _parallelQuickOptions = new() { DraftKey = "tel.parallel-quick", MaxLength = 50, Placeholder = "Номер параллельного вызова" };
+    private readonly ClayTextBoxOptions _connectedOptions = new() { DraftKey = "tel.connected", MaxLength = 100 };
+    private readonly ClayTextBoxOptions _atsDescriptionOptions = new() { DraftKey = "tel.ats-description", MaxLength = 100 };
+    private readonly ClayTextAreaOptions _notesOptions = new() { DraftKey = "tel.notes", MaxLength = 300, Lines = 3 };
+    private readonly ClayDatePickerOptions _returnDateOptions = new() { DraftKey = "tel.return-date" };
+    private readonly ClaySelectOptions _stationOptions = new() { DraftKey = "tel.station", Required = true, RequiredError = "Выберите станцию", AutoSelectSingle = true, MaxItems = 100, Placeholder = "Выберите станцию" };
+    private readonly ClaySelectOptions _typeOptions = new() { DraftKey = "tel.type", Required = true, RequiredError = "Выберите тип", AutoSelectSingle = true, MaxItems = 20, Placeholder = "Выберите тип номера" };
+    private readonly ClaySelectOptions _employeeOptions = new() { DraftKey = "tel.employee", AutoSelectSingle = true, MaxItems = 50, Placeholder = "Выберите сотрудника" };
+    private readonly ClaySelectOptions _customerOptions = new() { DraftKey = "tel.customer", Required = true, RequiredError = "Выберите заказчика", AutoSelectSingle = true, MaxItems = 50, Placeholder = "Выберите заказчика" };
+    private readonly ClaySelectOptions _drivenOptions = new() { DraftKey = "tel.driven", AutoSelectSingle = true, MaxItems = 100, Placeholder = "Выберите ведущий номер" };
+    private readonly ClaySelectOptions _displayedOptions = new() { DraftKey = "tel.displayed", AutoSelectSingle = true, MaxItems = 100, Placeholder = "Выберите отображаемый номер" };
+    private readonly ClaySelectOptions _socketOptions = new() { DraftKey = "tel.socket", AutoSelectSingle = true, MaxItems = 50, Placeholder = "Выберите розетку" };
+    private readonly ClaySelectOptions _groupChoiceOptions = new() { DraftKey = "tel.group-choice", AutoSelectSingle = true, MaxItems = 50, Placeholder = "Добавить номер в группу" };
+    private readonly ClaySelectOptions _equipmentChoiceOptions = new() { DraftKey = "tel.equipment-choice", AutoSelectSingle = true, AlwaysShowAdvancedSearch = true, MaxItems = 50, Placeholder = "Добавить оборудование" };
+    private readonly ClayDropDownListOptions _portSelectOptions = new() { DraftKey = "tel.ats-port" };
+    private readonly ClayDropDownListOptions _pickupSelectOptions = new() { DraftKey = "tel.pickup-group" };
     private readonly ClayRadioGroupOptions _servicesRadioOptions = new();
     private readonly ClayRadioGroupOptions _directoryRadioOptions = new();
     private readonly ClayGridOptions _parallelGridOptions = DetailGrid("phone-parallel-grid", "Нет параллельных вызовов");
@@ -72,6 +74,7 @@ public partial class Tel : IDisposable
     private PhoneStationLookup? _selectedStation;
     private PhoneStationLookup? _originalStation;
     private Employee? _selectedEmployee;
+    private Employee? CurrentUser;
     private PhoneDirectoryItem? _selectedDrivenBy;
     private PhoneDirectoryItem? _selectedDisplayedFrom;
     private PhoneEquipmentKey? _equipmentChoice;
@@ -84,8 +87,6 @@ public partial class Tel : IDisposable
     private IReadOnlyList<PhoneStringOption> _pickupOptions = [];
     private (int Id, string Number)? _defaultEmployeePhone;
     private IReadOnlyList<PhoneSyncOperation> _pendingOperations = [];
-    private int _pendingPhoneId;
-    private bool _pendingDelete;
     private string _originalRelationsSnapshot = string.Empty;
     private string _lastAutoAtsDescription = string.Empty;
     private string _lastNumber = string.Empty;
@@ -95,6 +96,7 @@ public partial class Tel : IDisposable
     private int _customerVersion;
     private int _atsVersion;
     private int _atsEditVersion;
+    private DateOnly _businessDay;
     private bool _hasReturnDate;
     private bool _canEdit;
     private bool _loading = true;
@@ -102,6 +104,7 @@ public partial class Tel : IDisposable
     private bool _loaded;
     private bool _notFound;
     private bool _deleted;
+    private bool _versionConflict;
     private bool _allowNavigation;
     private bool _disposed;
     private int _operationVersion;
@@ -126,9 +129,11 @@ public partial class Tel : IDisposable
     private bool HasUnsavedDraft => _loaded && _model is not null &&
         (!PhoneSaveBuilder.MainEquals(_originalPhone, _model) || _originalRelationsSnapshot != SnapshotRelations(_relations));
     private bool IsModified => _loaded && _model is not null && (HasPendingSync || HasUnsavedDraft);
-    private bool CanSave => IsModified && _canEdit && !_loading && !_saving && !_deleted;
+    private bool CanSave => IsModified && _canEdit && !_loading && !_saving && !_deleted && !_versionConflict && !TelWriteBlocked;
     private string CloseConfirmation(string draftMessage)
     {
+        if (_telMarker is not null && _telProgress?.SqlConfirmed != true)
+            return $"{draftMessage} Результат предыдущей попытки требует сверки. Журнал сохранён.";
         if (!HasPendingSync) return draftMessage;
         return HasUnsavedDraft ? $"{draftMessage} {PendingSyncWarning}" : PendingSyncWarning;
     }
@@ -150,21 +155,36 @@ public partial class Tel : IDisposable
         AllowColumnReorder = false, AllowSorting = false, EmptyText = emptyText, Class = "equipment-detail-grid",
     };
 
+    /// <inheritdoc />
+    protected override void OnInitialized() => _entityFormOptions.Class += $" {_telJournalRoot}";
+
     /// <summary>Загружает запись после рендера и при смене query id без повторной инициализации.</summary>
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         var key = (Id, CopyId);
-        if (_loadedKey == key) return;
-        _loadedKey = key;
-        await LoadCurrentAsync(key.Id, key.CopyId);
+        if (_loadedKey != key)
+        {
+            if (_saving || _telJournalBusy)
+                return;
+            _loadedKey = key;
+            await LoadCurrentAsync(key.Id, key.CopyId);
+            return;
+        }
+        if (_telEditorTransition) return;
+        if (_telRawRequested)
+            await ApplyTelRawAsync();
+        else
+            await PersistTelInputAsync();
     }
 
     private async Task LoadCurrentAsync(int id, int copyId, bool preservePending = false)
     {
         var version = ++_operationVersion;
+        bool IsLoadCurrent() => IsCurrent(version) && (Id, CopyId) == (id, copyId);
         _loading = true;
         _loaded = false;
         _notFound = false;
+        CurrentUser = null;
         _loadError = null;
         _deleted = false;
         ErrorService.Clear();
@@ -173,59 +193,86 @@ public partial class Tel : IDisposable
             _validationMessage = null;
             _warningMessage = null;
             _pendingOperations = [];
-            _pendingDelete = false;
         }
         StateHasChanged();
         await Task.Delay(100);
         try
         {
-            var data = id > 0 ? await Service.GetAsync(id) : copyId > 0 ? await Service.GetAsync(copyId, copy: true) : null;
-            if (!IsCurrent(version)) return;
-            if (id > 0 && data is null || copyId > 0 && data is null)
+            if (!IsLoadCurrent()) return;
+            var actor = await Service.GetCurrentUserAsync(await ReadPrincipalAsync(), _pageCts.Token);
+            if (!IsLoadCurrent()) return;
+            CurrentUser = actor;
+            if (!_saving && !_telJournalBusy)
+            {
+                if (actor?.HasRole(Clayzor.Lib.Entities.Роли.Специалист_по_инвентаризации_оборудования) == true)
+                    await AttachTelJournalAsync(actor, id, copyId, version);
+                else
+                    await ResetTelJournalAsync();
+            }
+            if (!IsLoadCurrent()) return;
+            var data = id > 0 ? await Service.GetAsync(id, currentUser: actor)
+                : copyId > 0 ? await Service.GetAsync(copyId, copy: true, currentUser: actor) : null;
+            if (!IsLoadCurrent()) return;
+            var publishingResult = preservePending && _telProgress is { Stage: TelWriteStage.Complete };
+            var draft = publishingResult ? null : await ReadTelInputAsync(id, copyId, version);
+            if (!IsLoadCurrent()) return;
+            if ((id > 0 || copyId > 0) && data is null && draft is null)
             {
                 _model = null;
                 if (ErrorService.HasError) _loadError = "Не удалось загрузить телефонный номер. Проверьте соединение и повторите попытку.";
                 else _notFound = true;
                 return;
             }
-            var canEdit = data?.CanEdit ?? await Service.HasRoleAsync((int)Clayzor.Lib.Entities.Роли.Специалист_по_инвентаризации_оборудования);
-            if (!IsCurrent(version)) return;
-            _model = data?.Phone ?? new Phone();
-            _relations = data?.Relations ?? new PhoneRelationsSnapshot();
-            _memberships = data?.Memberships ?? [];
-            _canEdit = canEdit;
-            _selectedType = _model.PhoneTypeId is not null ? await TypeSource.GetByIdAsync(_model.PhoneTypeId, _pageCts.Token) : null;
-            _selectedStation = _model.StationId is not null ? await StationSource.GetByIdAsync(_model.StationId, _pageCts.Token) : null;
-            _originalStation = _selectedStation;
-            _selectedEmployee = _model.EmployeeId is not null ? await EmployeeSource.GetByIdAsync(_model.EmployeeId, _pageCts.Token) : null;
-            _selectedDrivenBy = _model.DrivenById is not null ? await DrivenSource.GetByIdAsync(_model.DrivenById, _pageCts.Token) : null;
-            _selectedDisplayedFrom = _model.DisplayedFromId is not null ? await DisplayedSource.GetByIdAsync(_model.DisplayedFromId, _pageCts.Token) : null;
-            if (!IsCurrent(version)) return;
-            _capabilities = await Service.GetCapabilitiesAsync(_model.StationId, _model.PhoneTypeId, _model.Id);
-            if (!IsCurrent(version)) return;
-            _hasReturnDate = _model.ReturnDate is not null;
-            _servicesUserChoice = _model.ServicesKind;
-            _directoryUserChoice = _model.ViewInDirectory;
-            _lastNumber = _model.Number;
-            _lastAutoAtsDescription = string.Empty;
-            _defaultEmployeePhone = _model.EmployeeId is not null ? await Service.GetDefaultEmployeePhoneAsync(_model.EmployeeId.Value) : null;
-            if (!IsCurrent(version)) return;
-            RecalculateFullNumber();
-            UpdateDependentState();
-            _originalPhone = id > 0 ? ClonePhone(_model) : new Phone();
-            _originalRelations = id > 0 ? _relations.Clone() : new PhoneRelationsSnapshot();
-            _originalRelationsSnapshot = SnapshotRelations(_originalRelations);
-            _loaded = true;
+            var canEdit = actor?.HasRole(Clayzor.Lib.Entities.Роли.Специалист_по_инвентаризации_оборудования) == true;
+            var fresh = data?.Phone ?? new Phone();
+            var freshRelations = data?.Relations ?? new PhoneRelationsSnapshot();
+            if (draft is not null)
+            {
+                if ((id > 0 || copyId > 0) && data is null)
+                {
+                    _telInputConflict = true;
+                    _telInputNotice = "Исходная запись недоступна. Черновик оставлен для просмотра и сверки.";
+                }
+                else
+                    CompareTelDraftOrigin(draft, fresh, freshRelations);
+            }
+            var model = draft is null ? fresh : ClonePhone(draft.Current);
+            var dependencies = await ReadEditorDependenciesAsync(model, draft is null ? model.StationId : draft.Original.StationId, IsLoadCurrent);
+            if (dependencies is null || !IsLoadCurrent()) return;
+
+            var lateRaw = publishingResult && await HasRemainingTelRawAsync();
+            if (!IsLoadCurrent()) return;
+            if (publishingResult && (lateRaw || _telSubmittedFingerprint is not null && HasLaterTelInput))
+            {
+                _loaded = true;
+                _telJournalNotice = "Результат подтверждён. Поздний ввод оставлен в форме для сверки.";
+                return;
+            }
+            if (_telAdoptingFingerprint is { } opening && CurrentTelInputFingerprint() != opening)
+            {
+                _loaded = true;
+                _telInputConflict = _telOriginalMissing = true;
+                _telRawRequested = false;
+                _telInputNotice = "Ввод изменился при открытии черновика. Оба снимка оставлены для сверки.";
+                return;
+            }
+            if (!publishingResult && _telJournal is { } inputRegistration && (draft is not null || _telOriginalMissing))
+                _appliedTelRestore = inputRegistration.Restore;
+            if (draft is null && !_telOriginalMissing)
+                _scheduledTelInput = null;
+            if (publishingResult)
+                _telSubmittedFingerprint = null;
+            PublishEditor(actor, canEdit, id, model, freshRelations, data?.Memberships ?? [], draft, dependencies);
         }
         catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
         {
-            if (!IsCurrent(version)) return;
+            if (!IsLoadCurrent()) return;
             _model = null;
             _loadError = "Не удалось загрузить телефонный номер. Проверьте соединение и повторите попытку.";
         }
         finally
         {
-            if (IsCurrent(version))
+            if (IsLoadCurrent())
             {
                 _loading = false;
                 StateHasChanged();
@@ -446,7 +493,7 @@ public partial class Tel : IDisposable
             _selectedDisplayedFrom?.FullNumber, _selectedDrivenBy?.FullNumber, _selectedStation);
     }
 
-    private void UpdateDependentState()
+    private void UpdateDependentState(DateOnly? businessDay = null)
     {
         if (_model is null) return;
         _availability = PhoneFormRules.Evaluate(new PhoneFormRuleInput
@@ -488,17 +535,23 @@ public partial class Tel : IDisposable
         SocketSource.SocketId = _model.SocketId;
         SocketSource.HasDraftEquipment = _relations.Equipment.Count > 0;
         SocketSource.EquipmentLocationIds = _relations.Equipment.Select(item => item.LocationId).Where(id => id > 0).ToList();
-        UpdateOptions();
+        UpdateOptions(businessDay);
     }
 
-    private void UpdateOptions()
+    private DateOnly ReadBusinessDay() => DateOnly.FromDateTime(Clock.GetUtcNow().UtcDateTime);
+
+    private string? EquipmentReturnRowClass(PhoneEquipmentLink item) =>
+        item.ReturnDate is { } date && DateOnly.FromDateTime(date) < _businessDay ? "equipment-overdue" : null;
+
+    private void UpdateOptions(DateOnly? businessDay = null)
     {
         if (_model is null) return;
         foreach (var options in new ClayInputOptions[] { _numberOptions, _quickCallOptions, _connectedOptions, _atsDescriptionOptions, _notesOptions })
             options.ReadOnly = !_canEdit;
         _autoDialOptions.ReadOnly = !_canEdit || !_availability.AutoDial.IsEditable;
         _returnDateOptions.Disabled = !_canEdit || !_hasReturnDate;
-        _returnDateOptions.MinDate = DateTime.UtcNow.Date;
+        _businessDay = businessDay ?? ReadBusinessDay();
+        _returnDateOptions.MinDate = _businessDay.ToDateTime(TimeOnly.MinValue);
         foreach (var options in new[] { _stationOptions, _typeOptions, _employeeOptions, _customerOptions }) options.ReadOnly = !_canEdit;
         _drivenOptions.ReadOnly = !_canEdit || !_availability.DrivenBy.IsEditable;
         _displayedOptions.ReadOnly = !_canEdit || !_availability.DisplayedFrom.IsEditable;
@@ -543,8 +596,9 @@ public partial class Tel : IDisposable
     {
         if (_model is null) return;
         _hasReturnDate = value == true;
-        _model.ReturnDate = _hasReturnDate ? _model.ReturnDate ?? DateTime.UtcNow.Date : null;
-        UpdateOptions();
+        var businessDay = ReadBusinessDay();
+        _model.ReturnDate = _hasReturnDate ? _model.ReturnDate ?? businessDay.ToDateTime(TimeOnly.MinValue) : null;
+        UpdateOptions(businessDay);
     }
 
     private void OnGroupChoiceChanged(int? value) => _groupChoice = value;
@@ -606,14 +660,33 @@ public partial class Tel : IDisposable
 
     private async Task EditEquipmentReturnAsync(PhoneEquipmentLink item)
     {
-        var parameters = new DialogParameters<EquipmentPhoneDialog>
+        var original = new EquipmentPhoneReturnResult(item.ReturnDate, item.Notes);
+        var key = item.Key;
+        var changedAt = item.ChangedAtUtc;
+        PhoneRelationsSnapshot? Propose(EquipmentPhoneReturnResult draft)
         {
-            { dialog => dialog.ReturnDate, item.ReturnDate }, { dialog => dialog.Notes, item.Notes },
-        };
-        var result = await ShowDialogAsync<EquipmentPhoneDialog>("Срок возврата", parameters);
-        if (result is null || result.Canceled || result.Data is not EquipmentPhoneReturnResult value) return;
-        item.ReturnDate = value.ReturnDate;
-        item.Notes = value.Notes;
+            var index = _relations.Equipment.FindIndex(link => link.Key == key);
+            if (index < 0 || _relations.Equipment[index].ChangedAtUtc != changedAt || new EquipmentPhoneReturnResult(_relations.Equipment[index].ReturnDate,
+                _relations.Equipment[index].Notes) != original)
+                return null;
+            var relations = _relations.Clone();
+            relations.Equipment[index].ReturnDate = draft.ReturnDate;
+            relations.Equipment[index].Notes = draft.Notes;
+            return relations;
+        }
+        var session = await OpenTelRelationDraftAsync(TelEquipmentScope(key), original, changedAt, Propose);
+        if (session is null) return;
+        try
+        {
+            var parameters = new DialogParameters<EquipmentPhoneDialog>
+            {
+                { dialog => dialog.ReturnDate, session.Initial.ReturnDate },
+                { dialog => dialog.Notes, session.Initial.Notes },
+                { dialog => dialog.TelDraft, session },
+            };
+            await ShowTelRelationDialogAsync<EquipmentPhoneDialog>("Срок возврата", parameters);
+        }
+        finally { _telChildOpen = false; }
     }
 
     private void OnParallelQuickKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs args)
@@ -640,27 +713,46 @@ public partial class Tel : IDisposable
 
     private async Task OpenParallelDialogAsync(PhoneParallelCall? existing)
     {
-        var value = existing?.Clone() ?? new PhoneParallelCall();
-        var parameters = new DialogParameters<PhoneParallelCallDialog>
+        if (_model is not { } phone) return;
+        var original = existing is null ? new PhoneParallelCall() : TelParallelValues(existing);
+        var key = existing?.CallNumber;
+        var changedAt = existing?.ChangedAtUtc ?? default;
+        PhoneRelationsSnapshot? Propose(PhoneParallelCall draft)
         {
-            { dialog => dialog.Value, value }, { dialog => dialog.IsEdit, existing is not null },
-            { dialog => dialog.CurrentNumber, _model?.Number ?? string.Empty },
-            { dialog => dialog.OtherNumbers, _relations.ParallelCalls.Where(item => item != existing).Select(item => item.CallNumber).ToList() },
-        };
-        var result = await ShowDialogAsync<PhoneParallelCallDialog>("Параллельный вызов", parameters);
-        if (result is null || result.Canceled || result.Data is not PhoneParallelCall call) return;
-        if (_relations.ParallelCalls.Any(item => item != existing && item.CallNumber == call.CallNumber))
-        {
-            _validationMessage = "Этот номер параллельного вызова уже добавлен.";
-            return;
+            var index = key is null ? -1 : _relations.ParallelCalls.FindIndex(call => call.CallNumber == key);
+            if (key is not null && (index < 0 || _relations.ParallelCalls[index].ChangedAtUtc != changedAt ||
+                !SameParallelValues(original, _relations.ParallelCalls[index])))
+                return null;
+            var others = _relations.ParallelCalls.Where((_, i) => i != index).Select(call => call.CallNumber);
+            if (PhoneFormValidator.ValidateParallelCall(draft, phone.Number, others).Count > 0)
+                return null;
+            var relations = _relations.Clone();
+            if (index < 0)
+                relations.ParallelCalls.Add(draft.Clone());
+            else
+            {
+                var target = relations.ParallelCalls[index];
+                target.CallNumber = draft.CallNumber;
+                target.DelayBeforeCall = draft.DelayBeforeCall;
+                target.DelayTooQuickResponse = draft.DelayTooQuickResponse;
+                target.NotUsed = draft.NotUsed;
+            }
+            return relations;
         }
-        if (existing is null) _relations.ParallelCalls.Add(call);
-        else
+        var session = await OpenTelRelationDraftAsync(TelParallelScope(existing), original, changedAt, Propose);
+        if (session is null) return;
+        try
         {
-            var index = _relations.ParallelCalls.IndexOf(existing);
-            _relations.ParallelCalls[index] = call;
+            var parameters = new DialogParameters<PhoneParallelCallDialog>
+            {
+                { dialog => dialog.Value, session.Initial.Clone() }, { dialog => dialog.IsEdit, existing is not null },
+                { dialog => dialog.CurrentNumber, phone.Number },
+                { dialog => dialog.OtherNumbers, _relations.ParallelCalls.Where(item => item.CallNumber != key).Select(item => item.CallNumber).ToList() },
+                { dialog => dialog.TelDraft, session },
+            };
+            await ShowTelRelationDialogAsync<PhoneParallelCallDialog>("Параллельный вызов", parameters);
         }
-        UpdateDependentState();
+        finally { _telChildOpen = false; }
     }
 
     private async Task RemoveParallelAsync(PhoneParallelCall item)
@@ -672,9 +764,11 @@ public partial class Tel : IDisposable
 
     private async Task SaveAsync(bool closeAfterSave)
     {
-        if (_model is null || !_loaded || !_canEdit || _loading || _saving) return;
+        if (_model is null || CurrentUser is not { } actor || !_loaded || !_canEdit || _loading || _saving || _versionConflict || TelWriteBlocked || HasPendingSync) return;
+        var businessDay = ReadBusinessDay();
         var version = ++_operationVersion;
         var model = _model;
+        var dispatched = false;
         _saving = true;
         _validationMessage = null;
         _warningMessage = null;
@@ -682,13 +776,7 @@ public partial class Tel : IDisposable
         await Task.Delay(100);
         try
         {
-            if (_pendingOperations.Count > 0 && !await RetryPendingSyncAsync()) return;
-            if (_pendingDelete)
-            {
-                _pendingDelete = false;
-                await CloseAsync();
-                return;
-            }
+            if (RejectUnacceptedParallel()) return;
             if (!IsModified || _deleted)
             {
                 if (closeAfterSave) await CloseAsync();
@@ -696,7 +784,7 @@ public partial class Tel : IDisposable
             }
             _capabilities = await Service.GetCapabilitiesAsync(model.StationId, model.PhoneTypeId, model.Id);
             if (!IsCurrent(version) || model.StationId != _model.StationId || model.PhoneTypeId != _model.PhoneTypeId) return;
-            UpdateDependentState();
+            UpdateDependentState(businessDay);
             var incompatible = IncompatibleFields();
             if (incompatible.Count > 0 && !await ConfirmAsync("Очистка несовместимых значений",
                     $"При сохранении будут очищены: {string.Join(", ", incompatible)}. Продолжить?")) return;
@@ -705,7 +793,9 @@ public partial class Tel : IDisposable
                 await _form.ValidateAsync();
                 if (!IsCurrent(version) || !_form.IsValid) return;
             }
-            var request = BuildSaveRequest(normalizeIncompatible: true);
+            var submitted = CurrentTelInputFingerprint();
+            var request = BuildSaveRequest(normalizeIncompatible: true, businessDay);
+            PhoneSaveBuilder.RequireOriginalVersion(request);
             var originalStation = ToSyncStation(_originalStation, _originalPhone.StationId);
             var currentStation = ToSyncStation(_selectedStation, model.StationId);
             var previewOperations = PhoneSyncPlanner.Build(request, originalStation, currentStation);
@@ -721,102 +811,101 @@ public partial class Tel : IDisposable
                     ShowIssues(preValidationIssues);
                     return;
                 }
-                var preResults = await Service.SynchronizeAsync(model.Id, preSaveOperations);
-                if (!IsCurrent(version))
-                {
-                    await RestoreXorcomAfterWriteFailureAsync(model.Id, preSaveOperations);
-                    return;
-                }
-                var preErrors = preResults.Where(item => !item.Success).ToList();
-                if (preErrors.Count > 0)
-                {
-                    _validationMessage = "Данные не сохранены. Не удалось очистить предыдущую Xorcom-станцию: " + FormatSyncErrors(preErrors);
-                    return;
-                }
             }
-            PhoneSaveResult result;
-            try
-            {
-                result = await Service.SaveAsync(request);
-            }
-            catch (Exception ex) when (preSaveOperations.Length > 0 &&
-                ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or UnauthorizedAccessException)
-            {
-                await RestoreXorcomAfterWriteFailureAsync(model.Id, preSaveOperations);
-                throw;
-            }
-            if (!IsCurrent(version)) return;
+
+            if (RejectUnacceptedParallel()) return;
+            _telSubmittedFingerprint = submitted;
+            await BeginTelWriteAsync(actor, request.Phone.Id, false, request, preSaveOperations, version);
+            if (!await RunJournaledAtsAsync(actor, beforeSql: true, version) || !IsCurrent(version))
+                return;
+            var result = await Service.SaveAsync(request, await ReadPrincipalAsync(), actor.Id,
+                SqlBoundary(request, version, () => dispatched = true));
             if (!result.Saved)
             {
+                await HandleSqlRejectionAsync(false);
+                if (!IsCurrent(version)) return;
                 ShowIssues(result.Issues);
-                await RestoreXorcomAfterWriteFailureAsync(model.Id, preSaveOperations);
+                _versionConflict = result.VersionConflict;
+                if (preSaveOperations.Length > 0)
+                    _warningMessage = "SQL не записан. Предварительная синхронизация АТС уже выполнялась. Требуется сверка.";
                 return;
             }
-            ShowIssues(result.Issues);
+
+            _telProgress = _telProgress! with { SqlConfirmed = true, PhoneId = result.PhoneId };
             var operations = PhoneSyncPlanner.Build(request, originalStation, currentStation).Except(preSaveOperations).ToArray();
-            var syncResults = await Service.SynchronizeAsync(result.PhoneId, operations);
-            if (!IsCurrent(version)) return;
-            var syncErrors = syncResults.Where(item => !item.Success).ToList();
-            _pendingOperations = syncErrors.Select(item => item.Operation).ToList();
-            _pendingPhoneId = result.PhoneId;
-            if (syncErrors.Count > 0)
-                _validationMessage = "Данные сохранены, но синхронизация АТС не завершена: " + FormatSyncErrors(syncErrors);
-            await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _pageCts.Token);
-            if (closeAfterSave && syncErrors.Count == 0)
+            await SaveTelProgressAsync(_telProgress! with
             {
-                await CloseAsync();
+                Stage = TelWriteStage.SqlConfirmed, SqlConfirmed = true, PhoneId = result.PhoneId, Pending = operations,
+            });
+            if (!IsCurrent(version) || !await RunJournaledAtsAsync(actor, beforeSql: false, version))
                 return;
-            }
-            Id = result.PhoneId;
-            CopyId = 0;
-            _loadedKey = (Id, 0);
-            await JS.InvokeVoidAsync("history.replaceState", null, string.Empty, $"/Telefon/Tel?id={Id}");
-            await LoadCurrentAsync(Id, 0, preservePending: true);
-            if (syncErrors.Count > 0) _validationMessage = "Данные сохранены, но синхронизация АТС не завершена. Нажмите «Применить» для повтора.";
+            await FinishTelJournalAsync();
+            if (IsCurrent(version))
+                await PublishCompletedTelWriteAsync(result.PhoneId, deleting: false, closeAfterSave);
         }
-        catch (Microsoft.Data.SqlClient.SqlException)
+        catch (Exception ex) when (IsTelJournalError(ex) || ex is Microsoft.Data.SqlClient.SqlException or UnauthorizedAccessException)
         {
-            if (IsCurrent(version)) _validationMessage = "Телефонный номер не сохранён. Подробности — в сообщении базы данных.";
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
-        {
-            if (IsCurrent(version)) _validationMessage = ex.Message;
+            await ReportTelWriteExceptionAsync(dispatched);
+            if (IsCurrent(version) && _telProgress is null && _notSentAttemptId is null)
+                _validationMessage = ex is Microsoft.Data.SqlClient.SqlException
+                    ? "Не удалось подготовить запись телефонного номера." : ex.Message;
         }
         finally
         {
-            if (!_disposed)
-            {
-                _saving = false;
-                StateHasChanged();
-            }
+            _saving = false;
+            if (_disposed) await ResetTelJournalAsync();
+            else StateHasChanged();
         }
     }
 
-    private async Task<bool> RetryPendingSyncAsync()
+    private async Task<string?> ReadPrincipalAsync()
     {
-        if (_pendingOperations.Count == 0) return true;
-        var results = await Service.SynchronizeAsync(_pendingPhoneId, _pendingOperations);
-        var errors = results.Where(item => !item.Success).ToList();
-        _pendingOperations = errors.Select(item => item.Operation).ToList();
-        if (errors.Count == 0) return true;
-        _validationMessage = "Синхронизация АТС повторно не завершена: " + FormatSyncErrors(errors);
-        return false;
+        var identity = (await Authentication.GetAuthenticationStateAsync()).User.Identity;
+        return identity?.IsAuthenticated == true ? identity.Name : null;
     }
 
-    private static string FormatSyncErrors(IEnumerable<PhoneSyncResult> errors) => string.Join(" ",
-        errors.Select(item => $"{item.Operation.Kind} ({item.Operation.Key}): {item.Error}"));
-
-    private async Task RestoreXorcomAfterWriteFailureAsync(int phoneId, IReadOnlyCollection<PhoneSyncOperation> operations)
+    private async Task ReportTelWriteExceptionAsync(bool dispatched)
     {
-        if (operations.Count == 0) return;
-        var restoreOperations = operations.Select(item => item with { Deleting = false }).ToArray();
-        var results = await Service.SynchronizeAsync(phoneId, restoreOperations);
-        var errors = results.Where(item => !item.Success).ToList();
-        if (errors.Count > 0)
-            _warningMessage = "После ошибки SQL не удалось восстановить прежний номер на Xorcom: " + FormatSyncErrors(errors);
+        if (_telProgress is { Stage: TelWriteStage.PreAtsDispatching or TelWriteStage.PostAtsDispatching } progress)
+            await MarkTelManualAsync(progress);
+        else if (_telProgress is { SqlConfirmed: false })
+            await HandleSqlRejectionAsync(dispatched);
+        else
+            UpdateTelJournalNotice();
     }
 
-    private PhoneSaveRequest BuildSaveRequest(bool normalizeIncompatible)
+    private async Task PublishCompletedTelWriteAsync(int phoneId, bool deleting, bool closeAfterSave)
+    {
+        await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _pageCts.Token);
+        if (!deleting && (await HasRemainingTelRawAsync() || HasLaterTelInput))
+        {
+            _telJournalNotice = "Результат подтверждён. Поздний ввод оставлен в форме для сверки.";
+            return;
+        }
+        if (deleting || closeAfterSave)
+        {
+            await CloseAsync();
+            await ClearTelProgressAsync();
+            return;
+        }
+        var source = (Id, CopyId);
+        Id = phoneId;
+        CopyId = 0;
+        _loadedKey = (Id, 0);
+        await LoadCurrentAsync(Id, 0, preservePending: true);
+        if (!_loaded || _model?.Id != Id || await HasRemainingTelRawAsync() || HasLaterTelInput)
+        {
+            (Id, CopyId) = source;
+            _loadedKey = source;
+            return;
+        }
+        await JS.InvokeVoidAsync("history.replaceState", null, string.Empty, $"/Telefon/Tel?id={phoneId}");
+        await ClearTelProgressAsync();
+        if (CurrentUser is { } actor)
+            await AttachTelJournalAsync(actor, Id, 0, _operationVersion);
+    }
+
+    private PhoneSaveRequest BuildSaveRequest(bool normalizeIncompatible, DateOnly businessDay)
     {
         var phone = ClonePhone(_model!);
         var relations = _relations.Clone();
@@ -839,7 +928,7 @@ public partial class Tel : IDisposable
             OriginalRelations = _originalRelations.Clone(), Relations = relations,
             AvailablePorts = _capabilities.AvailablePorts,
             AvailablePickupGroups = PhonePickupGroups.ForStation(phone.StationId, Configuration["pickupGroups"]),
-            Today = DateTime.UtcNow.Date,
+            Today = businessDay.ToDateTime(TimeOnly.MinValue),
         };
     }
 
@@ -867,14 +956,18 @@ public partial class Tel : IDisposable
 
     private async Task DeleteAsync()
     {
-        if (_model?.Id is not > 0 || !_canEdit || _saving ||
+        if (_model?.Id is not > 0 || !_canEdit || _saving || _versionConflict || TelWriteBlocked || HasPendingSync ||
             !await ConfirmAsync("Удаление номера", DeleteConfirmation(HasPendingSync))) return;
         await DeleteConfirmedAsync();
     }
 
     private async Task DeleteConfirmedAsync()
     {
-        if (_model?.Id is not > 0 || _saving) return;
+        if (_model?.Id is not > 0 || CurrentUser is not { } actor || _saving || _versionConflict ||
+            TelWriteBlocked || HasPendingSync)
+            return;
+        var version = ++_operationVersion;
+        var dispatched = false;
         _saving = true;
         _validationMessage = null;
         _warningMessage = null;
@@ -882,6 +975,8 @@ public partial class Tel : IDisposable
         {
             var phoneId = _model.Id;
             var persisted = await Service.GetDeleteSnapshotAsync(phoneId);
+            if (!IsCurrent(version))
+                return;
             if (persisted is null)
             {
                 _validationMessage = "Телефонный номер уже удалён другим пользователем. Синхронизация АТС не выполнялась.";
@@ -894,67 +989,39 @@ public partial class Tel : IDisposable
             };
             var originalStation = ToSyncStation(persisted.Station, persisted.Phone.StationId);
             var operations = PhoneSyncPlanner.BuildDelete(request, originalStation);
-            var preDeleteOperations = operations.Where(item => item.Kind == PhoneSyncKind.Xorcom).ToArray();
-            if (preDeleteOperations.Length > 0)
-            {
-                var preResults = await Service.SynchronizeAsync(phoneId, preDeleteOperations);
-                var preErrors = preResults.Where(item => !item.Success).ToList();
-                if (preErrors.Count > 0)
-                {
-                    _validationMessage = "Номер не удалён. Не удалось очистить Xorcom: " + FormatSyncErrors(preErrors);
-                    return;
-                }
-            }
-            try
-            {
-                await Service.DeleteAsync(phoneId);
-            }
-            catch (Exception ex) when (preDeleteOperations.Length > 0 &&
-                ex is InvalidOperationException or UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException)
-            {
-                await RestoreXorcomAfterWriteFailureAsync(phoneId, preDeleteOperations);
-                throw;
-            }
+            var pre = operations.Where(item => item.Kind == PhoneSyncKind.Xorcom).ToArray();
+            await BeginTelWriteAsync(actor, phoneId, true, request, pre, version);
+            if (!await RunJournaledAtsAsync(actor, beforeSql: true, version) || !IsCurrent(version))
+                return;
+            await Service.DeleteAsync(phoneId, await ReadPrincipalAsync(), actor.Id, SqlBoundary(request, version, () => dispatched = true));
             _deleted = true;
-            operations = operations.Except(preDeleteOperations).ToArray();
-            var results = await Service.SynchronizeAsync(phoneId, operations);
-            var errors = results.Where(item => !item.Success).ToList();
-            await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _pageCts.Token);
-            if (errors.Count > 0)
+            await SaveTelProgressAsync(_telProgress! with
             {
-                _pendingOperations = errors.Select(item => item.Operation).ToList();
-                _pendingPhoneId = phoneId;
-                _pendingDelete = true;
-                _validationMessage = "Номер удалён, но синхронизация АТС не завершена: " + FormatSyncErrors(errors);
-            }
-            else await CloseAsync();
+                Stage = TelWriteStage.SqlConfirmed, SqlConfirmed = true, Pending = operations.Except(pre).ToArray(),
+            });
+            if (!IsCurrent(version) || !await RunJournaledAtsAsync(actor, beforeSql: false, version))
+                return;
+            await FinishTelJournalAsync();
+            if (IsCurrent(version))
+                await PublishCompletedTelWriteAsync(phoneId, deleting: true, closeAfterSave: true);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException)
+        catch (Exception ex) when (IsTelJournalError(ex) || ex is InvalidOperationException or UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException)
         {
-            _validationMessage = ex is Microsoft.Data.SqlClient.SqlException ? "Номер не удалён. Подробности — в сообщении базы данных." : ex.Message;
+            await ReportTelWriteExceptionAsync(dispatched);
+            if (IsCurrent(version) && _telProgress is null && _notSentAttemptId is null)
+                _validationMessage = ex is Microsoft.Data.SqlClient.SqlException
+                    ? "Не удалось подготовить удаление номера." : ex.Message;
         }
         finally
         {
             _saving = false;
+            if (_disposed) await ResetTelJournalAsync();
         }
-    }
-
-    private async Task RefreshAsync()
-    {
-        if (_model is null || _loading || _saving) return;
-        if (HasUnsavedDraft && !await ConfirmAsync("Обновление", "Отменить несохранённые изменения и загрузить запись повторно?")) return;
-        await LoadCurrentAsync(Id, CopyId, preservePending: true);
     }
 
     private async Task CopyAsync()
     {
         if (Id > 0) await JS.InvokeVoidAsync("clayOpen", $"/Telefon/Tel?copyId={Id}", "_blank");
-    }
-
-    private async Task CancelAsync()
-    {
-        if (IsModified && !await ConfirmAsync("Закрытие формы", CloseConfirmation("Закрыть форму без сохранения изменений?"))) return;
-        await CloseAsync();
     }
 
     private async Task CloseAsync()
@@ -966,20 +1033,28 @@ public partial class Tel : IDisposable
     private async Task BeforeInternalNavigationAsync(LocationChangingContext context)
     {
         if (_allowNavigation) { _allowNavigation = false; return; }
-        if (_saving) { context.PreventNavigation(); return; }
-        if (!IsModified) return;
+        if (_saving || _telEditorTransition || _telChildOpen) { context.PreventNavigation(); return; }
+        if (!HasTelParentInput && !HasUnresolvedTelEditorWrite)
+        {
+            try { if (!await HasRemainingTelRawAsync()) return; }
+            catch (Exception ex) when (IsEditorTransitionError(ex))
+            {
+                context.PreventNavigation();
+                _telInputNotice = "Не удалось проверить черновик перед переходом.";
+                return;
+            }
+        }
         context.PreventNavigation();
         if (!await ConfirmAsync("Переход на другую страницу", CloseConfirmation("Покинуть форму без сохранения изменений?"))) return;
         _allowNavigation = true;
         Navigation.NavigateTo(context.TargetLocation);
     }
 
-    private async Task<DialogResult?> ShowDialogAsync<T>(string title, DialogParameters<T> parameters) where T : IComponent
+    private async Task ShowTelRelationDialogAsync<T>(string title, DialogParameters<T> parameters) where T : ComponentBase
     {
-        var version = _operationVersion;
-        var dialog = await DialogService.ShowAsync<T>(title, parameters);
-        var result = await dialog.Result;
-        return IsCurrent(version) ? result : null;
+        var dialog = await DialogService.ShowExAsync<T>(title, parameters,
+            new DialogOptionsEx { DragMode = MudDialogDragMode.Simple, BackdropClick = false });
+        await dialog.Result;
     }
 
     private async Task<bool> ConfirmAsync(string title, string message)
@@ -1015,7 +1090,7 @@ public partial class Tel : IDisposable
         return clone;
     }
 
-    private static string SnapshotRelations(PhoneRelationsSnapshot relations) => JsonSerializer.Serialize(relations);
+    private static string SnapshotRelations(PhoneRelationsSnapshot relations) => TelDraftRelations.From(relations).Canonical();
 
     /// <summary>Отменяет незавершённые операции формы.</summary>
     public void Dispose()
@@ -1027,4 +1102,12 @@ public partial class Tel : IDisposable
     }
 
     private sealed record PhoneStringOption(string Value);
+
+    /// <summary>Освобождает регистрацию после завершения либо отмены текущего вызова.</summary>
+    public async ValueTask DisposeAsync()
+    {
+        Dispose();
+        if (!_saving)
+            await ResetTelJournalAsync();
+    }
 }
