@@ -76,6 +76,7 @@ public partial class SlBlForm : IAsyncDisposable
     private ClayDraftOperation? _pendingOperation;
     private ClayDraftOperation? _verifiedCleanup;
     private SlBlIntent? _verifiedReload;
+    private ListComparison? _comparison;
     private bool CompletionPending => _verifiedCleanup is not null || _verifiedReload is not null;
     private bool NeedsLeaveConfirmation => Dirty || _rawPending || _verifiedCleanup is not null;
     private bool Dirty => !string.Equals(_text, _original, StringComparison.Ordinal);
@@ -151,6 +152,7 @@ public partial class SlBlForm : IAsyncDisposable
         _kind = kind;
         _available = false;
         _needsReview = false;
+        _comparison = null;
         _original = _text = kind is { } selected ? _lists?.GetText(selected) ?? "" : "";
         _partialIntent = null;
         _differences = null;
@@ -274,6 +276,8 @@ public partial class SlBlForm : IAsyncDisposable
     private sealed record ListDraft(string Address, SlBlKind Kind, string Original, string Current, bool NeedsReview = false,
         SlBlIntent? PartialIntent = null, SlBlDifferences? Differences = null);
 
+    private sealed record ListComparison(string Original, string Local, string Fresh, ClayDraftRebaseState Storage);
+
     private Task PersistListDraftAsync() => _draft!.SaveTypedScopeAsync(DraftScope,
         JsonSerializer.Serialize(new ListDraft(_address!, _kind!.Value, _original, _text, _needsReview, _partialIntent, _differences)), _lifetime.Token);
 
@@ -333,6 +337,7 @@ public partial class SlBlForm : IAsyncDisposable
                 await registration.RejectOperationAsync(attempt.Revision, ct);
                 ClearPendingOperation();
                 _error = result.Outcome == SlBlOutcome.Partial ? "Список сохранён частично. Сверьте различия." : result.Message ?? "Изменились права или исходный список.";
+                if (result.Outcome == SlBlOutcome.Rejected) await NoticeChangedBaselineAsync(intent, ct);
                 return;
             }
             RecordVerified(intent, attempt);
@@ -428,6 +433,94 @@ public partial class SlBlForm : IAsyncDisposable
         }
     }
 
+    private async Task NoticeChangedBaselineAsync(SlBlIntent intent, CancellationToken ct)
+    {
+        try
+        {
+            var latest = await SlBlData.ReadAsync(Db, intent.Address, ct);
+            if (latest is null || string.Equals(latest.GetText(intent.Kind), intent.Original, StringComparison.Ordinal))
+                return;
+            _needsReview = true;
+            _error = "Список в базе изменился. Нажмите «Обновить» для сверки с черновиком.";
+        }
+        catch (Exception) when (!ct.IsCancellationRequested) { }
+    }
+
+    private async Task PrepareComparisonAsync(SlBlLists latest, string address, SlBlKind kind,
+        ClayDraftRegistration registration, CancellationToken ct)
+    {
+        _comparison = null;
+        if (!await ConfirmRawReadyAsync(registration, ct)) return;
+        var local = await ReadEditorTextAsync(ct);
+        if (local is null)
+        {
+            _error = "Не удалось получить текущий текст списка. Повторите сверку.";
+            return;
+        }
+
+        _differences = SlBlData.Validate(local) is null
+            ? await SlBlData.CompareAsync(Db, new SlBlKey(address, kind), local, ct)
+            : null;
+        var storage = await registration.ReadRebaseStateAsync(DraftScope, ct);
+        _comparison = new ListComparison(_original, local, latest.GetText(kind), storage);
+        _error = "Выберите, какой список перенести на актуальную версию.";
+    }
+
+    private async Task ApplyComparisonAsync(bool keepLocal)
+    {
+        if (_busy || _applyingRaw || _uncertain || CompletionPending || _comparison is not { } comparison ||
+            _draft is not { } registration || _address is not { } address || _kind is not { } kind)
+            return;
+        _busy = true;
+        var ct = _lifetime.Token;
+        try
+        {
+            if (!await ConfirmRawReadyAsync(registration, ct)) return;
+            if (!string.Equals(await ReadEditorTextAsync(ct), comparison.Local, StringComparison.Ordinal))
+            {
+                _error = "Локальный текст изменился. Нажмите «Обновить» для новой сверки.";
+                return;
+            }
+
+            var latest = await SlBlData.ReadAsync(Db, address, ct);
+            if (latest is null || !string.Equals(latest.GetText(kind), comparison.Fresh, StringComparison.Ordinal))
+            {
+                _error = "Список в базе снова изменился или недоступен. Повторите сверку.";
+                return;
+            }
+
+            var chosen = keepLocal ? comparison.Local : comparison.Fresh;
+            var rawToDiscard = keepLocal ? [] : comparison.Storage.RawKeys.Where(key => key == "data:slbl.text").ToArray();
+            var snapshot = JsonSerializer.Serialize(new ListDraft(address, kind, comparison.Fresh, chosen));
+            if (!await registration.RebaseScopeAsync(DraftScope, comparison.Storage.Revision, snapshot, rawToDiscard, ct))
+            {
+                _error = "Черновик изменился после сверки. Нажмите «Обновить» и проверьте новый снимок.";
+                return;
+            }
+
+            _lists = latest;
+            _original = comparison.Fresh;
+            _text = chosen;
+            _comparison = null;
+            _partialIntent = null;
+            _differences = null;
+            _needsReview = false;
+            _error = null;
+            _available = false;
+            try { _available = _sync is not null && await _sync.CanWriteAsync(address, kind, ct); }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                _error = "Исходный список обновлён. Не удалось проверить право синхронизации.";
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            _error = "Не удалось завершить сверку. Исходный снимок и локальный текст остаются на форме.";
+        }
+        finally { _busy = false; }
+    }
+
     private async Task RefreshAsync()
     {
         if (_busy || _applyingRaw) return;
@@ -473,6 +566,18 @@ public partial class SlBlForm : IAsyncDisposable
         try
         {
             var latest = await SlBlData.ReadAsync(Db, _address, _lifetime.Token);
+            if (latest is not null && _draft is { } comparisonRegistration &&
+                (_needsReview || !string.Equals(latest.GetText(kind).Trim(), _original.Trim(), StringComparison.OrdinalIgnoreCase)))
+            {
+                _needsReview = true;
+                await PrepareComparisonAsync(latest, _address, kind, comparisonRegistration, _lifetime.Token);
+                return;
+            }
+            if (_needsReview && latest is null)
+            {
+                _error = "Актуальный список недоступен. Повторите чтение для сверки.";
+                return;
+            }
             if (latest is null || !string.Equals(latest.GetText(kind).Trim(), _text.Trim(), StringComparison.OrdinalIgnoreCase))
             {
                 if (SlBlData.Validate(_text) is null)

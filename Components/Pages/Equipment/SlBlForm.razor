@@ -21,6 +21,21 @@
             <MudAlert Class="mb-2" Severity="Severity.Warning">Сохранение станет доступно после восстановления ввода.</MudAlert>
             <MudButton OnClick="RestoreRawAsync" Disabled="@(_busy || _applyingRaw)">Повторить восстановление</MudButton>
         }
+        @if (_comparison is { } comparison)
+        {
+            <section aria-label="Сравнение списков" class="d-flex flex-column gap-2 mb-2">
+                <MudText Typo="Typo.subtitle2">Исходный список</MudText>
+                <pre style="white-space: pre-wrap; overflow-wrap: anywhere">@comparison.Original</pre>
+                <MudText Typo="Typo.subtitle2">Мой список</MudText>
+                <pre style="white-space: pre-wrap; overflow-wrap: anywhere">@comparison.Local</pre>
+                <MudText Typo="Typo.subtitle2">Актуальный список в базе</MudText>
+                <pre style="white-space: pre-wrap; overflow-wrap: anywhere">@comparison.Fresh</pre>
+                <div class="d-flex flex-wrap gap-2">
+                    <MudButton OnClick="@(() => ApplyComparisonAsync(true))" Disabled="@(_busy || _rawPending)">Оставить мой список</MudButton>
+                    <MudButton OnClick="@(() => ApplyComparisonAsync(false))" Disabled="@(_busy || _rawPending)">Принять список из базы</MudButton>
+                </div>
+            </section>
+        }
         @if (CurrentUser is not null && _source is not null)
         {
             @if (_kind.HasValue && !_available) { <MudAlert Class="mb-2" Severity="Severity.Info">Для выбранного списка доступна подготовка черновика. Право синхронизации не подтверждено.</MudAlert> }
