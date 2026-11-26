@@ -27,8 +27,7 @@
 @if (_knownMoveCleanup is { } cleanup)
 {
     <MudAlert Severity="Severity.Warning">
-        @(cleanup.Rejection is null ? "Перенос подтверждён. Требуется завершить очистку в браузере." : "Перенос отклонён. Требуется завершить очистку в браузере.")
-        <MudButton Disabled="@_moving" OnClick="RetryMoveCleanupAsync">Повторить очистку</MudButton>
+        @(cleanup.Rejection is null ? "Перенос подтверждён. Повторный перенос пока недоступен." : "Перенос отклонён. Повторный перенос пока недоступен.")
     </MudAlert>
 }
 else if (_pendingMove is not null)
@@ -39,20 +38,7 @@ else if (_pendingMove is not null)
 }
 else if (_moveJournalEnabled && !_moveJournalReady && !_legacyMoveBlocked)
 {
-    @if (_moveCandidates.Count > 0)
-    {
-        <MudAlert Severity="Severity.Warning">
-            Найден незавершённый перенос. Новый перенос заблокирован.
-            @foreach (var candidate in _moveCandidates.Where(item => item.CanRecover))
-            {
-                <MudButton Disabled="@_moving" OnClick="() => RecoverMoveJournalAsync(candidate)">Открыть сохранённый перенос</MudButton>
-            }
-        </MudAlert>
-    }
-    else
-    {
-        <MudButton Disabled="@_moving" OnClick="RetryMoveJournalAsync">Проверить журнал переноса</MudButton>
-    }
+    <MudAlert Severity="Severity.Warning">Перенос пока недоступен.</MudAlert>
 }
 @if (_treeOptions is not null && _source is not null)
 {

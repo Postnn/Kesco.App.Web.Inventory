@@ -52,6 +52,7 @@ public partial class PingHostPage : IAsyncDisposable
     private bool _scrollPending;
     private bool _journalSaveFailed;
     private int? _journalRetryRevision;
+    private int? _journalRecoveryAttemptedRevision;
 
     private bool RetryingCurrentJournal => _journalRetryRevision == _hostRevision;
     private bool CanStart => _interactive && !_initializing && !_stopping && !_closing && !_disposed &&
@@ -74,6 +75,13 @@ public partial class PingHostPage : IAsyncDisposable
             return;
         }
 
+        if (_disposed) return;
+        if (CanRetryJournal && _journalRecoveryAttemptedRevision != _hostRevision)
+        {
+            _journalRecoveryAttemptedRevision = _hostRevision;
+            await RetryJournalAsync();
+            if (!_disposed) StateHasChanged();
+        }
         if (!_scrollPending || _disposed) return;
         _scrollPending = false;
         var ct = _lifetime.Token;

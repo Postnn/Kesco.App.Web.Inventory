@@ -95,8 +95,12 @@ public partial class EquipmentForm
             if (_recoveryPristine)
                 _lastPersistedDraft = SerializeDraftState();
             await ScanEquipmentRecoveryAsync(registration, openedVersion, openedId, actorId);
-            if (OwnsMainDraft(registration, openedId) && IsCurrent(openedVersion, openedId) && registration.Restore.HasDraft)
+            if (!OwnsMainDraft(registration, openedId) || !IsCurrent(openedVersion, openedId))
+                return;
+            if (registration.Restore.HasDraft)
                 await ApplyEquipmentDraftAsync(registration, openedId, openedVersion);
+            else
+                await TryRestoreSingleEquipmentDraftAsync();
         }
         catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or OperationCanceledException)
         {

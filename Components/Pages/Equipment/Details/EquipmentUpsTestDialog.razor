@@ -12,10 +12,6 @@
         @if (!string.IsNullOrWhiteSpace(_error))
         {
             <MudAlert Severity="Severity.Error">@_error</MudAlert>
-            @if (_restorePending)
-            {
-                <MudButton OnClick="RetryRawAsync" Disabled="@_restoringRaw">Повторить восстановление</MudButton>
-            }
         }
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Дата и время:</span>
@@ -147,7 +143,11 @@
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender && RestoreRaw is not null)
+        {
             await RetryRawAsync();
+            if (_restorePending)
+                await RetryRawAsync();
+        }
         if (PublishDraft is null || Original is null)
             return;
 

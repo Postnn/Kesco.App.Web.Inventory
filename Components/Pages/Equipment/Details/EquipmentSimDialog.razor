@@ -77,7 +77,7 @@
     </DialogContent>
     <DialogActions>
         <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
-        @if (_loadError is not null)
+        @if (_loadError is not null && !_pendingRawRetry)
         {
             <ClayToolbarButton Options="_retryButtonOptions" OnClick="InitializeReadinessAsync" Disabled="@(_loading || _readinessInFlight)" />
         }
@@ -183,7 +183,11 @@
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         await base.OnAfterRenderAsync(firstRender);
-        if (firstRender)
+        if (!firstRender)
+            return;
+
+        await InitializeReadinessAsync();
+        if (_pendingRawRetry && !_retryRequiresReopen)
             await InitializeReadinessAsync();
     }
 

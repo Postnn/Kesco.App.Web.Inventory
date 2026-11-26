@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Clayzor.Lib.Entities.Inventory;
-using Clayzor.Lib.Web.Controls.Components.Form;
 using Clayzor.Lib.Web.Controls.Services;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Net;
@@ -9,17 +8,14 @@ public partial class Net
 {
     private const string NetInputScope = "net-input";
     private int _inputViewRevision;
-    private static readonly ClayToolbarButtonOptions RetryInputOptions = new() { Text = "Повторить восстановление ввода" };
-    private static readonly ClayToolbarButtonOptions RecoverInputOptions = new() { Text = "Открыть сохранённый черновик" };
-
     private bool RawInputBlocked => _operationContext is not { InputReady: true, InputApplying: false, InputFailed: false };
 
     private bool InputBlocked => RawInputBlocked || _operationContext?.InputConflict == true;
 
     private string? InputNotice => _operationContext is not { } context ? null
-        : !context.InputReady && context.InputFailed ? "Не удалось восстановить ввод. Повторите восстановление."
+        : !context.InputReady && context.InputFailed ? "Не удалось восстановить ввод."
         : !context.InputReady ? "Восстановление ввода ещё не завершено."
-        : context.InputFailed ? "Не удалось подтвердить сохранение черновика. Повторите восстановление ввода."
+        : context.InputFailed ? "Не удалось подтвердить сохранение черновика."
         : context.InputConflict ? "Исходная версия черновика отличается от текущей записи или отсутствует. Ввод сохранён для сверки." : null;
     private NetDraft RestoreNetInput(NetOperationContext context, NetDraft fresh, DateTime freshVersion)
     {
@@ -52,8 +48,8 @@ public partial class Net
         }
     }
 
-    private static bool NetScopeReady(ClayDraftRestoreReadiness state) =>
-        !state.PendingScopes.Contains(NetInputScope) && !state.FailedScopes.Contains(NetInputScope);
+    private static bool NetScopeReady(ClayDraftRestoreReadiness? state) =>
+        state is not null && !state.PendingScopes.Contains(NetInputScope) && !state.FailedScopes.Contains(NetInputScope);
 
     private async Task<bool> VerifyNetInputReadyAsync(NetOperationContext context)
     {
@@ -66,7 +62,7 @@ public partial class Net
             if (!IsCurrentInput(context)) return false;
             if (NetScopeReady(readiness)) return !RawInputBlocked;
             context.InputReady = false;
-            context.InputFailed = readiness.FailedScopes.Contains(NetInputScope);
+            context.InputFailed = readiness is null || readiness.FailedScopes.Contains(NetInputScope);
         }
         catch (Exception error) when (IsJournalError(error))
         {
@@ -98,13 +94,13 @@ public partial class Net
                 var applied = retry
                     ? await context.Registration.ApplyPendingRawAsync(NetInputScope, _pageCts.Token)
                     : await context.Registration.ApplyRawWithResultAsync(NetInputScope, _pageCts.Token);
-                hasPending = applied.Pending.Count > 0;
+                hasPending = applied?.Pending is not { Count: 0 };
                 readiness = await context.Registration.GetRestoreReadinessAsync(_pageCts.Token);
             }
             if (!IsCurrentInput(context))
                 return;
             context.InputReady = !hasPending && NetScopeReady(readiness);
-            context.InputFailed = readiness.FailedScopes.Contains(NetInputScope);
+            context.InputFailed = readiness is null || readiness.FailedScopes.Contains(NetInputScope);
         }
         catch (Exception ex) when (IsJournalError(ex))
         {
@@ -122,16 +118,6 @@ public partial class Net
         }
     }
 
-    private async Task RetryNetInputAsync()
-    {
-        if (_operationContext is not { InputApplying: false } context || _saving || _poeRunning || !IsCurrentInput(context))
-            return;
-        context.InputFailed = false;
-        if (!context.InputReady)
-            await RestoreNetRawAsync(context, retry: true);
-        else
-            await PersistNetInputAsync(context);
-    }
     private async Task TrackNetInputAsync()
     {
         if (!_loaded || _loading || _cancellingInput || _operationContext is not { } context || !IsCurrentInput(context))
@@ -140,8 +126,10 @@ public partial class Net
         {
             context.InputRestoreStarted = true;
             await RestoreNetRawAsync(context);
+            if (!context.InputReady)
+                await RestoreNetRawAsync(context, retry: true);
         }
-        else if (context.InputReady && !context.InputConflict && !context.InputFailed)
+        else if (context.InputReady && !context.InputConflict)
         {
             await PersistNetInputAsync(context);
         }

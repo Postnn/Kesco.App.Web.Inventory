@@ -3,7 +3,6 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.Inventory;
-using Clayzor.Lib.Web.Controls.Components.Form;
 using Clayzor.Lib.Web.Controls.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
@@ -17,8 +16,6 @@ public partial class PhoneTemplateForm
     private const string TemplateSubmissionScope = "template-submission";
     private const long MaximumTemplateTextBytes = 32L * 1024 * 1024;
     private const long MaximumTemplateRestoreBytes = 256L * 1024 * 1024;
-    private static readonly ClayToolbarButtonOptions RetryInputOptions = new() { Text = "Повторить восстановление ввода" };
-    private static readonly ClayToolbarButtonOptions RetryInputStorageOptions = new() { Text = "Повторить подготовку черновика" };
     private ElementReference _editorRoot;
     private IJSObjectReference? _templateTextModule;
     private DotNetObjectReference<PhoneTemplateForm>? _editorObserver;
@@ -105,7 +102,7 @@ public partial class PhoneTemplateForm
             }
             if (epoch != _templateInputEpoch)
             {
-                TemplateRawPending("Ввод изменился. Повторите восстановление оставшихся полей.");
+                TemplateRawPending("Ввод изменился. Нажмите «Обновить», чтобы перечитать состояние формы.");
                 return;
             }
             var result = retry
@@ -124,14 +121,14 @@ public partial class PhoneTemplateForm
             if (!Current()) return;
             if (epoch != _templateInputEpoch)
             {
-                TemplateRawPending("Ввод изменился. Повторите восстановление оставшихся полей.");
+                TemplateRawPending("Ввод изменился. Нажмите «Обновить», чтобы перечитать состояние формы.");
                 return;
             }
             _rawPending = false;
             ++_templateInputEpoch;
             if (!MatchesBrowserTemplateText(model.PhoneTemplate, restored))
                 model.PhoneTemplate = restored;
-            _inputNotice = _inputSaveFailed ? "Не удалось сохранить защищённый ввод. Повторите сохранение."
+            _inputNotice = _inputSaveFailed ? "Не удалось сохранить защищённый ввод. Для проверки состояния нажмите «Обновить»."
                 : _inputMissingOriginal ? "Ввод восстановлен без исходной версии. Перед записью требуется сверка." : null;
         }
         catch (Exception ex) when (IsJournalError(ex) || ex is IOException or Microsoft.Data.SqlClient.SqlException or UnauthorizedAccessException)
@@ -167,7 +164,7 @@ public partial class PhoneTemplateForm
             throw new InvalidOperationException("Контекст шаблона изменился. Запись не отправлена.");
         if (ready) return;
 
-        TemplateRawPending("Сначала восстановите ввод шаблона. Запись не отправлена.");
+        TemplateRawPending("Ввод шаблона ещё не восстановлен. Запись не отправлена.");
         throw new InvalidOperationException(_inputNotice);
     }
 

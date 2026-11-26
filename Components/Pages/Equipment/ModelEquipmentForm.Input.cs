@@ -3,7 +3,6 @@ using System.Text;
 using System.Text.Json;
 using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.Inventory;
-using Clayzor.Lib.Web.Controls.Components.Form;
 using Clayzor.Lib.Web.Controls.Services;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
@@ -11,8 +10,6 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
 public partial class ModelEquipmentForm
 {
     private const string EditorScope = "model-input";
-    private static readonly ClayToolbarButtonOptions RetryInputOptions = new() { Text = "Повторить восстановление ввода" };
-    private static readonly ClayToolbarButtonOptions RetryInputStorageOptions = new() { Text = "Повторить сохранение черновика" };
     private ModelEditorOriginal? _editorOriginal;
     private string? _scheduledInput;
     private string? _inputNotice;
@@ -115,7 +112,7 @@ public partial class ModelEquipmentForm
                 }
                 if (opened != ModelEditorFields.From(model))
                 {
-                    _inputNotice = "Ввод изменился. Повторите восстановление оставшихся полей.";
+                    _inputNotice = "Ввод изменился. Нажмите «Обновить», чтобы перечитать состояние формы.";
                     return;
                 }
             }
@@ -161,7 +158,7 @@ public partial class ModelEquipmentForm
             throw new InvalidOperationException("Контекст модели изменился.");
         if (ready) return;
         _rawPending = true;
-        _inputNotice = "Сначала полностью восстановите ввод модели. Запись не отправлена.";
+        _inputNotice = "Ввод модели ещё не восстановлен. Запись не отправлена.";
         throw new InvalidOperationException(_inputNotice);
     }
 

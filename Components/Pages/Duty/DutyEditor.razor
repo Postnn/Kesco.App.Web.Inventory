@@ -27,10 +27,6 @@
         {
             <MudAlert Severity="Severity.Warning" data-testid="duty-input-readiness">
                 @(_rawRestoreFailed ? "Не удалось восстановить часть ввода." : "Часть ввода ожидает восстановления.")
-                @if (HasWriteAccess && !_conflict && !_unknown)
-                {
-                    <MudButton OnClick="RetryRawAsync" Disabled="@(!CanRetryRaw)">Повторить восстановление</MudButton>
-                }
             </MudAlert>
         }
         @if ((_unknown && _attemptDate is not null) || _conflict)
@@ -45,14 +41,10 @@
                 <div>Актуальное значение: @EmployeeText(review.Row.PlannedId, review.Row.PlannedName)</div>
                 @if (review.Revision is not null)
                 {
-                    <MudText Typo="Typo.body2">Актуальная запись станет исходной версией. Ваш выбор останется в черновике.</MudText>
+                    <MudText Typo="Typo.body2">Актуальная запись станет исходной версией. Ваш выбор инженера сохранится.</MudText>
                     <MudButton OnClick="KeepStalePlanAsync" Disabled="@_busy">Оставить моего инженера</MudButton>
                 }
             </section>
-        }
-        @if (!_unknown && !_conflict && (_storageError && !_failedLoad && _registration is not null || _confirmedRevision is not null))
-        {
-            <MudButton OnClick="RetryStorageAsync" Disabled="@_busy">Повторить сохранение черновика</MudButton>
         }
         @if (_failedLoad && _registration is null)
         {

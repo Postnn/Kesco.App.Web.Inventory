@@ -16,7 +16,6 @@ public partial class Net
     private const string PoeOperationKind = "net.poe";
     private static readonly ClayToolbarButtonOptions ReadOutcomeOptions = new() { Text = "Прочитать состояние порта" };
     private static readonly ClayToolbarButtonOptions RetryJournalOptions = new() { Text = "Проверить журнал операций" };
-    private static readonly ClayToolbarButtonOptions RecoverOperationOptions = new() { Text = "Открыть сохранённую попытку" };
 
     private readonly string _operationRoot = $"net-operation-{Guid.NewGuid():N}";
     private NetOperationContext? _operationContext;
@@ -43,10 +42,11 @@ public partial class Net
             var context = new NetOperationContext(registration, currentUser.Id, port.Id)
             {
                 Attempt = registration.Restore.OperationSnapshot,
+                ReceiptRecorded = registration.Restore.OperationSnapshot?.Status == ClayDraftOperationStatus.Confirmed,
             };
             _operationContext = context;
             registration = null;
-            await ScanOperationJournalAsync(context);
+            await ScanOperationJournalAsync(context, recover: true);
         }
         catch (Exception ex) when (IsJournalError(ex))
         {
@@ -60,14 +60,22 @@ public partial class Net
         }
     }
 
-    private async Task ScanOperationJournalAsync(NetOperationContext context)
+    private async Task ScanOperationJournalAsync(NetOperationContext context, bool recover = false)
     {
         context.Scanned = false;
         var candidates = await context.Registration.ListRecoveryCandidatesAsync(_pageCts.Token)
             ?? throw new InvalidOperationException("Журнал не подтвердил поиск попыток.");
+        if (recover && context.Attempt is null && context.NotSentId is null && !context.Registration.Restore.HasDraft &&
+            candidates is [{ CanRecover: true } candidate] &&
+            await context.Registration.RecoverListedDraftAsync(candidate.DraftId, _pageCts.Token))
+        {
+            context.Attempt = context.Registration.Restore.OperationSnapshot;
+            context.ReceiptRecorded = context.Attempt?.Status == ClayDraftOperationStatus.Confirmed;
+            candidates = await context.Registration.ListRecoveryCandidatesAsync(_pageCts.Token)
+                ?? throw new InvalidOperationException("Журнал не подтвердил поиск попыток.");
+        }
         var health = await context.Registration.GetHealthAsync(_pageCts.Token);
         context.OtherAttempts = candidates.Where(candidate => candidate.HasOperation).ToArray();
-        context.OtherDrafts = candidates.Where(candidate => !candidate.HasOperation).ToArray();
         context.Scanned = health is { Healthy: true, PendingWrites: 0 } &&
             (!health.HasOperation || context.Attempt is not null);
         ShowOperationNotice(context);
@@ -242,7 +250,10 @@ public partial class Net
                 }
                 if (context.Attempt?.Status == ClayDraftOperationStatus.Confirmed)
                     await FinishConfirmedOperationAsync(context);
-                await ScanOperationJournalAsync(context);
+                var previousRestore = context.Registration.Restore;
+                await ScanOperationJournalAsync(context, recover: !IsModified);
+                if (!ReferenceEquals(previousRestore, context.Registration.Restore))
+                    ApplyRecoveredNetInput(context);
             }
             finally { await LeaveOperationContextAsync(context); }
         }
@@ -252,40 +263,6 @@ public partial class Net
                 _operationNotice = "Не удалось проверить журнал. Команды остаются заблокированы.";
         }
         finally { _inspectingOperation = false; }
-    }
-
-    private async Task RecoverOperationAsync(ClayDraftRecoveryCandidate candidate)
-    {
-        if (!CanInspectOperation || _operationContext is not { Attempt: null, NotSentId: null } context ||
-            !candidate.CanRecover || (!context.OtherAttempts.Contains(candidate) && !context.OtherDrafts.Contains(candidate)))
-            return;
-        _inspectingOperation = context.InUse = true;
-        try
-        {
-            if (!await context.Registration.RecoverListedDraftAsync(candidate.DraftId, _pageCts.Token))
-            {
-                if (ReferenceEquals(_operationContext, context))
-                    _operationNotice = "Сохранённая попытка сейчас недоступна. Команды остаются заблокированы.";
-                return;
-            }
-
-            context.Attempt = context.Registration.Restore.OperationSnapshot;
-            ApplyRecoveredNetInput(context);
-            if (ReferenceEquals(_operationContext, context))
-                _observedOutcome = null;
-            context.ReceiptRecorded = context.Attempt?.Status == ClayDraftOperationStatus.Confirmed;
-            await ScanOperationJournalAsync(context);
-        }
-        catch (Exception ex) when (IsJournalError(ex))
-        {
-            context.Scanned = false;
-            ShowOperationNotice(context);
-        }
-        finally
-        {
-            _inspectingOperation = false;
-            await LeaveOperationContextAsync(context);
-        }
     }
 
     private async Task ReadObservedOutcomeAsync()
@@ -388,7 +365,6 @@ public partial class Net
         internal NetInputReview? InputReview { get; set; }
         internal bool InputFailed { get; set; }
         internal bool VerifiedAfterWrite { get; set; }
-        internal IReadOnlyList<ClayDraftRecoveryCandidate> OtherDrafts { get; set; } = [];
         internal ClayDraftOperation? Attempt { get; set; }
         internal IReadOnlyList<ClayDraftRecoveryCandidate> OtherAttempts { get; set; } = [];
         internal string? NotSentId { get; set; }

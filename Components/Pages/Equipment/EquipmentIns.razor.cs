@@ -140,7 +140,7 @@ public partial class EquipmentIns : IAsyncDisposable
     private bool HasPendingCreation => _createdEquipmentId is null && (_loadedFromCopy || IsModified);
     private bool CanSave => _loaded && _canEdit && !_loading && !_saving && !CreationBlocked && HasPendingCreation;
     private bool CreationFocusReady => !_disposed && _loaded && _canEdit && !_loading && !_saving &&
-        !_restoreCreationRaw && !_creationRecoveryBusy && !CreationBlocked && _createdEquipmentId is null && _sourceKey == SourceKey;
+        !_restoreCreationRaw && !CreationBlocked && _createdEquipmentId is null && _sourceKey == SourceKey;
     private bool ShowNetworkName => _selectedType?.HasNetworkName > 0;
     private int MacCount => Math.Min(3, _selectedModel?.NetworkInterfaces ?? 0);
     private Func<Employee, Task>? EmployeeViewItem =>
@@ -206,7 +206,7 @@ public partial class EquipmentIns : IAsyncDisposable
         _sourceUnavailable = _draftNeedsReview = _editorRestored = _editorSaveFailed = false;
         _lastEditorDraft = _freshOriginal = null;
         _creationRecoveryCandidates = [];
-        _creationRecoveryReady = _creationRecoveryBusy = false;
+        _creationRecoveryReady = false;
         _creationRecoveryNotice = null;
         CurrentUser = null;
         _confirmedOwnerId = null;
@@ -609,12 +609,12 @@ public partial class EquipmentIns : IAsyncDisposable
         {
             if (_creationResult is { } receipt)
                 _validationMessage = CreationCleanupPending
-                    ? $"Оборудование №{receipt.EquipmentId} создано. Завершите обработку черновика."
+                    ? $"Оборудование №{receipt.EquipmentId} создано. Для проверки результата нажмите «Обновить»."
                     : $"Оборудование №{receipt.EquipmentId} создано. Не удалось завершить переход.";
             else if (_creationAttempt is { } attempt)
                 await MarkCreationUnknownAsync(registration, attempt);
             else if (_notSentCreationId is not null)
-                _validationMessage = "Команда не отправлена. Завершите проверку черновика перед повтором.";
+                _validationMessage = "Команда не отправлена. Проверьте состояние операции кнопкой «Обновить».";
             else
                 _validationMessage = error is InvalidOperationException or UnauthorizedAccessException
                     ? error.Message
@@ -668,7 +668,7 @@ public partial class EquipmentIns : IAsyncDisposable
 
     private async Task RefreshAsync()
     {
-        if (_applyingCreationRaw || _creationRecoveryBusy) return;
+        if (_applyingCreationRaw) return;
         if (CreationCleanupPending || _notSentCreationId is not null)
         {
             await RetryCreationCompletionAsync();
@@ -686,7 +686,7 @@ public partial class EquipmentIns : IAsyncDisposable
             await AutosaveCreationEditorAsync(retry: true);
             return;
         }
-        if (_creationRawPending && !_sourceUnavailable && !_draftNeedsReview)
+        if (_creationRawPending)
         {
             await RestoreCreationRawAsync(pendingOnly: true);
             return;

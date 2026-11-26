@@ -26,16 +26,6 @@
     {
         <MudAlert Severity="Severity.Warning" Class="mb-3">
             <div>@_journalNotice</div>
-            <ClayToolbarButton Options="RetryJournalOptions" OnClick="RetryTemplateJournalAsync" Disabled="@(_saving || _loading || _journalBusy)" />
-            @if (_templateAttempt is not null && !_knownWrite)
-            {
-                <ClayToolbarButton Options="ObserveTemplateOptions" OnClick="ObserveTemplateAsync" Disabled="@(_saving || _loading || _journalBusy)" />
-            }
-            @foreach (var candidate in _journalCandidates)
-            {
-                <ClayToolbarButton Options="AdoptJournalOptions" OnClick="@(() => AdoptTemplateJournalAsync(candidate))"
-                                   Disabled="@(_saving || _loading || _journalBusy || IsModified || _templateAttempt is not null || _knownWrite || !candidate.CanRecover)" />
-            }
         </MudAlert>
     }
 
@@ -43,14 +33,6 @@
     {
         <MudAlert Severity="Severity.Warning" Class="mb-3">
             <div>@_inputNotice</div>
-            @if (_rawPending && !_editorWatchFailed)
-            {
-                <ClayToolbarButton Options="RetryInputOptions" OnClick="RetryTemplateRawAsync" Disabled="@(_saving || _loading || _journalBusy || _restoringTemplateRaw)" />
-            }
-            else if (_inputSaveFailed || _editorWatchFailed)
-            {
-                <ClayToolbarButton Options="RetryInputStorageOptions" OnClick="RetryTemplateInputAsync" Disabled="@(_saving || _loading || _journalBusy || _restoringTemplateRaw)" />
-            }
         </MudAlert>
     }
 

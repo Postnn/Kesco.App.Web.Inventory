@@ -84,11 +84,6 @@
                     <ClayToolbarButton Options="RetryJournalOptions" Disabled="@(!CanInspectOperation)" OnClick="CheckOperationJournalAsync" />
                     @if (_operationContext is { } context)
                     {
-                        @foreach (var candidate in context.OtherAttempts.Where(candidate => candidate.CanRecover))
-                        {
-                            <ClayToolbarButton Options="RecoverOperationOptions" Disabled="@(!CanInspectOperation || context.Attempt is not null)"
-                                               OnClick="() => RecoverOperationAsync(candidate)" />
-                        }
                         @if (context.Attempt is { Status: not ClayDraftOperationStatus.Confirmed })
                         {
                             <ClayToolbarButton Options="ReadOutcomeOptions" Disabled="@(!CanInspectOperation)" OnClick="ReadObservedOutcomeAsync" />
@@ -127,10 +122,6 @@
             {
                 <MudAlert Severity="Severity.Warning" data-testid="net-input-notice">
                     @inputNotice
-                    @if (_operationContext is { InputReady: false } or { InputFailed: true })
-                    {
-                        <ClayToolbarButton Options="RetryInputOptions" Disabled="@(_saving || _poeRunning || _operationContext?.InputApplying == true)" OnClick="RetryNetInputAsync" />
-                    }
                     @if (_operationContext is { InputConflict: true, LastSavedInput: not null })
                     {
                         <ClayToolbarButton Options="ReviewStaleInputOptions" Disabled="@(!CanReviewStaleInput)" OnClick="ReviewStaleNetInputAsync" />
@@ -139,7 +130,7 @@
             }
             @if (_operationContext?.InputReview is { } draftReview)
             {
-                <section aria-label="Сверка устаревшего черновика" data-testid="net-input-review">
+                <section aria-label="Сверка данных порта" data-testid="net-input-review">
                     @foreach (var field in draftReview.Conflicts)
                     {
                         <fieldset @key="field" disabled="@(!CanReviewStaleInput)">
@@ -162,15 +153,6 @@
                         Disabled="@(!CanReviewStaleInput || draftReview.Conflicts.Any(field => field.KeepLocal is null))"
                         OnClick="AcceptStaleNetInputAsync" />
                 </section>
-            }
-            @if (_operationContext is { } inputContext)
-            {
-                @foreach (var candidate in inputContext.OtherDrafts.Where(candidate => candidate.CanRecover))
-                {
-                    <ClayToolbarButton Options="RecoverInputOptions"
-                        Disabled="@(!CanInspectOperation || inputContext.Attempt is not null || IsModified)"
-                        OnClick="() => RecoverOperationAsync(candidate)" />
-                }
             }
             <div @key="_inputViewRevision" data-draft-scope="@NetInputScope" inert="@_cancellingInput">
             <MudGrid Spacing="2">

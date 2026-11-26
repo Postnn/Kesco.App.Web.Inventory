@@ -95,7 +95,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
     private readonly ClayToolbarButtonOptions _phoneConfigOptions = new() { Text = "Конфигурация", Icon = Icons.Material.Filled.SettingsPhone, Title = "Открыть конфигурацию IP-телефона" };
     private readonly ClayToolbarButtonOptions _simDetailOptions = new() { Text = "Детализация", Icon = Icons.Material.Filled.ReceiptLong, Title = "Показать детализацию мобильной связи за текущий период" };
     private readonly ClayToolbarButtonOptions _networkHistoryOptions = new() { Text = "История имён", Icon = Icons.Material.Filled.History, Title = "Показать историю сетевых имён" };
-    private readonly ClayToolbarButtonOptions _keepDraftOptions = new() { Text = "Оставить значения черновика", Title = "Разрешить конфликт в пользу локальных значений" };
+    private readonly ClayToolbarButtonOptions _keepDraftOptions = new() { Text = "Оставить мой ввод", Title = "Разрешить конфликт в пользу локальных значений" };
     private readonly ClayToolbarButtonOptions _takeFreshOptions = new() { Text = "Взять конфликтные поля из БД", Title = "Заменить только конфликтные поля свежими значениями" };
     private readonly ClayToolbarButtonOptions _reconcileOptions = new() { Text = "Сверить без повторной записи", Title = "Проверить результат только чтением" };
     private readonly ClayToolbarButtonOptions _reconcileAtsOptions = new() { Text = "Сверить ATS без повтора", Title = "Проверить результат ATS только чтением" };

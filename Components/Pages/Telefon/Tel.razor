@@ -47,17 +47,10 @@
         {
             <section aria-label="Журнал записи и АТС" data-testid="tel-write-journal">
                 <MudAlert Severity="Severity.Warning">@_telJournalNotice</MudAlert>
-                <ClayToolbarButton Options="FinishJournalOptions" Disabled="@IsTelJournalInteractionBlocked"
-                                   OnClick="CompleteOrCheckTelJournalAsync" />
                 @if (CanRetryAts)
                 {
                     <ClayToolbarButton Options="RetryAtsOptions" Disabled="@IsTelJournalInteractionBlocked"
                                        OnClick="RetryJournaledAtsAsync" />
-                }
-                @foreach (var candidate in _telCandidates.Where(item => item.CanRecover))
-                {
-                    <ClayToolbarButton Options="RecoverTelOptions" Disabled="@(IsTelJournalInteractionBlocked || HasUnsavedDraft)"
-                                       OnClick="() => RecoverTelJournalAsync(candidate)" />
                 }
                 <ClayToolbarButton Options="InspectTelOptions" Disabled="@IsTelJournalInteractionBlocked"
                                    OnClick="ObserveTelWriteAsync" />
@@ -65,18 +58,8 @@
         }
         @if (_telInputNotice is not null)
         {
-            <section aria-label="Черновик ввода номера" data-testid="tel-editor-draft">
+            <section aria-label="Восстановление ввода номера" data-testid="tel-editor-draft">
                 <MudAlert Severity="Severity.Warning">@_telInputNotice</MudAlert>
-                @if (_telRawPending)
-                {
-                    <ClayToolbarButton Options="RestoreTelInputOptions"
-                        Disabled="@(IsTelJournalInteractionBlocked || _telRestoringRaw)" OnClick="RetryTelRawAsync" />
-                }
-                else if (_telInputSaveFailed)
-                {
-                    <ClayToolbarButton Options="RetryTelStorageOptions"
-                        Disabled="@(IsTelJournalInteractionBlocked || _telRestoringRaw)" OnClick="RetryTelInputAsync" />
-                }
             </section>
         }
         @if (_loadError is not null)

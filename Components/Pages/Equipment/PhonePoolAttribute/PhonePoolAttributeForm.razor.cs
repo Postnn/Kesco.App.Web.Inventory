@@ -27,7 +27,6 @@ public partial class PhonePoolAttributeForm
         Text = "Удалить", Title = "Удалить запись со значением атрибута пула", Icon = Icons.Material.Filled.Delete,
     };
     private static readonly ClayToolbarButtonOptions SubmittedSnapshotButton = new() { Text = "Посмотреть снимок попытки" };
-    private static readonly ClayToolbarButtonOptions RetryRecoveryButton = new() { Text = "Повторить чтение атрибута", Icon = Icons.Material.Filled.Refresh };
     private static readonly DraftMergeField[] Fields = [new(nameof(FormState.Value), "Значение", ValueDraftKey)];
 
     private readonly ClayTextBoxOptions _poolOptions = new() { Label = "Пул телефона:", ReadOnly = true };

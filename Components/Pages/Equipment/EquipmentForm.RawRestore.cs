@@ -1,9 +1,7 @@
 using Clayzor.Lib.Entities;
-using Clayzor.Lib.Web.Controls.Components.Form;
 using Clayzor.Lib.Web.Controls.Services;
 using Microsoft.Data.SqlClient;
 using Microsoft.JSInterop;
-using MudBlazor;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
 
@@ -11,12 +9,6 @@ public partial class EquipmentForm
 {
     private const string MainDraftScope = "main";
     private const string MainRawAccessError = "Не удалось подтвердить доступ к восстановлению ввода. Черновик сохранён.";
-
-    private readonly ClayToolbarButtonOptions _retryMainRawOptions = new()
-    {
-        Text = "Повторить восстановление ввода",
-        Icon = Icons.Material.Filled.Refresh,
-    };
 
     private bool _mainRawRestorePending;
     private bool _restoringMainRaw;

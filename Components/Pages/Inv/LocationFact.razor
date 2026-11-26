@@ -19,7 +19,6 @@
             @if (_legacyRawIncomplete)
             {
                 <MudText Typo="Typo.body2">Часть сохранённого ввода пока не отображается.</MudText>
-                <MudButton OnClick="RestoreLegacyInputsAsync" Disabled="@_busy">Повторить восстановление ввода</MudButton>
             }
             <MudButton OnClick="ReturnToWorkplace" Disabled="@_busy">Вернуться к рабочему месту</MudButton>
         </section>
@@ -54,17 +53,12 @@
     {
         <MudAlert Severity="Severity.Warning" Class="my-2">
             Часть ввода рабочего места ожидает восстановления.
-            <MudButton OnClick="RestoreWorkplaceInputsAsync" Disabled="@_busy">Повторить восстановление поиска</MudButton>
         </MudAlert>
     }
     @if (_legacyRawPending)
     {
         <MudAlert Severity="Severity.Warning" Class="my-2">
             Черновик прежней версии содержит ввод без открытого подтверждения. Запись приостановлена.
-            @if (!_showLegacyRaw)
-            {
-                <MudButton OnClick="ShowLegacyInputs" Disabled="@_busy">Показать сохранённый ввод</MudButton>
-            }
         </MudAlert>
     }
     @if (_confirmedCleanup is { } receipt)
@@ -73,11 +67,6 @@
         {
             <ClayLocalTime Value="@checkedAt" />
         }
-        <MudButton OnClick="RetryConfirmedCleanupAsync" Disabled="@_busy">Завершить обработку черновика</MudButton>
-    }
-    @if (_storageRetryRequired && !_dialogVisible)
-    {
-        <MudButton OnClick="RetryStorageAsync" Disabled="@_busy">Повторить сохранение черновика</MudButton>
     }
     @if (_blocked && !_dialogVisible && _pending is not null && _confirmedCleanup is null && !_storageRetryRequired)
     {
@@ -123,10 +112,6 @@
         <TitleContent>Подтверждение нахождения оборудования на расположении</TitleContent>
         <DialogContent>
             <ClayFormActions Form="InventoryFormHelp.LocationFact" />
-            @if (_storageRetryRequired)
-            {
-                <MudButton OnClick="RetryStorageAsync" Disabled="@_busy">Повторить сохранение черновика</MudButton>
-            }
             @if ((_blocked && !_storageRetryRequired && _confirmedCleanup is null) || _conflict)
             {
                 <MudButton Disabled="@_busy" OnClick="CompareAsync">Сверить с базой</MudButton>
@@ -137,14 +122,14 @@
                     <div>Сломано: @(fresh.Broken ? "Да" : "Нет"). Примечание: @fresh.Notes</div>
                     @if (_conflict && !_blocked)
                     {
-                        <MudButton Disabled="@_busy" OnClick="AcceptComparisonAsync">Принять актуальные данные и сохранить мой ввод</MudButton>
+                        <MudButton Disabled="@_busy" OnClick="AcceptComparisonAsync">Обновить данные для подтверждения</MudButton>
                     }
                     else { <MudText>Сверка показывает последнюю запись. Принадлежность операции требует подтверждения.</MudText> }
                 }
             }
             @if (_restoreIncomplete)
             {
-                <MudAlert Severity="Severity.Warning">Ввод восстановлен частично. <MudButton OnClick="RestoreEditorAsync">Повторить восстановление</MudButton></MudAlert>
+                <MudAlert Severity="Severity.Warning">Ввод восстановлен частично. Сохранение приостановлено.</MudAlert>
             }
             @if (_dialogError is not null) { <MudAlert Severity="Severity.Warning" Class="mb-2">@_dialogError</MudAlert> }
             @if (_pending is { } pending)

@@ -19,9 +19,7 @@ public partial class EquipmentIns
     private readonly string _creationRoot = $"equipment-ins-draft-{Guid.NewGuid():N}";
     private readonly ClayToolbarButtonOptions _openCreatedOptions = new() { Text = "Открыть созданное оборудование" };
     private readonly ClayToolbarButtonOptions _newCreationOptions = new() { Text = "Начать другое создание" };
-    private readonly ClayToolbarButtonOptions _creationRetryOptions = new() { Text = "Завершить обработку черновика" };
 
-    private readonly ClayToolbarButtonOptions _retryCreationRawOptions = new() { Text = "Повторить восстановление ввода" };
     private readonly ClayToolbarButtonOptions _reviewCreationOptions = new() { Text = "Принять актуальный исходный контекст" };
 
     [Inject] private ClayDraftService Drafts { get; set; } = null!;
@@ -64,8 +62,9 @@ public partial class EquipmentIns
             }
 
             _creationDraft = registration;
-            RestoreCreationState(actor, registration.Restore, source);
-            await ScanCreationRecoveryAsync(registration, version, _pageCts.Token);
+            await ScanCreationRecoveryAsync(registration, version, _pageCts.Token, actor);
+            if (IsCurrentCreationInput(registration, version))
+                RestoreCreationState(actor, registration.Restore, source);
         }
         catch (Exception error) when (error is JSException or InvalidOperationException or JsonException)
         {
@@ -92,7 +91,7 @@ public partial class EquipmentIns
             _receiptPersisted = true;
             _createdEquipmentId = receipt!.EquipmentId;
             _validationMessage = CreationCleanupPending
-                ? $"Оборудование №{receipt.EquipmentId} создано. Завершите обработку черновика."
+                ? $"Оборудование №{receipt.EquipmentId} создано. Для проверки результата нажмите «Обновить»."
                 : $"Оборудование №{receipt.EquipmentId} создано.";
             return;
         }
@@ -306,8 +305,8 @@ public partial class EquipmentIns
         catch (Exception error) when (error is JSException or InvalidOperationException)
         {
             _validationMessage = _creationResult is { } receipt
-                ? $"Оборудование №{receipt.EquipmentId} создано. Завершите обработку черновика."
-                : "Не удалось завершить проверку черновика. Создание заблокировано.";
+                ? $"Оборудование №{receipt.EquipmentId} создано. Для проверки результата нажмите «Обновить»."
+                : "Не удалось проверить результат создания. Повтор заблокирован.";
         }
         catch (OperationCanceledException) when (_disposed) { }
         finally { _saving = false; }
@@ -355,7 +354,7 @@ public partial class EquipmentIns
     private async Task AutosaveCreationEditorAsync(bool retry = false)
     {
         if (!_loaded || !_canEdit || _loading || _saving || _disposed || _creationUncertain || _createdEquipmentId is not null ||
-            _creationRawPending || _creationRecoveryBusy || _notSentCreationId is not null || (_editorSaveFailed && !retry) ||
+            _creationRawPending || _notSentCreationId is not null || (_editorSaveFailed && !retry) ||
             _creationDraft is not { } registration || !IsModified && !_editorRestored)
             return;
         if (_creationAutosave is { } alreadySaving)
@@ -408,7 +407,7 @@ public partial class EquipmentIns
             {
                 if (!ReferenceEquals(_creationDraft, registration)) return;
                 _editorSaveFailed = true;
-                _validationMessage = "Не удалось сохранить черновик. Ввод остался на форме. Нажмите «Обновить» для повтора сохранения черновика.";
+                _validationMessage = "Не удалось сохранить черновик. Ввод остался на форме. Для обновления состояния нажмите «Обновить».";
                 StateHasChanged();
             }
         }

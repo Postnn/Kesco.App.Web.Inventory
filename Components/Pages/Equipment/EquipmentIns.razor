@@ -33,10 +33,6 @@
             <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit || CreationBlocked)" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
             <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || _applyingCreationRaw)" OnClick="RefreshAsync" />
-            @if (CreationCleanupPending || _notSentCreationId is not null)
-            {
-                <ClayToolbarButton Options="_creationRetryOptions" Disabled="@_saving" OnClick="RetryCreationCompletionAsync" />
-            }
             @if (_createdEquipmentId is not null && !CreationBlocked)
             {
                 <ClayToolbarButton Options="_openCreatedOptions" Disabled="@_saving" OnClick="OpenCreatedEquipment" />
@@ -53,17 +49,6 @@
         @if (!_loading && !string.IsNullOrWhiteSpace(_creationRecoveryNotice))
         {
             <MudAlert Severity="Severity.Warning">@_creationRecoveryNotice</MudAlert>
-        }
-        @if (!_loading && CurrentUser?.HasRole(Роли.Специалист_по_инвентаризации_оборудования) == true &&
-             !PreservesCreationOutcome && _creationRecoveryCandidates.Count > 0)
-        {
-            foreach (var candidate in _creationRecoveryCandidates)
-            {
-                <ClayToolbarButton Options="@(new() { Text = candidate.HasOperation
-                    ? $"Открыть сохранённую попытку (ревизия {candidate.Revision})"
-                    : $"Восстановить черновик (ревизия {candidate.Revision})" })"
-                    Disabled="@(!CanRecoverCreationDraft || !candidate.CanRecover)" OnClick="() => RecoverCreationDraftAsync(candidate)" />
-            }
         }
         @if (_notFound)
         {
@@ -85,20 +70,11 @@
             @if (_creationRawPending && !_restoreCreationRaw && !PreservesCreationOutcome)
             {
                 <MudAlert Severity="Severity.Warning" data-testid="ins-input-readiness">
-                    @if (_sourceUnavailable || _draftNeedsReview)
-                    {
-                        @(_creationRawFailed ? "Не удалось восстановить ввод." : "Часть ввода ожидает восстановления.")
-                        <ClayToolbarButton Options="_retryCreationRawOptions" Disabled="@(_applyingCreationRaw || _saving)"
-                                           OnClick="() => RestoreCreationRawAsync(pendingOnly: true)" />
-                    }
-                    else
-                    {
-                        @(_creationRawFailed ? "Не удалось восстановить ввод. Нажмите «Обновить» для повтора." : RawPendingMessage)
-                    }
+                    @(_creationRawFailed ? "Не удалось восстановить ввод." : RawPendingMessage)
                 </MudAlert>
             }
 
-            <MudForm @key="_operationVersion" @ref="_form" data-draft-scope="@CreationScope" inert="@(_saving || _creationRecoveryBusy || _creationUncertain || _createdEquipmentId is not null)">
+            <MudForm @key="_operationVersion" @ref="_form" data-draft-scope="@CreationScope" inert="@(_saving || _creationUncertain || _createdEquipmentId is not null)">
                 <ClayEditorFocusScope Label="Поля нового оборудования" Ready="@CreationFocusReady" AdvanceOnEnter="true">
                 <div class="equipment-ins-fields">
                     <div class="equipment-ins-row">

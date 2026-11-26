@@ -74,24 +74,9 @@
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
-        @if (_equipmentRecoveryNotice is not null || _equipmentRecoveryCandidates.Count != 0)
+        @if (_equipmentRecoveryNotice is not null)
         {
-            <section aria-label="Сохранённые черновики оборудования" data-testid="equipment-recovery">
-                @if (_equipmentRecoveryNotice is not null)
-                {
-                    <MudAlert Severity="Severity.Warning">@_equipmentRecoveryNotice</MudAlert>
-                }
-                <ClayToolbarButton Options="CheckRecoveryOptions" OnClick="CheckEquipmentRecoveryAsync"
-                                   Disabled="@(_loading || _saving || _checkingEquipmentRecovery || _recoveringEquipmentDraft)" />
-                @foreach (var candidate in _equipmentRecoveryCandidates)
-                {
-                    <div @key="candidate.DraftId">
-                        <span>@(candidate.HasOperation ? "Черновик с незавершённой записью" : "Сохранённый ввод")</span>
-                        <ClayToolbarButton Options="OpenRecoveryOptions" Disabled="@(!CanOpenEquipmentRecovery(candidate))"
-                                           OnClick="@(() => OpenEquipmentRecoveryAsync(candidate))" />
-                    </div>
-                }
-            </section>
+            <MudAlert Severity="Severity.Warning" data-testid="equipment-recovery">@_equipmentRecoveryNotice</MudAlert>
         }
 
         @if (_notFound)
@@ -122,9 +107,7 @@
             if (_mainRawRestorePending)
             {
                 <MudAlert Severity="Severity.Warning" Class="mb-3">
-                    <span>Восстановлена только часть ввода основной формы. Остальные значения сохранены в черновике.</span>
-                    <ClayToolbarButton Options="_retryMainRawOptions" Disabled="@(!_canEdit || !CanRetryMainRaw)"
-                                       OnClick="RetryMainDraftRawAsync" />
+                    Восстановлена только часть ввода основной формы. Остальные значения сохранены.
                 </MudAlert>
             }
             if (!string.IsNullOrWhiteSpace(_validationMessage))

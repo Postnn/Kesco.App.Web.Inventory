@@ -7,8 +7,8 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Net;
 
 public partial class Net
 {
-    private static readonly ClayToolbarButtonOptions ReviewStaleInputOptions = new() { Text = "Сверить черновик с БД" };
-    private static readonly ClayToolbarButtonOptions AcceptStaleInputOptions = new() { Text = "Принять сверку черновика" };
+    private static readonly ClayToolbarButtonOptions ReviewStaleInputOptions = new() { Text = "Сверить данные порта" };
+    private static readonly ClayToolbarButtonOptions AcceptStaleInputOptions = new() { Text = "Применить результаты сверки" };
 
     private bool CanReviewStaleInput => !OperationBlocked && !_loading && !_saving && !_poeRunning &&
         _operationContext is { InputReady: true, InputConflict: true, InputFailed: false, LastSavedInput: not null } context &&

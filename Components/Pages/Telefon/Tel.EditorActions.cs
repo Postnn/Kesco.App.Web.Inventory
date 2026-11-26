@@ -107,6 +107,16 @@ public partial class Tel
     private async Task RefreshAsync()
     {
         if (_model is null || _loading || _saving || _telJournalBusy || _telChildOpen || _telEditorTransition) return;
+        var refreshVersion = _operationVersion;
+        if (_telInputSaveFailed && !_telRawPending)
+            await RetryTelInputAsync();
+        if (!IsCurrent(refreshVersion)) return;
+        if (_telRawPending)
+            await RetryTelRawAsync();
+        if (!IsCurrent(refreshVersion) || _telRawPending || _telInputSaveFailed) return;
+        if (_telJournalNotice is not null && _telJournal is not null)
+            await CompleteOrCheckTelJournalAsync();
+        if (!IsCurrent(refreshVersion) || _deleted || _model is null || _loading || _saving || _telJournalBusy || _telChildOpen || _telEditorTransition) return;
         if (HasUnresolvedTelEditorWrite)
         {
             await ObserveTelWriteAsync();
