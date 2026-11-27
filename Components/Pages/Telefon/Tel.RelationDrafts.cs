@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Web.Controls.Services;
 using Kesco.App.Web.Inventory.Services;
@@ -21,14 +22,41 @@ public partial class Tel
         FormattableString.Invariant($"tel-equipment-{key.EquipmentId}-{key.ConnectionEquipmentId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none"}");
 
     private async Task<TelRelationDraftSession<T>?> OpenTelRelationDraftAsync<T>(string scope, T original, DateTime originalChangedAtUtc,
-        Func<T, PhoneRelationsSnapshot?> propose) where T : class
+        Func<T, PhoneRelationsSnapshot?> propose, Func<PhoneRelationsSnapshot?, (T Value, DateTime ChangedAtUtc)?> projectFresh,
+        bool isNew) where T : class
     {
         if (_telChildOpen || !_loaded || !_canEdit || _saving || TelWriteBlocked ||
-            _telJournal is not { } registration)
+            CurrentUser is not { Id: > 0 } employee || _telJournal is not { } registration)
             return null;
         _telChildOpen = true;
         var version = _operationVersion;
-        bool Current() => _telChildOpen && IsTelInputCurrent(registration, version);
+        var route = (Id, CopyId);
+        bool Current() => _telChildOpen && IsTelInputCurrent(registration, version) &&
+            (Id, CopyId) == route && CurrentUser?.Id == employee.Id && _canEdit && !TelWriteBlockedOutsideChild;
+
+        async Task<(T Value, DateTime ChangedAtUtc)?> ReadFresh()
+        {
+            if (!Current() || HasPendingSync) return null;
+            var principal = await ReadPrincipalAsync();
+            var actor = await Service.GetCurrentUserAsync(principal, _pageCts.Token);
+            if (!Current() || actor?.Id != employee.Id || !actor.HasRole(Роли.Специалист_по_инвентаризации_оборудования))
+                return null;
+            if (await Service.ReadSqlPendingAsync(principal, actor.Id, route.Id, _pageCts.Token) || !Current())
+                return null;
+            if (route.Id > 0)
+            {
+                var fresh = await Service.GetAsync(route.Id, currentUser: actor);
+                return Current() && fresh?.Phone.Id == route.Id ? projectFresh(fresh.Relations) : null;
+            }
+            if (route.CopyId > 0)
+            {
+                var source = await Service.GetAsync(route.CopyId, currentUser: actor);
+                if (!Current() || source?.Phone.Id != route.CopyId) return null;
+                // The copy flow inherits parallel calls, but starts with no equipment links.
+                return projectFresh(new PhoneRelationsSnapshot { ParallelCalls = source.Relations.ParallelCalls });
+            }
+            return Current() ? projectFresh(null) : null;
+        }
         try
         {
             if (!ReferenceEquals(_telChildCacheRestore, registration.Restore))
@@ -58,7 +86,8 @@ public partial class Tel
                 return revision;
             }
             var session = new TelRelationDraftSession<T>(registration, scope, _telJournalRoot, _pageCts.Token, Current,
-                json => _telChildCache[scope] = json, Accept, stored, state.HasRaw, original, originalChangedAtUtc);
+                json => _telChildCache[scope] = json, Accept, stored, state.HasRaw, original, originalChangedAtUtc,
+                DialogService, ReadFresh, isNew);
             await session.InitializeAsync();
             if (Current())
                 return session;

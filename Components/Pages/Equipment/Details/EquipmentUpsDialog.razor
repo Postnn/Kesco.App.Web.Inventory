@@ -1,4 +1,6 @@
 @inherits EquipmentEditorDialogBase<EquipmentUpsDialogResult>
+@using Clayzor.Lib.Web.Controls.Components.Presence
+@implements IEquipmentDeferredRawRestore
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Grid
 @using Clayzor.Lib.Web.Controls.Components.Form
@@ -12,6 +14,9 @@
     <TitleContent>Подключение UPS #@UpsEquipmentId</TitleContent>
     <DialogContent>
         <ClayFormActions Form="InventoryFormHelp.EquipmentUps" />
+        @EditorPresence
+        <ClayEditorFocusScope @key="ScopedInputVersion" @ref="_focusScope" Label="Подключение UPS" Ready="@FocusReady" Inert="@CancelPending" AdvanceOnEnter="true">
+        @RawRestoreNotice
         <div data-draft-scope="@DraftScope">
         @if (BaselineError is not null)
         {
@@ -35,6 +40,9 @@
                         Options="_serverOptions" />
             <ClayToolbarButton Options="_addButtonOptions" OnClick="AddServer" />
         </div>
+        @{ var originalServers = OpeningFieldValue<List<UpsServerLink>>(nameof(Servers)); }
+        <ClayFieldChange Changed="@(originalServers is not null && !originalServers.Select(item => item.ServerEquipmentId).Order().SequenceEqual(Servers.Select(item => item.ServerEquipmentId).Order()))">
+        <div class="clay-collection-field">
         <ClayGrid TEntity="UpsServerLink" Items="Servers" Options="_serverGridOptions">
             <ColumnDefs>
                 <ClayColumnDef ColumnId="1" SqlName="Server" DisplayName="Сервер" />
@@ -54,43 +62,52 @@
                 </ClayColumn>
             </Columns>
             <RowActions Context="item">
-                <ClayCheckbox State="item.TurnOffConfigured > 0" ReadOnly="@(!IsComputer(item))" OnToggle="() => ToggleServer(item)" Label="Выключение" />
+                <ClayFieldChange Changed="@(originalServers is not null && IsComputer(item) && (originalServers.FirstOrDefault(server => server.ServerEquipmentId == item.ServerEquipmentId)?.TurnOffConfigured > 0) != (item.TurnOffConfigured > 0))">
+                    <ClayCheckbox State="item.TurnOffConfigured > 0" ReadOnly="@(!IsComputer(item))" OnToggle="() => ToggleServer(item)" Label="Выключение" />
+                </ClayFieldChange>
                 <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить сервер" OnClick="() => Servers.Remove(item)" />
             </RowActions>
         </ClayGrid>
-        <ClayGrid TEntity="UpsTest" Items="Tests" Options="_testGridOptions" OnAdd="AddTest">
-            <ColumnDefs>
-                <ClayColumnDef ColumnId="1" SqlName="TestedAt" DisplayName="Дата" />
-                <ClayColumnDef ColumnId="2" SqlName="BatteryTime" DisplayName="Батарея" />
-                <ClayColumnDef ColumnId="3" SqlName="Servers" DisplayName="Серверы" />
-                <ClayColumnDef ColumnId="4" SqlName="Issues" DisplayName="Ошибки" />
-                <ClayColumnDef ColumnId="5" SqlName="ChangedBy" DisplayName="Изменил" />
-                <ClayColumnDef ColumnId="6" SqlName="ChangedAt" DisplayName="Изменено" />
-            </ColumnDefs>
-            <Columns>
-                <ClayColumn TEntity="UpsTest" ColumnId="1" TextSelector="@(item => item.TestedAt.ToString("dd.MM.yyyy HH:mm:ss"))" />
-                <ClayColumn TEntity="UpsTest" ColumnId="2" TextSelector="@(item => item.BatteryTime.ToString())" />
-                <ClayColumn TEntity="UpsTest" ColumnId="3" TextSelector="@(item => item.Servers)" />
-                <ClayColumn TEntity="UpsTest" ColumnId="4" TextSelector="@(item => item.Issues)" />
-                <ClayColumn TEntity="UpsTest" ColumnId="5" TextSelector="@(item => item.ChangedByName)" />
-                <ClayColumn TEntity="UpsTest" ColumnId="6">
-                    <CellTemplate>
-                        @if (context.Item.ChangedAt != default)
-                        {
-                            <ClayLocalTime Value="context.Item.ChangedAt" />
-                        }
-                    </CellTemplate>
-                </ClayColumn>
-            </Columns>
-            <RowActions Context="item">
-                <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить тест" OnClick="() => EditTest(item)" />
-            </RowActions>
-        </ClayGrid>
         </div>
+        </ClayFieldChange>
+        <ClayFieldChange Changed="@TestCollectionChanged">
+            <div class="clay-collection-field">
+                <ClayGrid TEntity="UpsTest" Items="Tests" Options="_testGridOptions" OnAdd="AddTest">
+                    <ColumnDefs>
+                        <ClayColumnDef ColumnId="1" SqlName="TestedAt" DisplayName="Дата" />
+                        <ClayColumnDef ColumnId="2" SqlName="BatteryTime" DisplayName="Батарея" />
+                        <ClayColumnDef ColumnId="3" SqlName="Servers" DisplayName="Серверы" />
+                        <ClayColumnDef ColumnId="4" SqlName="Issues" DisplayName="Ошибки" />
+                        <ClayColumnDef ColumnId="5" SqlName="ChangedBy" DisplayName="Изменил" />
+                        <ClayColumnDef ColumnId="6" SqlName="ChangedAt" DisplayName="Изменено" />
+                    </ColumnDefs>
+                    <Columns>
+                        <ClayColumn TEntity="UpsTest" ColumnId="1" TextSelector="@(item => item.TestedAt.ToString("dd.MM.yyyy HH:mm:ss"))" />
+                        <ClayColumn TEntity="UpsTest" ColumnId="2" TextSelector="@(item => item.BatteryTime.ToString())" />
+                        <ClayColumn TEntity="UpsTest" ColumnId="3" TextSelector="@(item => item.Servers)" />
+                        <ClayColumn TEntity="UpsTest" ColumnId="4" TextSelector="@(item => item.Issues)" />
+                        <ClayColumn TEntity="UpsTest" ColumnId="5" TextSelector="@(item => item.ChangedByName)" />
+                        <ClayColumn TEntity="UpsTest" ColumnId="6">
+                            <CellTemplate>
+                                @if (context.Item.ChangedAt != default)
+                                {
+                                    <ClayLocalTime Value="context.Item.ChangedAt" />
+                                }
+                            </CellTemplate>
+                        </ClayColumn>
+                    </Columns>
+                    <RowActions Context="item">
+                        <ClayButton Icon="@Icons.Material.Filled.Edit" Text="Изменить тест" OnClick="() => EditTest(item)" />
+                    </RowActions>
+                </ClayGrid>
+            </div>
+        </ClayFieldChange>
+        </div>
+        </ClayEditorFocusScope>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelUps" Disabled="@_saving" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked || BaselineError is not null)" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelUpsAsync" Disabled="@(_saving || CancelPending)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked || RawRestoreBlocked || BaselineError is not null || CancelPending)" />
     </DialogActions>
 </MudDialog>
 
@@ -98,7 +115,7 @@
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
     private readonly ClayToolbarButtonOptions _addButtonOptions = new() { Text = "Добавить" };
-    private readonly ClaySelectOptions _serverOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите сервер", DraftKey = "ups.server" };
+    private readonly ClaySelectOptions _serverOptions = new() { AdvanceFocusOnSelection = true, AutoSelectSingle = true, Placeholder = "Выберите сервер", DraftKey = "ups.server" };
     private readonly ClayGridOptions _serverGridOptions = SectionOptions("ups-servers", "Нет серверов", false);
     private readonly ClayGridOptions _testGridOptions = SectionOptions("ups-tests", "Нет тестов", true);
 
@@ -119,10 +136,17 @@
     private int? _serverToAdd;
     private bool _addingServer;
     private bool _openingTest;
+    private bool _restoredTestOpeningComplete;
+    private ClayEditorFocusScope? _focusScope;
+    private bool FocusReady => IsEditorCurrent() && !_saving && !_saveBlocked && !RawRestoreBlocked && !CancelPending &&
+        BaselineError is null && !_openingTest && (RestoreTestId is null || _restoredTestOpeningComplete);
     private EquipmentUpsTestDraft? _pendingTestDraft;
 
     /// <summary>Идентификатор UPS.</summary>
     [Parameter] public int UpsEquipmentId { get; set; }
+
+    /// <summary>Создаёт проверку присутствия для сохранённого теста ИБП в текущем редакторе.</summary>
+    [Parameter] public Func<int, ClayPresenceTarget?>? CreateTestPresenceTarget { get; set; }
 
     /// <summary>Сообщение восстановления, если сохранённый ввод не имеет исходной версии для записи.</summary>
     [Parameter] public string? BaselineError { get; set; }
@@ -163,6 +187,14 @@
     /// <summary>Редактируемые тесты.</summary>
     [Parameter] public List<UpsTest> Tests { get; set; } = [];
 
+    private bool TestCollectionChanged =>
+        OpeningFieldValue<List<UpsTest>>(nameof(Tests)) is { } original &&
+        !TestValues(original).SequenceEqual(TestValues(Tests));
+
+    private static IEnumerable<(int Id, DateTime TestedAt, int BatteryTime, string Servers, string Issues)> TestValues(IEnumerable<UpsTest> tests) =>
+        tests.OrderBy(test => test.Id)
+            .Select(test => (test.Id, test.TestedAt, test.BatteryTime, test.Servers ?? string.Empty, test.Issues ?? string.Empty));
+
     private UpsEquipmentSelectDataSource ServerSource => Services.GetRequiredKeyedService<UpsEquipmentSelectDataSource>("server");
 
     /// <inheritdoc />
@@ -181,6 +213,11 @@
                 TestedAt = GetNow is null ? DateTime.Now : await GetNow(),
             };
             await EditTest(item);
+            if (IsEditorCurrent())
+            {
+                _restoredTestOpeningComplete = true;
+                StateHasChanged();
+            }
         }
         if (DraftChanged is not null)
             await DraftChanged();
@@ -246,6 +283,8 @@
             return;
         }
         _openingTest = true;
+        var focusScope = _focusScope;
+        long? focusReturn = null;
         _error = null;
         try
         {
@@ -303,17 +342,35 @@
                 { dialog => dialog.PublishDraft, PublishTestDraft is null ? null : SaveTestDraftAsync },
                 { dialog => dialog.RestoreRaw, restoreRaw },
                 { dialog => dialog.CanAcceptDraft, canAccept },
+                { dialog => dialog.ScopedCancellation, CreateTestCancellation?.Invoke(item.Id, current.Original) },
+                { dialog => dialog.OwnerCurrent, (Func<bool>)(() => IsEditorCurrent() && _openingTest) },
+                { dialog => dialog.PresenceTarget, item.Id > 0 ? CreateTestPresenceTarget?.Invoke(item.Id) : null },
             };
             if (PublishTestDraft is not null)
                 await SaveTestDraftAsync(current);
 
+            if (!IsEditorCurrent())
+                return;
+            if (focusScope is not null)
+                focusReturn = await focusScope.CaptureDialogReturnAsync();
+            if (!IsEditorCurrent())
+                return;
             var reference = await DialogService.ShowExAsync<EquipmentUpsTestDialog>("Тестирование UPS", parameters,
-                new DialogOptionsEx { DragMode = MudDialogDragMode.Simple });
+                new DialogOptionsEx { DragMode = MudDialogDragMode.Simple,
+                    CloseButton = CreateTestCancellation is null, CloseOnEscapeKey = CreateTestCancellation is null,
+                    BackdropClick = CreateTestCancellation is null });
             var result = await reference.Result;
             if (result is null)
                 return;
 
+            if (ReferenceEquals(result.Data, EquipmentUpsTestDialog.ScopedCloseResult))
+            {
+                _pendingTestDraft = null;
+                return;
+            }
             var accepted = !result.Canceled && result.Data is UpsTest;
+            if (!accepted && CreateTestCancellation is not null)
+                return;
             if (!accepted && !rawReady)
             {
                 _error = "Ввод теста сохранён. Откройте этот же тест для восстановления.";
@@ -341,8 +398,13 @@
         finally
         {
             _openingTest = false;
+            if (focusScope is not null && focusReturn is { } request && IsEditorCurrent())
+                await focusScope.RestoreDialogReturnAsync(request);
         }
     }
+
+    /// <summary>Создаёт контекст отмены только для текущего вложенного теста.</summary>
+    [Parameter] public Func<int, UpsTest, EquipmentUpsTestCancellation>? CreateTestCancellation { get; set; }
 
     private async Task SaveTestDraftAsync(EquipmentUpsTestDraft draft)
     {
@@ -350,12 +412,24 @@
         await PublishTestDraft!(draft);
     }
 
-    private void CancelUps()
+    /// <summary>Обновляет ссылки родителя на списки, принятые при сбросе.</summary>
+    [Parameter] public Action<List<UpsServerLink>, List<UpsTest>>? AdoptResetLists { get; set; }
+
+    /// <inheritdoc />
+    protected override void OnDraftStateRestored()
     {
-        if (_pendingTestDraft is not null)
-            _error = "Сначала завершите открытый черновик теста UPS.";
-        else
-            Cancel();
+        _serverToAdd = null;
+        AdoptResetLists?.Invoke(Servers, Tests);
+    }
+
+    private Task CancelUpsAsync()
+    {
+        if (_openingTest || _pendingTestDraft is not null || _addingServer)
+        {
+            _error = "Сначала завершите открытое действие UPS.";
+            return Task.CompletedTask;
+        }
+        return CancelScopedAsync();
     }
 
     private Task Apply() => ApplyAsync(new EquipmentUpsDialogResult(Servers, Tests), () =>

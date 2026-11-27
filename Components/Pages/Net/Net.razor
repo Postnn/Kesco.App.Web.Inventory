@@ -2,6 +2,7 @@
 @layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
+@using Clayzor.Lib.Web.Controls.Components.Presence
 @using Clayzor.Lib.Web.Controls.Components.Select
 @using Clayzor.Lib.Web.Controls.Services
 
@@ -22,34 +23,6 @@
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
-        @if (_readOnlyRecoveryNotice is not null)
-        {
-            <MudAlert Severity="Severity.Warning">@_readOnlyRecoveryNotice</MudAlert>
-        }
-        @if (_readOnlyRecovery is { } recovery && IsReadOnlyRecoveryCurrent(recovery))
-        {
-            <section @key="recovery.Version" data-net-recovery="@RecoveryOwner(recovery.Version)"
-                     data-draft-scope="@NetInputScope" aria-label="Локальный черновик порта" data-testid="net-readonly-recovery">
-                <MudAlert Severity="Severity.Warning">
-                    Локальный черновик порта. Ввод можно скопировать. Запись и перезапуск PoE недоступны.
-                    @if (recovery.HasOperation)
-                    {
-                        <p>Незавершённая операция остаётся в журнале.</p>
-                    }
-                    @if (recovery.RawPending)
-                    {
-                        <p>Часть незавершённого ввода осталась в защищённом черновике.</p>
-                    }
-                </MudAlert>
-                @foreach (var field in ReadOnlyNetFields(recovery.Input))
-                {
-                    <label class="d-block">
-                        <span>@field.Label</span>
-                        <textarea class="d-block" readonly rows="@field.Rows" data-draft-key="@field.Key">@field.Value</textarea>
-                    </label>
-                }
-            </section>
-        }
         @if (_loadError is not null)
         {
             <MudAlert Severity="Severity.Error">
@@ -65,6 +38,11 @@
         }
         else if (_model is not null)
         {
+            @if (GetPresenceTarget() is { } presenceTarget)
+            {
+                <ClayPresencePanel Target="presenceTarget" />
+            }
+            var baseline = _loaded && _model.Id == Id && CurrentUser is not null ? _originalSnapshot : null;
             if (CurrentUser is null)
             {
                 <MudAlert Severity="Severity.Warning">Текущий пользователь не определён. Изменение и перезапуск PoE запрещены.</MudAlert>
@@ -77,14 +55,14 @@
             {
                 <MudAlert Severity="Severity.Warning">@_parentRefreshWarning</MudAlert>
             }
-            @if (_operationNotice is not null)
+            @if (_operationNotice is not null || _observedOutcome is not null)
             {
                 <section aria-label="Журнал операций" data-testid="net-operation-journal">
-                    <MudAlert Severity="Severity.Warning">@_operationNotice</MudAlert>
-                    <ClayToolbarButton Options="RetryJournalOptions" Disabled="@(!CanInspectOperation)" OnClick="CheckOperationJournalAsync" />
-                    @if (_operationContext is { } context)
+                    @if (_operationNotice is not null)
                     {
-                        @if (context.Attempt is { Status: not ClayDraftOperationStatus.Confirmed })
+                        <MudAlert Severity="Severity.Warning">@_operationNotice</MudAlert>
+                        <ClayToolbarButton Options="RetryJournalOptions" Disabled="@(!CanInspectOperation)" OnClick="CheckOperationJournalAsync" />
+                        @if (_operationContext is { Attempt: not null, OutcomeVerified: false })
                         {
                             <ClayToolbarButton Options="ReadOutcomeOptions" Disabled="@(!CanInspectOperation)" OnClick="ReadObservedOutcomeAsync" />
                         }
@@ -154,12 +132,14 @@
                         OnClick="AcceptStaleNetInputAsync" />
                 </section>
             }
-            <div @key="_inputViewRevision" data-draft-scope="@NetInputScope" inert="@_cancellingInput">
+            <div @key="_inputViewRevision" data-draft-scope="@NetInputScope" inert="@(_cancellingInput || _pendingNetClose is not null || _netDraftClosed)">
+            <ClayEditorFocusScope @key="_model.Id" Label="Поля порта локальной сети" Ready="@NetFocusReady" AdvanceOnEnter="true">
             <MudGrid Spacing="2">
                 <MudItem xs="12" md="6">
                     <div class="equipment-ins-row">
                         <span class="equipment-ins-label">Розетка:</span>
                         <div>
+                            <ClayFieldChange Changed="@(baseline is not null && _model.SocketId != baseline.SocketId)" WatchLookupRaw="@(baseline is not null)">
                             <ClaySelect TItem="NetSocketLookup" TValue="int?"
                                         DataSource="SocketSource"
                                         ValueSelector="@(item => (int?)item.Id)"
@@ -167,6 +147,7 @@
                                         Value="_model.SocketId"
                                         ValueChanged="OnSocketChangedAsync"
                                         Options="_socketOptions" />
+                            </ClayFieldChange>
                             @if (!string.IsNullOrWhiteSpace(_socketNotes))
                             {
                                 <MudText Typo="Typo.caption" Color="Color.Secondary" data-testid="net-socket-notes">@_socketNotes</MudText>
@@ -176,7 +157,9 @@
                     <div class="equipment-ins-row equipment-ins-row-top">
                         <span class="equipment-ins-label">Подключено:</span>
                         <div>
-                            <ClayTextArea @bind-Value="_model.Connected" Options="_connectedOptions" />
+                            <ClayFieldChange Changed="@(baseline is not null && _model.Connected != baseline.Connected)" RawBaseline="@baseline?.Connected">
+                                <ClayTextArea @bind-Value="_model.Connected" Options="_connectedOptions" />
+                            </ClayFieldChange>
                             @if (_connectedLinks.Count > 0)
                             {
                                 <div data-testid="net-connected-links">
@@ -192,7 +175,9 @@
                     <div class="equipment-ins-row equipment-ins-row-top">
                         <span class="equipment-ins-label">Примечание:</span>
                         <div>
-                            <ClayTextArea @bind-Value="_model.Description" Options="_descriptionOptions" />
+                            <ClayFieldChange Changed="@(baseline is not null && _model.Description != baseline.Description)" RawBaseline="@baseline?.Description">
+                                <ClayTextArea @bind-Value="_model.Description" Options="_descriptionOptions" />
+                            </ClayFieldChange>
                             @if (_descriptionLinks.Count > 0)
                             {
                                 <div data-testid="net-description-links">
@@ -213,6 +198,7 @@
                 <MudItem xs="12" md="6" Class="equipment-ins-fields">
                     <div class="equipment-ins-row">
                         <span class="equipment-ins-label">Сотрудник:</span>
+                        <ClayFieldChange Changed="@(baseline is not null && _model.EmployeeId != baseline.EmployeeId)" WatchLookupRaw="@(baseline is not null)">
                         <ClaySelect TItem="Employee" TValue="int?"
                                     DataSource="EmployeeSource"
                                     ValueSelector="@(item => (int?)item.Id)"
@@ -220,6 +206,7 @@
                                     Value="_model.EmployeeId"
                                     ValueChanged="OnEmployeeChangedAsync"
                                     Options="_employeeOptions" />
+                        </ClayFieldChange>
                     </div>
                     @if (ShowCompanyMismatch)
                     {
@@ -227,6 +214,7 @@
                     }
                     <div class="equipment-ins-row">
                         <span class="equipment-ins-label">Заказчик:</span>
+                        <ClayFieldChange Changed="@(baseline is not null && _model.PersonCustomerId != baseline.CustomerId)" WatchLookupRaw="@(baseline is not null)">
                         <ClaySelect TItem="PersonLookup" TValue="int?"
                                     DataSource="CustomerSource"
                                     ValueSelector="@(item => (int?)item.Id)"
@@ -234,31 +222,40 @@
                                     Value="_model.PersonCustomerId"
                                     ValueChanged="OnCustomerChanged"
                                     Options="_customerOptions" />
+                        </ClayFieldChange>
                     </div>
                     @if (ShowSwitch)
                     {
                         <div class="equipment-ins-row" data-testid="net-switch-row">
                             <span class="equipment-ins-label">Переключить на:</span>
+                            <ClayFieldChange Changed="@(baseline is not null && _switchToId != baseline.SwitchToId)">
                             <ClayDropDownList TItem="LocalNetworkNeighborPort" TValue="int?"
                                               Items="_switchPorts"
                                               ValueSelector="@(item => (int?)item.Id)"
                                               TextSelector="@(item => item.Name)"
                                               Value="_switchToId"
                                               ValueChanged="OnSwitchChanged" Options="_switchOptions" />
+                            </ClayFieldChange>
                         </div>
                     }
                     @if (ShowExchange)
                     {
                         <div class="equipment-ins-row" data-testid="net-exchange-row">
                             <span class="equipment-ins-label">Обменять с:</span>
+                            <ClayFieldChange Changed="@(baseline is not null && _exchangeWithId != baseline.ExchangeWithId)">
                             <ClayDropDownList TItem="LocalNetworkNeighborPort" TValue="int?"
                                               Items="_exchangePorts"
                                               ValueSelector="@(item => (int?)item.Id)"
                                               TextSelector="@(item => item.Name)"
                                               Value="_exchangeWithId"
                                               ValueChanged="OnExchangeChanged" Options="_exchangeOptions" />
+                            </ClayFieldChange>
                         </div>
                     }
+                    <ClayFieldChange Changed="@(baseline is not null && (baseline.HasReturnDate != _hasReturnDate ||
+                        _hasReturnDate && _model.ReturnDate?.Date != baseline.ReturnDate?.Date))"
+                        RawBaseline="@(baseline is null || !_hasReturnDate ? null : baseline.HasReturnDate
+                             ? baseline.ReturnDate?.ToString(_dateOptions.DateFormat) ?? string.Empty : string.Empty)">
                     <div class="equipment-ins-row">
                         <ClayCheckbox State="_hasReturnDate" StateChanged="OnReturnDateEnabledChanged" Label="Срок возврата" />
                         @if (_hasReturnDate)
@@ -266,12 +263,14 @@
                             <ClayDatePicker @bind-Value="_model.ReturnDate" Options="_dateOptions" />
                         }
                     </div>
+                    </ClayFieldChange>
                     @if (ShowExpiredWarning)
                     {
                         <MudAlert Severity="Severity.Error">просрочено</MudAlert>
                     }
                 </MudItem>
             </MudGrid>
+            </ClayEditorFocusScope>
             </div>
         }
     </ChildContent>

@@ -14,13 +14,17 @@ public partial class EquipmentForm
     private bool _mainTransition;
     private bool _mainDraftCancelled;
     private int _mainFormRevision;
+    private MainEditorDecision? _pendingMainClose;
+    private bool _finishingMainClose;
+    private bool MainCloseInProgress => _pendingMainClose is not null;
 
-    private bool PreserveMainOutcome => _orphanAdoptionConflicted || _draftOperationUnresolved || HasPendingPhoneSync || _activeEditor is not null;
+    private bool PreserveMainOutcome => _draftRestoreBlocked || _draftOperationUnresolved || HasPendingPhoneSync ||
+        ConfigureNeedsReconciliation || _activeEditor is not null;
     private bool ConfirmExternalExit => !_mainDraftCancelled && !_allowNavigation &&
-        (IsModified || PreserveMainOutcome || _mainRawRestorePending);
+        (IsModified || PreserveMainOutcome || _mainRawRestorePending || MainCloseInProgress);
 
     private sealed record MainEditorDecision(
-        ClayDraftRegistration Registration, ClayDraftEditorScopeState Scope, EquipmentEntity Model,
+        ClayDraftRegistration Registration, ClayDraftEditorCloseState Scope, EquipmentEntity Model,
         int Version, long EditorGeneration, int EmployeeId, string Snapshot, CancellationToken Token);
 
     private bool IsCurrent(MainEditorDecision decision) =>
@@ -32,25 +36,30 @@ public partial class EquipmentForm
 
     private async Task RefreshAsync()
     {
+        if (MainCloseInProgress || _mainDraftCancelled)
+            return;
+        if (EquipmentRecoveryWriteBlocked && !_loading && !_saving && !_draftRestoring && !_mainTransition)
+        {
+            if (_draftRestoreBlocked) await RetryLoadAsync();
+            else if (!_draftRegistered) await InitializeDraftAsync();
+            return;
+        }
         if (_mainRawRestorePending && CanRetryMainRaw && _canEdit)
         {
             await RetryMainDraftRawAsync();
             return;
         }
 
-        if (_checkingEquipmentRecovery || _recoveringEquipmentDraft)
-            return;
-        if (_recoveryPristine && !HasUnsavedDraft && !PreserveMainOutcome &&
-            !_loading && !_saving && !_mainTransition && !_draftRestoring &&
-            _draftRegistration is { } registration && _model is { } model && CurrentUser is { } actor)
+        if (ConfigureNeedsReconciliation)
         {
-            var version = _operationVersion;
-            await ScanEquipmentRecoveryAsync(registration, version, model.Id, actor.Id);
-            if (!IsEquipmentRecoveryCurrent(registration, version, model.Id, actor.Id) ||
-                await TryRestoreSingleEquipmentDraftAsync() || EquipmentRecoveryWriteBlocked)
-                return;
+            await ReconcileConfigureAsync();
+            return;
         }
-
+        if (PendingSavedAts is not null && !_draftOperationUnresolved)
+        {
+            await ReconcileSavedAtsAsync();
+            return;
+        }
         await RunMainTransitionAsync(true, CloseAsync, _pageCts.Token);
     }
 
@@ -76,9 +85,14 @@ public partial class EquipmentForm
     private async Task RunMainTransitionAsync(bool refresh, Func<Task> exit, CancellationToken token)
     {
         if (_disposed || _saving || _mainTransition || _loading || _draftRestoring || _restoringMainRaw ||
-            _recoveringEquipmentDraft || token.IsCancellationRequested)
+            _draftAttachingInstance == _draftInstance || token.IsCancellationRequested)
             return;
 
+        if (_mainDraftCancelled || MainCloseInProgress)
+        {
+            if (!refresh) await FinishMainCloseAndExitAsync(exit, token);
+            return;
+        }
         if (_model is not { } model)
         {
             if (!refresh)
@@ -102,17 +116,18 @@ public partial class EquipmentForm
         StateHasChanged();
         try
         {
-            var scope = await registration.ReadEditorScopeAsync("main", token) ??
-                throw new InvalidOperationException("Не удалось прочитать область черновика.");
+            var scope = await registration.ReadEditorCloseStateAsync(token) ??
+                throw new InvalidOperationException("Не удалось прочитать состояние редактора.");
             var decision = new MainEditorDecision(registration, scope, model, version, generation, employeeId, Snapshot(), token);
             if (!IsCurrent(decision))
                 return;
 
-            var protectedOutcome = PreserveMainOutcome || scope.HasOperation;
+            var protectedOutcome = PreserveMainOutcome || scope.HasOperation || HasNestedInput(scope);
             var dirty = HasUnsavedDraft || scope.HasRaw || _mainRawRestorePending || _mainConflictMessage is not null;
             if (refresh && protectedOutcome)
             {
-                if (_orphanAdoptionConflicted || _draftOperationUnresolved || scope.HasOperation || _activeEditor is not null || dirty)
+                if (_draftRestoreBlocked || _draftOperationUnresolved || scope.HasOperation ||
+                    _activeEditor is not null || HasNestedInput(scope) || dirty)
                 {
                     await ReconcileDraftOperationAsync();
                     if (IsCurrent(decision))
@@ -131,7 +146,7 @@ public partial class EquipmentForm
                 if (refresh)
                     await LoadCurrentAsync(Id);
                 else
-                    await exit();
+                    await StartMainCloseAsync(decision, exit);
                 return;
             }
 
@@ -139,31 +154,22 @@ public partial class EquipmentForm
             if (!IsCurrent(decision) || choice == ClayEditorCancelChoice.Continue)
                 return;
 
-            if (protectedOutcome || PreserveMainOutcome)
-            {
-                if (choice == ClayEditorCancelChoice.CloseWithoutSaving)
-                    await exit();
-                else
-                    _validationMessage = "Сначала завершите проверку предыдущей команды или работу дочернего редактора. Черновик сохранён.";
-                return;
-            }
-
             if (choice == ClayEditorCancelChoice.ResetAndStay)
             {
-                await LoadEquipmentAsync(Id, decision);
+                if (protectedOutcome || PreserveMainOutcome)
+                    _validationMessage = "Сначала завершите проверку предыдущей команды или работу дочернего редактора. Черновик сохранён.";
+                else
+                    await LoadEquipmentAsync(Id, decision);
                 return;
             }
 
-            if (await ReplaceMainDraftAsync(decision, null))
-            {
-                _mainDraftCancelled = true;
-                await exit();
-            }
+            await StartMainCloseAsync(decision, exit);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested || _disposed)
         {
         }
-        catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or OperationCanceledException)
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or
+            OperationCanceledException or System.Data.Common.DbException or UnauthorizedAccessException or TimeoutException)
         {
             if (IsCurrent(version, model.Id))
                 _validationMessage = "Не удалось изменить черновик. Ввод остался на форме.";
@@ -173,6 +179,118 @@ public partial class EquipmentForm
             _mainTransition = false;
             if (!_disposed)
                 StateHasChanged();
+        }
+    }
+
+    private static bool HasNestedInput(ClayDraftEditorCloseState scope) =>
+        scope.TypedScopes.Any(name => name.StartsWith("child:", StringComparison.Ordinal));
+
+    private async Task StartMainCloseAsync(MainEditorDecision decision, Func<Task> exit)
+    {
+        if (_activeEditor is not null)
+        {
+            _validationMessage = "Сначала закройте дочерний редактор.";
+            return;
+        }
+        if (!IsCurrent(decision) || decision.Snapshot != Snapshot())
+        {
+            _validationMessage = "Ввод изменился во время подтверждения. Проверьте текущие данные.";
+            return;
+        }
+        if (decision.Scope.HasOperation)
+        {
+            var evidence = await decision.Registration.ReadCloseOperationEvidenceAsync(decision.Scope.Revision, decision.Token);
+            if (evidence is null)
+                throw new InvalidOperationException("Не удалось прочитать сведения о предыдущей операции.");
+            await Service.ImportEquipmentLegacyEvidenceAsync(decision.Model.Id, decision.EmployeeId, [evidence], decision.Token);
+        }
+        else if (_draftOperationUnresolved || _legacyConfigurePending ||
+                 HasPendingPhoneSync && PendingSavedAts is null && PendingConfigure is null)
+        {
+            _validationMessage = "Исход предыдущей команды не подтверждён долговечным журналом. Сначала выполните сверку.";
+            return;
+        }
+        if (!IsCurrent(decision) || decision.Snapshot != Snapshot())
+            return;
+        _pendingMainClose = decision;
+        await FinishMainCloseAndExitAsync(exit, decision.Token);
+    }
+
+    private async Task FinishMainCloseAndExitAsync(Func<Task> exit, CancellationToken token)
+    {
+        if (_mainDraftCancelled)
+        {
+            await exit();
+            return;
+        }
+        if (_finishingMainClose || _pendingMainClose is not { } pending || !IsCurrent(pending with { Token = token }))
+            return;
+        _finishingMainClose = true;
+        try
+        {
+            if (!await pending.Registration.CloseRamIfRevisionAsync(pending.Scope.Revision, token))
+            {
+                _pendingMainClose = null;
+                _validationMessage = "Ввод изменился во время подтверждения. Проверьте текущие данные.";
+                return;
+            }
+        }
+        catch (Exception error) when (error is JSException or JSDisconnectedException or InvalidOperationException or OperationCanceledException)
+        {
+            if (IsCurrent(pending with { Token = CancellationToken.None }))
+                _validationMessage = "Не удалось удалить локальный ввод. Нажмите «Отмена», чтобы повторить закрытие.";
+            return;
+        }
+        finally
+        {
+            _finishingMainClose = false;
+        }
+
+        if (ReferenceEquals(_draftRegistration, pending.Registration))
+        {
+            _pendingMainClose = null;
+            _draftRegistration = null;
+            _mainDraftCancelled = true;
+            _validationMessage = null;
+            if (IsCurrent(pending.Version, pending.Model.Id) && !token.IsCancellationRequested)
+                await exit();
+        }
+    }
+
+    private async Task CloseAfterMainSaveAsync()
+    {
+        if (_mainTransition || _model is not { } model || _draftRegistration is not { } registration ||
+            CurrentUser is not { } actor)
+            return;
+        var version = _operationVersion;
+        var generation = _editorGeneration;
+        var snapshot = Snapshot();
+        var ct = _pageCts.Token;
+        _mainTransition = true;
+        try
+        {
+            var scope = await registration.ReadEditorCloseStateAsync(ct) ??
+                throw new InvalidOperationException("Не удалось прочитать состояние редактора.");
+            var decision = new MainEditorDecision(registration, scope, model, version, generation, actor.Id, snapshot, ct);
+            if (!IsCurrent(decision)) return;
+            if (snapshot != Snapshot() || HasUnsavedDraft || PreserveMainOutcome || scope.HasRaw || scope.HasOperation ||
+                HasNestedInput(scope) || _activeEditorContext is not null || _restoredEditorState is not null ||
+                _upsTestDraft is not null || _mainRawRestorePending)
+            {
+                _validationMessage = "На форме остался ввод. Проверьте данные перед закрытием.";
+                return;
+            }
+            await StartMainCloseAsync(decision, CloseAsync);
+        }
+        catch (Exception error) when (error is JSException or JSDisconnectedException or InvalidOperationException or OperationCanceledException)
+        {
+            if (IsCurrent(version, model.Id))
+                _validationMessage = "Не удалось проверить ввод перед закрытием. Форма осталась открыта.";
+        }
+        finally
+        {
+            _mainTransition = false;
+            if (!_disposed) StateHasChanged();
         }
     }
 

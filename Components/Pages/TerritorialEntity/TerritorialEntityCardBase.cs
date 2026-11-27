@@ -39,6 +39,9 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     private readonly Dictionary<string, Task> _pendingDraftWork = new(StringComparer.Ordinal);
     private ClayDraftRegistration? _registration;
     private string? _registrationKey;
+    private Guid _ramEditorInstance = Guid.NewGuid();
+    private bool _ramClosePending;
+    private long _ramCloseRevision;
     private TState? _draftOriginal;
     private DraftRowVersion? _freshVersion;
     private DraftRowVersion? _originalVersion;
@@ -58,7 +61,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     private bool _applyingRaw;
     private bool _disposed;
     private bool _loadPending;
-    private bool _navigationApproved;
+    private string? _approvedNavigationTarget;
     private string? _routeKey;
 
     [Inject] protected DbManager Db { get; set; } = null!;
@@ -80,10 +83,10 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected bool Loading { get; private set; } = true;
     protected bool StorageBlocked { get; private set; }
     protected bool ConfirmedCleanupPending => _confirmedCleanupRevision.HasValue;
-    protected bool CanRefresh => !Busy && !Loading && (!StorageBlocked || _restoreIncomplete || ConfirmedCleanupPending ||
+    protected bool CanRefresh => !Busy && !Loading && !_ramClosePending && (!StorageBlocked || _restoreIncomplete || ConfirmedCleanupPending ||
         _storageRetryRequired || _unresolvedOperation is not null || _baselineConflict && Editable && Clean is not null && MergeFields.Count > 0);
-    protected bool DraftInputSuppressed => Loading || Busy || ConfirmedCleanupPending || _initialStorageFailed;
-    protected bool CanCommit => !Loading && !Busy && CanRegisterDraft && !_restoreRaw && !_restoreIncomplete && !_applyingRaw && !StorageBlocked && _registration is not null;
+    protected bool DraftInputSuppressed => Loading || Busy || ConfirmedCleanupPending || _initialStorageFailed || _ramClosePending;
+    protected bool CanCommit => !Loading && !Busy && !_ramClosePending && CanRegisterDraft && !_restoreRaw && !_restoreIncomplete && !_applyingRaw && !StorageBlocked && _registration is not null;
     protected string? Message { get; set; }
     protected IReadOnlyList<string> Validation { get; set; } = [];
     protected CancellationToken Lifetime => _lifetime.Token;
@@ -96,6 +99,17 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected abstract bool Editable { get; }
     protected virtual bool CanRegisterDraft => Editable;
     protected virtual bool CanReadMissingDraft => false;
+
+    /// <summary>Открывает временный черновик после переноса неподтверждённых попыток в серверный журнал.</summary>
+    protected virtual bool UsesRamDraft => false;
+
+    /// <summary>Ключ поиска старых попыток. В режиме создания он может объединять несколько исходных областей.</summary>
+    protected virtual string LegacyEvidenceEntityKey => EntityKey;
+
+    /// <summary>Передаёт проверенную проекцию старых попыток в серверный журнал конкретной формы.</summary>
+    protected virtual Task ImportLegacyEvidenceAsync(Employee actor, string entityKey,
+        IReadOnlyList<ClayLegacyDraftOperationEvidence> evidence, CancellationToken token) =>
+        evidence.Count == 0 ? Task.CompletedTask : throw new InvalidOperationException("Прежние попытки ещё не перенесены.");
 
     /// <summary>Редактор предоставляет свежее чтение для безопасных команд отмены и обновления.</summary>
     protected virtual bool SupportsEditorCancellation => false;
@@ -123,6 +137,14 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected virtual Task<CompareRead> ReadForComparisonAsync(TState proposed, Employee actor, CancellationToken token) =>
         Task.FromResult(new CompareRead(null));
 
+    /// <summary>Читает серверный исход точной попытки после проверки прав на текущую карточку.</summary>
+    protected virtual Task<InventoryOperationReceipt?> ReadVerifiedReceiptAsync(
+        string kind, Guid attemptId, TState? original, TState proposed, Employee actor, CancellationToken token) =>
+        Task.FromResult<InventoryOperationReceipt?>(null);
+
+    /// <summary>Разрешает завершать прежнюю операцию только после проверки серверного результата.</summary>
+    protected virtual bool RequiresVerifiedWriteReceipt => false;
+
     private sealed record CardWriteReceipt(string AttemptId, long Revision, int ResultId);
 
     /// <summary>Получает действие для точного результата подтверждённой операции.</summary>
@@ -131,7 +153,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     /// <summary>Меняет маршрут после подтверждённой и завершённой записи.</summary>
     protected void NavigateAfterConfirmedWrite(string uri)
     {
-        _navigationApproved = true;
+        _approvedNavigationTarget = Navigation.ToAbsoluteUri(uri).AbsoluteUri;
         Navigation.NavigateTo(uri, replace: true);
     }
 
@@ -168,6 +190,9 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         if (string.Equals(_routeKey, RouteKey, StringComparison.Ordinal)) return;
         _routeKey = RouteKey;
         EditorGeneration++;
+        _ramEditorInstance = Guid.NewGuid();
+        _ramClosePending = false;
+        _ramCloseRevision = 0;
         _routeLoad?.Cancel();
         _routeLoad?.Dispose();
         _routeLoad = CancellationTokenSource.CreateLinkedTokenSource(Lifetime);
@@ -323,17 +348,43 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     protected async Task CancelAsync()
     {
         if (Busy) return;
+        if (_ramClosePending)
+        {
+            await CloseAsync();
+            return;
+        }
         if (SupportsEditorCancellation && !ConfirmedCleanupPending && _unresolvedOperation is null)
         {
             await CancelEditorAsync();
             return;
         }
         var token = _routeLoad?.Token ?? Lifetime;
+        var generation = EditorGeneration;
+        var ramRegistration = UsesRamDraft ? _registration : null;
+        ClayDraftEditorScopeState? ramScope = null;
+        if (ramRegistration is not null)
+        {
+            try { ramScope = await ramRegistration.ReadEditorScopeAsync(DraftScope, token); }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+            catch (Exception error) when (error is JSException or InvalidOperationException)
+            {
+                Message = "Не удалось проверить состояние ввода. Форма осталась открытой.";
+                return;
+            }
+            if (!IsCurrentEditor(ramRegistration, generation, token) || ramScope is null) return;
+        }
         if (ConfirmedCleanupPending &&
             !await ConfirmAsync("Закрытие формы", "База подтвердила операцию. Закрыть форму?")) return;
-        if ((Dirty || _restoreRaw || _restoreIncomplete || _applyingRaw) &&
+        if ((Dirty || ramScope?.HasRaw == true || _restoreRaw || _restoreIncomplete || _applyingRaw) &&
             !await ConfirmAsync("Закрытие формы", "Закрыть форму без сохранения изменений?")) return;
         if (token.IsCancellationRequested) return;
+        if (ramRegistration is not null && ramScope is not null)
+        {
+            if (IsCurrentEditor(ramRegistration, generation, token) &&
+                await TryCloseRamDraftAsync(ramRegistration, ramScope.Revision, token))
+                await CloseAsync();
+            return;
+        }
         if (!Loading && _registration is { } registration && !StorageBlocked)
         {
             Busy = true;
@@ -411,12 +462,19 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
                 return;
             }
 
-            if (!await registration.ReplaceEditorScopeAsync(DraftScope, scope.Revision, null, token))
+            if (UsesRamDraft)
             {
-                if (!token.IsCancellationRequested) Message = "Ввод изменился. Подтвердите отмену ещё раз.";
-                return;
+                if (!await TryCloseRamDraftAsync(registration, scope.Revision, token)) return;
             }
-            if (!IsCurrentEditor(registration, currentGeneration, token)) return;
+            else
+            {
+                if (!await registration.ReplaceEditorScopeAsync(DraftScope, scope.Revision, null, token))
+                {
+                    if (!token.IsCancellationRequested) Message = "Ввод изменился. Подтвердите отмену ещё раз.";
+                    return;
+                }
+                if (!IsCurrentEditor(registration, currentGeneration, token)) return;
+            }
             EditorGeneration++;
             Draft = Clean = _draftOriginal = null;
             Validation = [];
@@ -522,11 +580,18 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
 
     protected async Task BeforeNavigationAsync(LocationChangingContext context)
     {
-        if (_navigationApproved)
+        var approved = string.Equals(_approvedNavigationTarget,
+            Navigation.ToAbsoluteUri(context.TargetLocation).AbsoluteUri, StringComparison.Ordinal);
+        _approvedNavigationTarget = null;
+        if (UsesRamDraft && _registration is { } registration)
         {
-            _navigationApproved = false;
+            using var request = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken, Lifetime);
+            if ((Busy && !approved) || !await TryCloseRamForExitAsync(registration, request.Token, confirmDirty: !approved))
+                context.PreventNavigation();
             return;
         }
+
+        if (approved) return;
         if (Busy)
         {
             context.PreventNavigation();
@@ -535,11 +600,82 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         if (!Dirty) return;
         context.PreventNavigation();
         if (!await ConfirmAsync("Закрытие формы", "Покинуть форму с несохранёнными изменениями?")) return;
-        _navigationApproved = true;
+        _approvedNavigationTarget = Navigation.ToAbsoluteUri(context.TargetLocation).AbsoluteUri;
         Navigation.NavigateTo(context.TargetLocation);
     }
 
-    protected Task CloseAsync() => JS.InvokeVoidAsync("clayModelEquipmentForm.close", Lifetime).AsTask();
+    /// <summary>Закрывает окно после подтверждённого удаления временного черновика.</summary>
+    protected async Task CloseAsync()
+    {
+        if (UsesRamDraft && _registration is { } registration &&
+            !await TryCloseRamForExitAsync(registration, _routeLoad?.Token ?? Lifetime, confirmDirty: false))
+            return;
+
+        await JS.InvokeVoidAsync("clayModelEquipmentForm.close", Lifetime);
+    }
+
+    private async Task<bool> TryCloseRamForExitAsync(ClayDraftRegistration registration, CancellationToken token, bool confirmDirty)
+    {
+        if (_ramClosePending)
+            return await TryCloseRamDraftAsync(registration, _ramCloseRevision, token);
+
+        var generation = EditorGeneration;
+        try
+        {
+            var scope = await registration.ReadEditorScopeAsync(DraftScope, token);
+            if (!IsCurrentEditor(registration, generation, token)) return false;
+            if (Dirty || HasEditorTransientChanges || scope.HasRaw || _restoreRaw || _restoreIncomplete || _applyingRaw)
+            {
+                if (!confirmDirty)
+                {
+                    Message = "Форма осталась открытой. Новый ввод сохранён.";
+                    return false;
+                }
+                if (!await ConfirmAsync("Закрытие формы", "Покинуть форму с несохранёнными изменениями?"))
+                    return false;
+            }
+            return IsCurrentEditor(registration, generation, token) &&
+                await TryCloseRamDraftAsync(registration, scope.Revision, token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return false; }
+        catch (Exception e) when (e is JSException or InvalidOperationException)
+        {
+            if (!token.IsCancellationRequested)
+                Message = "Не удалось проверить состояние ввода. Форма осталась открытой.";
+            return false;
+        }
+    }
+
+    private async Task<bool> TryCloseRamDraftAsync(ClayDraftRegistration registration, long revision, CancellationToken token)
+    {
+        _ramClosePending = true;
+        _ramCloseRevision = revision;
+        try
+        {
+            if (!await registration.CloseRamIfRevisionAsync(revision, token))
+            {
+                _ramClosePending = false;
+                _ramCloseRevision = 0;
+                Message = "Ввод изменился. Повторите закрытие после проверки.";
+                return false;
+            }
+            if (!ReferenceEquals(_registration, registration)) return false;
+
+            _registration = null;
+            _registrationKey = null;
+            _ramEditorInstance = Guid.NewGuid();
+            _ramClosePending = false;
+            _ramCloseRevision = 0;
+            return !token.IsCancellationRequested;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return false; }
+        catch (Exception e) when (e is JSException or InvalidOperationException)
+        {
+            Message = "Не удалось удалить временные данные. Повторите закрытие.";
+            return false;
+        }
+    }
+
     protected async Task RefreshOpenerAsync()
     {
         try { await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", Lifetime); }
@@ -560,7 +696,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     }
 
     protected async Task<bool> ExecuteWriteAsync(string operation, Func<string?, Task> action,
-        Func<int>? readConfirmedId = null)
+        Func<int>? readConfirmedId = null, Guid? serverAttemptId = null)
     {
         if (!CanCommit || _registration is not { } registration) return false;
         var token = _routeLoad?.Token ?? Lifetime;
@@ -588,10 +724,11 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
             if (!Current()) return false;
             var originalIntent = _draftOriginal is null ? null : ForBusinessIntent(_draftOriginal);
             var intentData = JsonSerializer.Serialize(new DraftSnapshot(originalIntent, ForBusinessIntent(Draft!), _originalVersion));
-            beginningAttemptId = Guid.NewGuid().ToString("N");
+            beginningAttemptId = (serverAttemptId ?? Guid.NewGuid()).ToString("N");
             attempt = await registration.BeginOperationAsync(
                 new ClayDraftOperationIntent(operation, intentData, [DraftScope], beginningAttemptId), Lifetime);
-            if (readConfirmedId is not null && (attempt.AttemptId != beginningAttemptId || attempt.Kind != operation ||
+            if ((readConfirmedId is not null || serverAttemptId is not null) &&
+                (attempt.AttemptId != beginningAttemptId || attempt.Kind != operation ||
                 attempt.Data != intentData || attempt.Status != ClayDraftOperationStatus.Running ||
                 attempt.Scopes.Count != 1 || !attempt.Scopes.Any(scope => scope.Name == DraftScope)))
             {
@@ -612,6 +749,9 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
                 _confirmedWriteReceipt = new CardWriteReceipt(attempt.AttemptId, attempt.Revision, readConfirmedId());
                 await PersistConfirmedReceiptAsync(registration, _confirmedWriteReceipt);
             }
+            else
+                await registration.RecordConfirmedOperationAsync(attempt.Revision, Lifetime);
+            if (token.IsCancellationRequested || !ReferenceEquals(registration, _registration)) return false;
             await registration.CommitOperationAsync(attempt.Revision, cancellationToken: Lifetime);
             await ClearConfirmedReceiptAsync(registration);
             return true;
@@ -846,6 +986,9 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
                 return;
             }
 
+            if (await ApplyVerifiedReceiptAsync(operation, snapshot.Original, proposed, actor, token))
+                return;
+
             var deleting = operation.Kind.EndsWith("delete", StringComparison.Ordinal);
             var current = await ReadForComparisonAsync(deleting && snapshot.Original is { } before ? before : proposed, actor, token);
             token.ThrowIfCancellationRequested();
@@ -868,6 +1011,63 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         finally { Busy = false; }
+    }
+
+    private async Task<bool> ApplyVerifiedReceiptAsync(ClayDraftOperation operation, TState? original, TState proposed,
+        Employee actor, CancellationToken token)
+    {
+        if (_registration is not { } registration || _registrationKey != EntityKey ||
+            operation.Scopes is not [{ Name: DraftScope }] ||
+            !Guid.TryParse(operation.AttemptId, out var attemptId) || attemptId == Guid.Empty)
+            return false;
+
+        var generation = EditorGeneration;
+        bool Current() => IsCurrentEditor(registration, generation, token) && CurrentUser?.Id == actor.Id &&
+            _registrationKey == EntityKey && ReferenceEquals(_unresolvedOperation, operation);
+
+        var receipt = await ReadVerifiedReceiptAsync(operation.Kind, attemptId, original, proposed, actor, token);
+        if (!Current()) return true;
+        if (receipt is null || receipt.AttemptId != attemptId)
+            return false;
+
+        if (receipt.State == InventoryOperationState.Confirmed)
+        {
+            await registration.RecordConfirmedOperationAsync(operation.Revision, token);
+            if (!Current()) return true;
+            await registration.CommitOperationAsync(operation.Revision, cancellationToken: token);
+            if (!Current()) return true;
+
+            Func<Task>? complete = null;
+            if (RequiresVerifiedWriteReceipt && receipt.ResultEntityId is { } resultId &&
+                RestoreConfirmedResult(operation.Kind, resultId) is { } candidate)
+            {
+                var scope = await registration.ReadEditorScopeAsync(DraftScope, token);
+                if (!Current()) return true;
+                if (!scope.HasRaw && !scope.HasOperation && !_restoreIncomplete && StatesEqual(Draft, proposed))
+                    complete = candidate;
+            }
+
+            _unresolvedOperation = null;
+            _baselineConflict = StorageBlocked = complete is null;
+            Message = complete is null
+                ? "База подтвердила запись. Нажмите «Обновить», чтобы сверить карточку с текущим вводом."
+                : null;
+            if (complete is not null) await complete();
+            return true;
+        }
+
+        if (receipt.State != InventoryOperationState.Rejected ||
+            operation.Status == ClayDraftOperationStatus.Confirmed)
+            return false;
+
+        await registration.RejectOperationAsync(operation.Revision, token);
+        if (Current())
+        {
+            _unresolvedOperation = null;
+            StorageBlocked = _baselineConflict || _readOnlyDraft || _restoreIncomplete;
+            Message = "База подтвердила отказ. Введённые значения сохранены.";
+        }
+        return true;
     }
 
     protected Task AfterDraftCleanupAsync(Func<Task> action)
@@ -913,6 +1113,9 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         {
             if (_confirmedWriteReceipt is { } receipt)
                 await PersistConfirmedReceiptAsync(registration, receipt);
+            else
+                await registration.RecordConfirmedOperationAsync(revision, Lifetime);
+            if (token.IsCancellationRequested || !ReferenceEquals(registration, _registration)) return;
             await registration.CommitOperationAsync(revision, cancellationToken: Lifetime);
             if (token.IsCancellationRequested || !ReferenceEquals(registration, _registration)) return;
             await ClearConfirmedReceiptAsync(registration);
@@ -937,6 +1140,15 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
     {
         _draftOriginal = Clean = Draft = value;
         _originalVersion = _freshVersion = ReadDraftRowVersion();
+    }
+
+    /// <summary>Принимает сохранённую версию, сохраняя более поздние введённые значения.</summary>
+    protected void AcceptCommitted(TState submitted, TState accepted)
+    {
+        var later = Draft is { } current && !StatesEqual(current, submitted) ? current : null;
+        Accept(accepted);
+        if (later is not null)
+            Draft = later;
     }
 
     private async Task LoadAsync(CancellationToken token)
@@ -996,16 +1208,30 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
 
     private async Task RegisterDraftAsync(CancellationToken token)
     {
-        if (CurrentUser is null) return;
-        var user = CurrentUser.Id.ToString(CultureInfo.InvariantCulture);
+        if (CurrentUser is not { } actor) return;
+        var user = actor.Id.ToString(CultureInfo.InvariantCulture);
         var key = EntityKey;
+        var legacyKey = LegacyEvidenceEntityKey;
         var root = DraftRootSelector;
         var canWrite = CanRegisterDraft;
+        if (UsesRamDraft && !canWrite) return;
+        var instance = _ramEditorInstance;
+        bool Current() => !_disposed && !token.IsCancellationRequested && CurrentUser?.Id == actor.Id &&
+            _ramEditorInstance == instance && EntityKey == key && CanRegisterDraft;
         await WithDraftKeyAsync(key, async () =>
         {
             token.ThrowIfCancellationRequested();
-            // JS может уже выделить блокировку. Получаем handle даже после смены маршрута.
-            var registration = await DraftStore.RegisterHandleAsync(FormKey, key, user, 1, root, Lifetime);
+            var registration = UsesRamDraft
+                ? await DraftStore.TransferLegacyAndRegisterRamAsync(FormKey, legacyKey, user, async (evidence, transferToken) =>
+                {
+                    await ImportLegacyEvidenceAsync(actor, key, evidence, transferToken);
+                    transferToken.ThrowIfCancellationRequested();
+                    if (!Current())
+                        throw new InvalidOperationException("Контекст редактора изменился во время переноса.");
+                    // Получаем выделенный JS handle даже при смене маршрута.
+                    return await DraftStore.RegisterRamHandleAsync(FormKey, key, user, 1, root, instance, Lifetime);
+                }, Current, token)
+                : await DraftStore.RegisterHandleAsync(FormKey, key, user, 1, root, Lifetime);
             if (token.IsCancellationRequested ||
                 (Clean is null || !canWrite) && !registration.Restore.HasDraft && registration.Restore.Operation is null)
             {
@@ -1067,7 +1293,7 @@ public abstract class TerritorialEntityCardBase<TState> : ComponentBase, IAsyncD
         }
         if (restore.OperationSnapshot is { } pending)
         {
-            if (pending.Status == ClayDraftOperationStatus.Confirmed &&
+            if (!RequiresVerifiedWriteReceipt && pending.Status == ClayDraftOperationStatus.Confirmed &&
                 restore.TypedScopes?.TryGetValue(ConfirmedResultScope, out var resultJson) == true &&
                 JsonSerializer.Deserialize<CardWriteReceipt>(resultJson) is { } receipt &&
                 receipt.AttemptId == pending.AttemptId && receipt.Revision == pending.Revision &&

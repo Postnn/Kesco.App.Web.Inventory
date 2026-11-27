@@ -119,7 +119,9 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
     private bool ShowComputer => _selectedType?.HasComputerCharacteristics > 0;
     private bool ShowNetwork => _selectedType?.MacAddressCount > 0;
     private bool ShowPhoneTemplate => _model?.Id > 0 && _selectedType?.Id == (int)ТипыОборудования.IP_телефон && _isDutyEngineer;
-    private bool IsModified => _loaded && _model is not null && _editorOriginal is not null && _editorOriginal.Fields != ModelEditorFields.From(_model);
+    private ModelEditorFields? EditorComparisonFields => _knownWrite?.SubmittedFields ?? _editorOriginal?.Fields;
+    private bool IsModified => _loaded && _model is not null &&
+        EditorComparisonFields is { } baseline && baseline != ModelEditorFields.From(_model);
     private bool CanSave => IsModified && _canEdit && !_loading && !_saving && !WriteBlocked;
     private bool ModelFocusReady => !_disposed && _loaded && _canEdit && !_loading && !_saving &&
         !WriteBlocked && _loadedKey == CurrentLoadKey;
@@ -155,9 +157,7 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
 
         if (_journalBusy) return;
 
-        if (_localRecovery is { RestoreRaw: true } recovery)
-            await RestoreReadOnlyRawAsync(recovery);
-        else if (_restoreRawRequested)
+        if (_restoreRawRequested)
             await RestoreRawInputAsync();
         else
             await PersistEditedInputAsync();
@@ -166,6 +166,7 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
     private async Task LoadCurrentAsync(int id, int initialTypeId)
     {
         var version = ++_loadVersion;
+        _modelDraftClosed = false;
         _loading = true;
         _loaded = false;
         _notFound = false;
@@ -180,22 +181,18 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
         await Task.Delay(100);
         try
         {
-            await ResetReadOnlyRecoveryAsync();
             await ResetJournalAsync();
             await LoadDataAsync(id, initialTypeId, version);
             if (_disposed || version != _loadVersion)
                 return;
             if (_loaded && _canEdit)
                 await InitializeJournalAsync(id, initialTypeId, version);
-            else if (id > 0 && (_notFound || _loaded))
-                await LoadReadOnlyRecoveryAsync(id, version);
         }
         catch (OperationCanceledException) when (_disposed || version != _loadVersion) { }
         catch (Microsoft.Data.SqlClient.SqlException error) when (error.Number == 229 &&
             id > 0 && !_disposed && version == _loadVersion && !_loaded)
         {
             _validationMessage = "Недостаточно прав для чтения модели оборудования.";
-            await LoadReadOnlyRecoveryAsync(id, version);
         }
         catch (Microsoft.Data.SqlClient.SqlException)
         {
@@ -212,7 +209,7 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
         }
     }
 
-    private async Task LoadDataAsync(int id, int initialTypeId, int version, Func<Task<bool>>? canPublish = null,
+    private async Task LoadDataAsync(int id, int initialTypeId, int version, Func<EquipmentModel, Employee?, Task<bool>>? canPublish = null,
         Func<EquipmentModel, Employee?, Task<bool>>? acceptReset = null, CancellationToken? cancellationToken = null)
     {
         var token = cancellationToken ?? _pageCts.Token;
@@ -220,8 +217,6 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
             ? await EquipmentModel.GetForEditAsync(Db, id, token)
             : new EquipmentModel { EquipmentTypeId = initialTypeId };
         if (version != _loadVersion || _disposed)
-            return;
-        if (canPublish is not null && (!await canPublish() || _disposed || version != _loadVersion))
             return;
         if (model is null)
         {
@@ -244,7 +239,7 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
         if (version != _loadVersion || _disposed)
             return;
 
-        if (canPublish is not null && (!await canPublish() || _disposed || version != _loadVersion))
+        if (canPublish is not null && (!await canPublish(model, actor) || _disposed || version != _loadVersion))
             return;
         if (acceptReset is not null && (model.Id != id || model.EquipmentTypeId > 0 && type?.Id != model.EquipmentTypeId ||
             !await acceptReset(model, actor) || _disposed || version != _loadVersion || token.IsCancellationRequested ||
@@ -416,11 +411,13 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
             var principal = await ReadPrincipalAsync();
             if (!IsCurrentSave(model, version))
                 return;
+            var submittedFields = ModelEditorFields.From(model);
             var fingerprint = EditableFingerprint(model);
             var input = SerializeEditorDraft(model);
-            var id = await model.SaveAsync(Db, principal, actor.Id, baseline, confirmedTypeId, _pageCts.Token,
+            var serverAttemptId = Guid.NewGuid();
+            var id = await model.SaveAsync(Db, principal, actor.Id, serverAttemptId, baseline, confirmedTypeId, _pageCts.Token,
                 new EquipmentModelWriteBoundary(
-                    ct => PrepareJournalAsync(registration, model.Id, baseline?.ChangedAt, fingerprint, input, actor.Id, ct),
+                    ct => PrepareJournalAsync(registration, model.Id, baseline?.ChangedAt, fingerprint, input, actor.Id, serverAttemptId, ct),
                     () =>
                     {
                         if (!IsCurrentSave(model, version) || route != (Id, InitialTypeId))
@@ -428,7 +425,10 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
                         dispatched = true;
                     },
                     () => noEffect = true));
-            _knownWrite = new KnownModelWrite(_writeAttempt!.AttemptId, id, fingerprint);
+            _knownWrite = new KnownModelWrite(serverAttemptId.ToString("N"), id, fingerprint)
+            {
+                SubmittedFields = submittedFields,
+            };
             await FinishKnownJournalAsync(registration);
             if (!IsCurrentSave(model, version))
                 return;
@@ -443,8 +443,17 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
             }
             if (closeAfterSave)
             {
-                await CloseAsync();
-                await ClearConfirmedReceiptAsync(registration);
+                var scope = await registration.ReadEditorScopeAsync(EditorScope, _pageCts.Token);
+                if (!IsCurrentSave(model, version))
+                    return;
+                if (scope.HasRaw || EditableFingerprint(model) != fingerprint)
+                {
+                    _lateInput = true;
+                    UpdateJournalNotice();
+                    return;
+                }
+                if (await TryDeleteModelDraftAsync(registration, scope.Revision, version, _pageCts.Token))
+                    await CloseAsync();
                 return;
             }
             await PublishSavedModelAsync(id, registration);
@@ -459,6 +468,8 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
             }
             else
             {
+                if (ex is InventoryOperationPendingException or InventoryOperationReservationException)
+                    _serverPending = true;
                 await MarkWriteFailureAsync(registration, dispatched, noEffect);
                 if (IsCurrentSave(model, version) && (!dispatched || noEffect))
                     _validationMessage = ex is Microsoft.Data.SqlClient.SqlException
@@ -477,13 +488,27 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
 
     private async Task PublishSavedModelAsync(int id, ClayDraftRegistration registration)
     {
-        var fingerprint = _model is { } original ? EditableFingerprint(original) : null;
+        var fingerprint = _knownWrite is { SubmittedFields: not null } receipt ? receipt.Fingerprint
+            : _model is { } original ? EditableFingerprint(original) : null;
         var version = ++_loadVersion;
+        var canonicalTransition = Id != id;
+        var published = false;
         _notFound = false;
-        await LoadDataAsync(id, 0, version, async () =>
+        await LoadDataAsync(id, 0, version, async (fresh, employee) =>
         {
-            _lateInput = fingerprint is not null && await HasLaterEditorInputAsync(registration, fingerprint);
-            return !_lateInput;
+            if (fresh.Id != id || employee?.Id != _journalEmployeeId ||
+                !employee.HasRole(Роли.Специалист_по_инвентаризации_оборудования))
+                return false;
+            var scope = await registration.ReadEditorScopeAsync(EditorScope, _pageCts.Token);
+            if (!IsEditorContextCurrent(registration, version))
+                return false;
+
+            _lateInput = scope.HasRaw || _model is { } live && EditableFingerprint(live) != fingerprint;
+            if (_lateInput)
+                return false;
+            published = !canonicalTransition ||
+                await TryDeleteModelDraftAsync(registration, scope.Revision, version, _pageCts.Token);
+            return published;
         });
         if (_disposed || version != _loadVersion)
             return;
@@ -492,12 +517,10 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
             UpdateJournalNotice();
             return;
         }
-        if (_notFound || _model?.Id != id || !_loaded)
+        if (_notFound || !published || _model?.Id != id || !_loaded)
             throw new InvalidOperationException("Не удалось прочитать сохранённую модель.");
-        await ClearConfirmedReceiptAsync(registration);
-        if (Id != id)
+        if (canonicalTransition)
         {
-            await ResetJournalAsync();
             await InitializeJournalAsync(id, 0, version);
             if (_disposed || version != _loadVersion)
                 return;
@@ -505,6 +528,8 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
             _loadedKey = (id, 0);
             Navigation.NavigateTo($"/Equipment/ModelEquipmentForm?id={id}", replace: true);
         }
+        else
+            await ClearConfirmedReceiptAsync(registration);
     }
 
     private bool IsCurrentSave(EquipmentModel model, int version) =>
@@ -520,11 +545,6 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
     {
         if (_loading || _saving || _journalBusy || _disposed)
             return;
-        if (_localRecovery is { RawPending: true } recovery)
-        {
-            await RestoreReadOnlyRawAsync(recovery);
-            return;
-        }
         if (_model is null)
             return;
         if (_rawPending && _knownWrite is null)
@@ -540,7 +560,7 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
         if (_journalNotice is not null)
         {
             await RetryJournalAsync();
-            if (_knownWrite is not null && _writeAttempt is null && !_lateInput)
+            if (_knownWrite is not null && _writeAttempt is null)
                 await ReadKnownWriteAsync();
             return;
         }
@@ -560,7 +580,12 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
     private async Task CloseAsync()
     {
         _allowNavigation = true;
-        await JS.InvokeVoidAsync("clayModelEquipmentForm.close");
+        try { await JS.InvokeVoidAsync("clayModelEquipmentForm.close"); }
+        catch (Exception error) when (IsJournalError(error))
+        {
+            _allowNavigation = false;
+            _inputNotice = "Не удалось закрыть окно. Повторите закрытие.";
+        }
     }
 
     private async Task<bool> ConfirmAsync(string title, string message)
@@ -639,7 +664,6 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Dispose();
-        await ResetReadOnlyRecoveryAsync();
         if (!_saving)
             await ResetJournalAsync();
     }

@@ -17,6 +17,7 @@ public partial class EquipmentIns
     private const string CreationKind = "equipment.create";
     private const string RawPendingMessage = "Часть ввода ожидает восстановления. Нажмите «Обновить» для повтора.";
     private readonly string _creationRoot = $"equipment-ins-draft-{Guid.NewGuid():N}";
+    private Guid _creationInstance = Guid.NewGuid();
     private readonly ClayToolbarButtonOptions _openCreatedOptions = new() { Text = "Открыть созданное оборудование" };
     private readonly ClayToolbarButtonOptions _newCreationOptions = new() { Text = "Начать другое создание" };
 
@@ -26,6 +27,14 @@ public partial class EquipmentIns
     private ClayDraftRegistration? _creationDraft;
     private ClayDraftOperation? _creationAttempt;
     private CreationReceipt? _creationResult;
+    private CreationReceipt? _unverifiedCreationReceipt;
+    private bool _creationServerChecked;
+    private bool _creationServerPending;
+    private int? _priorCreatedEquipmentId;
+    private string? _creationServerNotice;
+    private string? _creationSentSnapshot;
+    private string? _creationLateEditorPayload;
+    private bool _retainedCreationInput;
     private bool _receiptPersisted;
     private bool _creationUncertain;
     private bool _creationRawPending;
@@ -41,41 +50,101 @@ public partial class EquipmentIns
     private bool _editorRestored;
     private bool _editorSaveFailed;
 
-    private bool CreationCleanupPending => _creationResult is not null && (!_receiptPersisted || _creationAttempt is not null);
+    private bool CreationCleanupPending => _creationResult is not null &&
+        (!_receiptPersisted || _creationAttempt is not null || _creationLateEditorPayload is not null);
     private bool CreationBlocked => _creationDraft is null || _creationUncertain || CreationCleanupPending ||
-        _creationResult is null && CreationRecoveryBlocked ||
+        _pendingCreationClose is not null || _creationDraftClosed ||
+        _creationResult is null && (!_creationServerChecked || _creationServerPending) ||
         _notSentCreationId is not null || _creationRawPending || _applyingCreationRaw ||
         _creationResult is null && (_sourceUnavailable || _draftNeedsReview || _editorSaveFailed);
 
-    private async Task AttachCreationDraftAsync(Employee? actor, int version)
+    private async Task AttachCreationDraftAsync(Employee? actor, string? principal, int version)
     {
-        if (actor is null) return;
+        if (actor?.HasRole(Роли.Специалист_по_инвентаризации_оборудования) != true) return;
         var source = SourceKey;
+        var ct = _pageCts.Token;
+        bool Current() => !ct.IsCancellationRequested && IsCurrent(version) && CurrentUser?.Id == actor.Id && SourceKey == source;
         try
         {
-            var registration = await Drafts.RegisterHandleAsync("equipment-ins", source,
-                actor.Id.ToString(CultureInfo.InvariantCulture), 1, "." + _creationRoot);
-            if (!IsCurrent(version))
+            var userKey = actor.Id.ToString(CultureInfo.InvariantCulture);
+            var registration = await Drafts.TransferLegacyAndRegisterRamAsync("equipment-ins", "new", userKey,
+                async (evidence, token) =>
+                {
+                    if (!Current()) throw new OperationCanceledException(token);
+                    await Service.ImportLegacyCreationOperationsAsync(principal, actor.Id, ParseLegacyCreationEvidence(evidence), token);
+                    if (!Current()) throw new OperationCanceledException(token);
+                    await ReadCreationServerStateAsync(actor, principal, version, token);
+                    if (!Current()) throw new OperationCanceledException(token);
+
+                    return await Drafts.RegisterRamHandleAsync("equipment-ins", source, userKey,
+                        1, "." + _creationRoot, _creationInstance, token);
+                }, Current, ct);
+            if (!Current())
             {
                 await registration.DisposeAsync();
                 return;
             }
 
             _creationDraft = registration;
-            await ScanCreationRecoveryAsync(registration, version, _pageCts.Token, actor);
             if (IsCurrentCreationInput(registration, version))
-                RestoreCreationState(actor, registration.Restore, source);
+                await RestoreCreationStateAsync(actor, registration, source, version);
+            if (!registration.Restore.HasDraft && IsCurrentCreationInput(registration, version))
+                await ReadPriorCreationAsync(registration, actor, principal, source, version, ct);
         }
-        catch (Exception error) when (error is JSException or InvalidOperationException or JsonException)
+        catch (OperationCanceledException) when (!Current()) { }
+        catch (Exception error) when (error is JSException or InvalidOperationException or JsonException or UnauthorizedAccessException
+            or Microsoft.Data.SqlClient.SqlException or TimeoutException)
         {
             if (!IsCurrent(version)) return;
-            _creationUncertain = true;
-            _validationMessage = "Не удалось проверить защищённый черновик. Создание заблокировано.";
+            if (_creationDraft is not null) _creationUncertain = true;
+            _creationServerChecked = false;
+            _validationMessage = "Не удалось проверить защищённый черновик. Нажмите «Обновить», чтобы повторить проверку.";
         }
     }
 
-    private void RestoreCreationState(Employee actor, ClayDraftRestore restore, string source)
+    private async Task ReadPriorCreationAsync(ClayDraftRegistration registration, Employee actor, string? principal,
+        string source, int version, CancellationToken ct)
     {
+        if (!_creationServerChecked || _creationServerPending || _creationAttempt is not null || _creationResult is not null)
+            return;
+
+        bool Current() => !ct.IsCancellationRequested && IsCurrentCreationInput(registration, version) &&
+            CurrentUser?.Id == actor.Id && SourceKey == source && _creationAttempt is null && _creationResult is null;
+        try
+        {
+            var receipt = await Service.ReadLatestCreationReceiptAsync(principal, actor.Id, ct);
+            if (Current())
+                _priorCreatedEquipmentId = receipt is { State: InventoryOperationState.Confirmed, ResultEntityId: > 0 }
+                    ? receipt.ResultEntityId : null;
+        }
+        catch (Exception error) when (error is System.Data.Common.DbException or TimeoutException or
+            InvalidOperationException or UnauthorizedAccessException or OperationCanceledException)
+        {
+            if (Current())
+                _priorCreatedEquipmentId = null;
+        }
+    }
+
+    private static IReadOnlyCollection<Guid> ParseLegacyCreationEvidence(IReadOnlyList<ClayLegacyDraftOperationEvidence> evidence)
+    {
+        var attempts = new List<Guid>(evidence.Count);
+        foreach (var item in evidence)
+        {
+            var source = item.Data.Split(':');
+            if (item.Kind != CreationKind || source.Length != 2 ||
+                !int.TryParse(source[0], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var copyId) ||
+                !int.TryParse(source[1], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var typeId) ||
+                item.Data != FormattableString.Invariant($"{copyId}:{typeId}") ||
+                !Guid.TryParseExact(item.AttemptId, "N", out var attemptId) || attemptId == Guid.Empty)
+                throw new InvalidOperationException("Не удалось подтвердить прежнюю попытку создания.");
+            attempts.Add(attemptId);
+        }
+        return attempts;
+    }
+
+    private async Task RestoreCreationStateAsync(Employee actor, ClayDraftRegistration registration, string source, int version)
+    {
+        var restore = registration.Restore;
         _creationAttempt = restore.OperationSnapshot;
         if (restore.TypedScopes?.TryGetValue(ReceiptScope, out var stored) == true)
         {
@@ -87,19 +156,16 @@ public partial class EquipmentIns
                 return;
             }
 
-            _creationResult = receipt;
-            _receiptPersisted = true;
-            _createdEquipmentId = receipt!.EquipmentId;
-            _validationMessage = CreationCleanupPending
-                ? $"Оборудование №{receipt.EquipmentId} создано. Для проверки результата нажмите «Обновить»."
-                : $"Оборудование №{receipt.EquipmentId} создано.";
-            return;
+            _unverifiedCreationReceipt = receipt;
         }
 
-        if (_creationAttempt is not null)
+        if (_creationAttempt is not null || _unverifiedCreationReceipt is not null)
         {
+            _retainedCreationInput = restore.TypedScopes?.ContainsKey(CreationScope) == true;
             SetCreationUnknown();
-            return;
+            await ReadExactCreationReceiptAsync(registration, version);
+            if (!IsCurrentCreationInput(registration, version) || _creationUncertain || _creationResult is not null)
+                return;
         }
 
         if (!actor.HasRole(Роли.Специалист_по_инвентаризации_оборудования))
@@ -126,6 +192,86 @@ public partial class EquipmentIns
         }
 
         _restoreCreationRaw = _creationRawPending = restore.HasDraft;
+    }
+
+    private async Task<bool> ReadCreationServerStateAsync(Employee actor, string? principal, int version, CancellationToken ct)
+    {
+        bool Current() => IsCurrent(version) && CurrentUser?.Id == actor.Id;
+        if (!Current()) return false;
+        _creationServerChecked = false;
+        try
+        {
+            var pending = await Service.ReadCreationPendingAsync(principal, actor.Id, ct);
+            if (!Current()) return false;
+            _creationServerPending = pending;
+            _creationServerChecked = true;
+            _creationServerNotice = pending
+                ? "В серверном журнале есть незавершённое создание оборудования. Повтор заблокирован."
+                : null;
+            return !pending;
+        }
+        catch (Exception error) when (error is InvalidOperationException or UnauthorizedAccessException
+            or Microsoft.Data.SqlClient.SqlException or TimeoutException)
+        {
+            if (Current()) _creationServerNotice = "Не удалось проверить серверный журнал создания. Повтор заблокирован.";
+            return false;
+        }
+    }
+
+    private async Task<bool> ReadExactCreationReceiptAsync(ClayDraftRegistration registration, int version)
+    {
+        var operation = _creationAttempt;
+        var localReceipt = _unverifiedCreationReceipt;
+        var id = operation?.AttemptId ?? localReceipt?.AttemptId;
+        var revision = operation?.Revision ?? localReceipt?.Revision;
+        if (operation is not null && operation.Kind != CreationKind ||
+            revision is not > 0 || !Guid.TryParseExact(id, "N", out var attemptId) || attemptId == Guid.Empty ||
+            CurrentUser is not { } actor || !actor.HasRole(Роли.Специалист_по_инвентаризации_оборудования))
+            return false;
+
+        var source = SourceKey;
+        bool Current() => IsCurrentCreationInput(registration, version) && CurrentUser?.Id == actor.Id &&
+            SourceKey == source && ReferenceEquals(operation, _creationAttempt);
+        try
+        {
+            var principal = await PrincipalAsync();
+            if (!Current()) return false;
+            var receipt = await Service.ReadCreationReceiptAsync(principal, actor.Id, attemptId, _pageCts.Token);
+            if (!Current() || receipt?.AttemptId != attemptId) return false;
+            if (receipt.State == InventoryOperationState.Rejected && operation is not null && localReceipt is null)
+            {
+                await registration.RejectOperationAsync(operation.Revision, _pageCts.Token);
+                if (!Current()) return false;
+                _creationAttempt = null;
+                _creationUncertain = false;
+                _validationMessage = "Сервер подтвердил отказ создания. Введённые данные сохранены.";
+                return true;
+            }
+            if (receipt.State != InventoryOperationState.Confirmed || receipt.ResultEntityId is not > 0)
+                return false;
+
+            var proven = new CreationReceipt(source, attemptId.ToString("N"), revision.Value, receipt.ResultEntityId.Value);
+            _creationResult = proven;
+            _receiptPersisted = proven == localReceipt;
+            _unverifiedCreationReceipt = null;
+            _creationUncertain = false;
+            _createdEquipmentId = proven.EquipmentId;
+            if (_model.Id == 0 && _creationSentSnapshot is { } submitted && Snapshot() != submitted)
+            {
+                _creationLateEditorPayload = BuildEditorDraft(_model, _originalSnapshot);
+                _retainedCreationInput = true;
+            }
+            _validationMessage = CreationCleanupPending
+                ? $"Оборудование №{proven.EquipmentId} создано. Для проверки результата нажмите «Обновить»."
+                : $"Оборудование №{proven.EquipmentId} создано.";
+            return true;
+        }
+        catch (Exception error) when (error is InvalidOperationException or UnauthorizedAccessException or JSException
+            or Microsoft.Data.SqlClient.SqlException or TimeoutException)
+        {
+            if (Current()) SetCreationUnknown();
+            return false;
+        }
     }
 
     private static bool MatchesReceipt(CreationReceipt? receipt, string source, ClayDraftOperation? operation) =>
@@ -191,7 +337,8 @@ public partial class EquipmentIns
             }
         }
     }
-    private async Task BeginCreationAsync(EquipmentEntity request, ClayDraftRegistration registration, int version, CancellationToken ct)
+    private async Task BeginCreationAsync(EquipmentEntity request, ClayDraftRegistration registration, int version,
+        Guid serverAttemptId, CancellationToken ct)
     {
         var live = Snapshot();
         var snapshot = BuildEditorDraft(request, _originalSnapshot);
@@ -207,7 +354,8 @@ public partial class EquipmentIns
         });
 
         if (_creationAutosave is { } pending) await pending;
-        await ScanCreationRecoveryAsync(registration, version, ct);
+        if (CurrentUser is not { } actor || !await ReadCreationServerStateAsync(actor, await PrincipalAsync(), version, ct))
+            throw new InvalidOperationException("Сервер не подтвердил возможность создания оборудования.");
         if (CreationBlocked || !IsCurrent(version) || !ReferenceEquals(_creationDraft, registration))
             throw new InvalidOperationException("Не удалось подготовить актуальный черновик создания.");
         await registration.EnsureCommandAllowedAsync(ct);
@@ -221,7 +369,7 @@ public partial class EquipmentIns
         if (!IsCurrent(version) || !ReferenceEquals(_creationDraft, registration))
             throw new OperationCanceledException();
 
-        var attemptId = Guid.NewGuid().ToString("N");
+        var attemptId = serverAttemptId.ToString("N");
         _notSentCreationId = attemptId;
         var attempt = await registration.BeginOperationAsync(
             new ClayDraftOperationIntent(CreationKind, data, [CreationScope], attemptId, BlockOtherDraftOperations: true), ct);
@@ -229,7 +377,7 @@ public partial class EquipmentIns
             throw new OperationCanceledException();
         if (attempt.AttemptId != attemptId || attempt.Kind != CreationKind || attempt.Revision <= 0 ||
             attempt.Status != ClayDraftOperationStatus.Running || attempt.Data != data ||
-            attempt.Scopes.Any(scope => scope.Name != CreationScope))
+            attempt.Scopes is not [{ Name: CreationScope }])
             throw new InvalidOperationException("Хранилище не подтвердило неизменяемую попытку создания.");
         if (!await VerifyCreationRawReadyAsync(registration, version, ct) || live != Snapshot())
         {
@@ -238,6 +386,7 @@ public partial class EquipmentIns
             throw new InvalidOperationException("Ввод изменился до отправки. Создание не начато.");
         }
         _creationAttempt = attempt;
+        _creationSentSnapshot = live;
         _notSentCreationId = null;
     }
 
@@ -258,12 +407,26 @@ public partial class EquipmentIns
 
     private async Task FinishCreationAsync(ClayDraftRegistration registration, CancellationToken ct)
     {
+        var version = _operationVersion;
         if (_creationResult is not { } receipt)
             return;
+        if (_creationAttempt is { } marker && (marker.AttemptId != receipt.AttemptId || marker.Revision != receipt.Revision))
+            throw new InvalidOperationException("Квитанция не соответствует текущей попытке создания.");
 
+        if (_creationLateEditorPayload is { } later)
+        {
+            var revision = await registration.SaveTypedScopeAsync(CreationScope, later, ct);
+            if (!IsCurrentCreationInput(registration, version)) return;
+            if (revision <= 0)
+                throw new InvalidOperationException("Более поздний ввод ещё не подтверждён.");
+            _creationLateEditorPayload = null;
+        }
         if (!_receiptPersisted)
         {
-            await registration.SaveTypedScopeAsync(ReceiptScope, JsonSerializer.Serialize(receipt), ct);
+            var revision = await registration.SaveTypedScopeAsync(ReceiptScope, JsonSerializer.Serialize(receipt), ct);
+            if (!IsCurrentCreationInput(registration, version)) return;
+            if (revision <= 0)
+                throw new InvalidOperationException("Хранилище не подтвердило сохранение квитанции создания.");
             _receiptPersisted = true;
         }
 
@@ -272,9 +435,11 @@ public partial class EquipmentIns
             if (attempt.Status != ClayDraftOperationStatus.Confirmed)
             {
                 await registration.RecordConfirmedOperationAsync(attempt.Revision, ct);
+                if (!IsCurrentCreationInput(registration, version)) return;
                 _creationAttempt = attempt with { Status = ClayDraftOperationStatus.Confirmed };
             }
             await registration.CommitOperationAsync(attempt.Revision, cancellationToken: ct);
+            if (!IsCurrentCreationInput(registration, version)) return;
             _creationAttempt = null;
         }
         _validationMessage = $"Оборудование №{receipt.EquipmentId} создано.";
@@ -285,6 +450,7 @@ public partial class EquipmentIns
         if (_saving || _creationDraft is not { } registration)
             return;
         _saving = true;
+        var version = _operationVersion;
         try
         {
             if (_notSentCreationId is { } notSent)
@@ -299,7 +465,9 @@ public partial class EquipmentIns
                 else
                     _validationMessage = "Команда не отправлена. Можно повторить создание.";
             }
-            else
+            if (_creationResult is null && (_creationAttempt is not null || _unverifiedCreationReceipt is not null))
+                await ReadExactCreationReceiptAsync(registration, version);
+            if (IsCurrentCreationInput(registration, version) && _creationResult is not null)
                 await FinishCreationAsync(registration, _pageCts.Token);
         }
         catch (Exception error) when (error is JSException or InvalidOperationException)
@@ -312,7 +480,7 @@ public partial class EquipmentIns
         finally { _saving = false; }
     }
 
-    private void OpenCreatedEquipment()
+    private async Task OpenCreatedEquipment()
     {
         if (_saving || CreationBlocked || _createdEquipmentId is not { } id)
             return;
@@ -320,13 +488,20 @@ public partial class EquipmentIns
         try
         {
             _createdEditUrl ??= BuildEditUrl(GetConfiguredUrl("URI_equipment_form"), id);
-            _allowNavigation = true;
-            Navigation.NavigateTo(_createdEditUrl);
+            var url = _createdEditUrl;
+            await PrepareEditorExitAsync(() => NavigateToCreatedAsync(url), _pageCts.Token);
         }
         catch (InvalidOperationException error)
         {
             _validationMessage = $"Оборудование №{id} создано. {error.Message}";
         }
+    }
+
+    private Task NavigateToCreatedAsync(string url)
+    {
+        _allowNavigation = true;
+        Navigation.NavigateTo(url);
+        return Task.CompletedTask;
     }
 
     private async Task BeginAnotherCreationAsync()

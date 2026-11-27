@@ -1,4 +1,13 @@
+using Clayzor.Lib.Web.Controls.Services;
+
 namespace Kesco.App.Web.Inventory.Components.Pages.Equipment.Details;
+
+internal sealed record EquipmentEditorCancellation(
+    Func<Task<ClayDraftEditorScopeState?>> ReadScope,
+    Func<Task<string?>> ReadFreshState,
+    Func<long, string, string?, Func<Task<bool>>, Task<bool>> Replace,
+    bool IsNew,
+    Action? DiscardFreshState);
 
 /// <summary>Состояние готовности редактора к восстановлению и сохранению.</summary>
 public enum EquipmentEditorReadiness
@@ -61,6 +70,8 @@ public sealed class EquipmentEditorContext
     public bool IsCurrent => _valid && _isCurrent();
 
     internal Microsoft.AspNetCore.Components.ComponentBase? Component { get; set; }
+    internal EquipmentEditorCancellation? Cancellation { get; init; }
+    internal bool CancellationAccepted { get; set; }
 
     /// <summary>Запрещает дальнейшие команды и отложенные уведомления закрытого редактора.</summary>
     public void Invalidate() => _valid = false;

@@ -13,39 +13,43 @@
         <ClaySelect @key="_selectVersion" @ref="_select" TItem="NumPoolOption" TValue="int?" DataSource="_source" Options="_selectOptions"
                     ValueSelector="@(item => item.Id)" TextSelector="@(item => item.Name)" SelectedItemChanged="AddAsync" />
     }
-    <ClayGrid TEntity="NumPoolLink" Options="_options" Items="Links">
-        <ColumnDefs><ClayColumnDef ColumnId="1" SqlName="Name" DisplayName="@Label" /></ColumnDefs>
-        <Columns>
-            <ClayColumn TEntity="NumPoolLink" ColumnId="1">
-                <CellTemplate>
-                    <MudTooltip>
-                        <TooltipContent>
-                            <span>Изменил: @(context.Item.ChangedByName ?? $"#{context.Item.ChangedBy}") <ClayLocalTime Value="context.Item.ChangedAt" /></span>
-                        </TooltipContent>
-                        <ChildContent>
-                            @if (GetLink?.Invoke(context.Item.Id) is { } url)
-                            {
-                                <a href="@url" @onclick:preventDefault @onclick="@(() => OpenLink.InvokeAsync(url))">@Display(context.Item)</a>
-                            }
-                            else { @Display(context.Item) }
-                        </ChildContent>
-                    </MudTooltip>
-                </CellTemplate>
-            </ClayColumn>
-        </Columns>
-        <RowActions Context="item">
-            @if (Editable)
-            {
-                <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить связь" OnClick="@(() => Remove.InvokeAsync(item.Id))" />
-            }
-        </RowActions>
-    </ClayGrid>
+    <ClayFieldChange Changed="LinksChanged">
+        <ClayGrid TEntity="NumPoolLink" Options="_options" Items="Links">
+            <ColumnDefs><ClayColumnDef ColumnId="1" SqlName="Name" DisplayName="@Label" /></ColumnDefs>
+            <Columns>
+                <ClayColumn TEntity="NumPoolLink" ColumnId="1">
+                    <CellTemplate>
+                        <MudTooltip>
+                            <TooltipContent>
+                                <span>Изменил: @(context.Item.ChangedByName ?? $"#{context.Item.ChangedBy}") <ClayLocalTime Value="context.Item.ChangedAt" /></span>
+                            </TooltipContent>
+                            <ChildContent>
+                                @if (GetLink?.Invoke(context.Item.Id) is { } url)
+                                {
+                                    <a href="@url" @onclick:preventDefault @onclick="@(() => OpenLink.InvokeAsync(url))">@Display(context.Item)</a>
+                                }
+                                else { @Display(context.Item) }
+                            </ChildContent>
+                        </MudTooltip>
+                    </CellTemplate>
+                </ClayColumn>
+            </Columns>
+            <RowActions Context="item">
+                @if (Editable)
+                {
+                    <ClayButton Icon="@Icons.Material.Filled.Delete" Text="Удалить связь" OnClick="@(() => Remove.InvokeAsync(item.Id))" />
+                }
+            </RowActions>
+        </ClayGrid>
+    </ClayFieldChange>
 </section>
 
 @code {
     [Parameter, EditorRequired] public NumPoolKind Kind { get; set; }
     [Parameter, EditorRequired] public string Label { get; set; } = "";
     [Parameter, EditorRequired] public IReadOnlyList<NumPoolLink> Links { get; set; } = [];
+    /// <summary>Связи принятого исходного состояния карточки.</summary>
+    [Parameter] public IReadOnlyList<NumPoolLink>? BaselineLinks { get; set; }
     [Parameter] public bool Editable { get; set; }
     [Parameter] public bool Private { get; set; }
     [Parameter] public EventCallback<bool> PrivateChanged { get; set; }
@@ -53,6 +57,10 @@
     [Parameter] public EventCallback<int> Remove { get; set; }
     [Parameter] public Func<int, string?>? GetLink { get; set; }
     [Parameter] public EventCallback<string> OpenLink { get; set; }
+
+    private bool LinksChanged => Editable && BaselineLinks is { } baseline &&
+        !baseline.Select(link => (link.Id, link.Private)).ToHashSet()
+            .SetEquals(Links.Select(link => (link.Id, link.Private)));
 
     private ClayGridOptions _options = null!;
     private NumPoolSelectDataSource _source = null!;
@@ -69,7 +77,7 @@
         _options = new()
         {
             Id = $"numpool-{Kind.ToString().ToLowerInvariant()}", AutoHeight = true, ShowAddButton = false, ShowPagination = false,
-            ShowToolbar = false, PageSize = int.MaxValue, AllowSorting = false, EnableValueFilter = false, AllowColumnReorder = false,
+            Class = "clay-collection-field", ShowToolbar = false, PageSize = int.MaxValue, AllowSorting = false, EnableValueFilter = false, AllowColumnReorder = false,
         };
     }
 

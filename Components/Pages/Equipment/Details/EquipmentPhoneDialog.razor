@@ -9,25 +9,28 @@
     <TitleContent>Срок возврата телефонного номера</TitleContent>
     <DialogContent>
         <ClayFormActions Form="@OwnerHelp" />
-        @if (TelDraft is null)
-        {
-            @RawRestoreNotice
-            @Fields
-        }
-        else
-        {
-            <div class="@TelDraft.RootClass" data-draft-scope="@TelDraft.Scope" inert="@TelDraft.Busy">
+        @EditorPresence
+        <ClayEditorFocusScope Label="Срок возврата телефонного номера" Ready="@(IsEditorCurrent() && !_saving && !_saveBlocked && !RawRestoreBlocked && (TelDraft is null || TelDraft.CanApply))" AdvanceOnEnter="true">
+            @if (TelDraft is null)
+            {
+                @RawRestoreNotice
                 @Fields
-            </div>
-        }
-        @if (TelDraft?.Error is { } message)
-        {
-            <MudAlert Severity="Severity.Error">@message</MudAlert>
-        }
+            }
+            else
+            {
+                <div @key="TelDraft.InputVersion" class="@TelDraft.RootClass" data-draft-scope="@TelDraft.Scope" inert="@TelDraft.Busy">
+                    @Fields
+                </div>
+            }
+            @if (TelDraft?.Error is { } message)
+            {
+                <MudAlert Severity="Severity.Error">@message</MudAlert>
+            }
+        </ClayEditorFocusScope>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelEditorAsync" Disabled="@(TelDraft?.Busy == true)" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(TelDraft is null ? _saving || _saveBlocked || RawRestoreBlocked : !TelDraft.CanApply)" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelEditorAsync" Disabled="@(TelDraft is null ? _saving || CancelPending : TelDraft.Busy)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(TelDraft is null ? _saving || CancelPending || _saveBlocked || RawRestoreBlocked : !TelDraft.CanApply)" />
     </DialogActions>
 </MudDialog>
 
@@ -58,11 +61,17 @@
     private RenderFragment Fields => @<text>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Срок возврата:</span>
-            <ClayDatePicker @bind-Value="ReturnDate" Options="_dateOptions" />
+            <ClayFieldChange Changed="@(TelDraft is null ? IsFieldChanged(nameof(ReturnDate), ReturnDate) : ReturnDate?.Date != TelDraft.Original.ReturnDate?.Date)"
+                             RawBaseline="@(TelDraft is { } dateDraft ? dateDraft.Original.ReturnDate?.ToString(_dateOptions.DateFormat) ?? string.Empty : OpeningFieldDate(nameof(ReturnDate), _dateOptions.DateFormat))">
+                <ClayDatePicker @bind-Value="ReturnDate" Options="_dateOptions" />
+            </ClayFieldChange>
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Примечание:</span>
-            <ClayTextBox @bind-Value="Notes" Options="_notesOptions" />
+            <ClayFieldChange Changed="@(TelDraft is null ? IsFieldChanged(nameof(Notes), Notes) : (Notes ?? string.Empty) != (TelDraft.Original.Notes ?? string.Empty))"
+                             RawBaseline="@(TelDraft is { } notesDraft ? notesDraft.Original.Notes ?? string.Empty : OpeningFieldText(nameof(Notes)))">
+                <ClayTextBox @bind-Value="Notes" Options="_notesOptions" />
+            </ClayFieldChange>
         </div>
     </text>;
 
@@ -86,7 +95,18 @@
 
     private async Task CancelEditorAsync()
     {
-        if (TelDraft is null || await TelDraft.CancelAsync())
+        if (TelDraft is null)
+        {
+            await CancelScopedAsync();
+            return;
+        }
+        if (await TelDraft.CancelAsync(
+            () => new EquipmentPhoneReturnResult(ReturnDate, Notes ?? string.Empty),
+            value =>
+            {
+                ReturnDate = value.ReturnDate;
+                Notes = value.Notes;
+            }, StateHasChanged))
             Cancel();
     }
 

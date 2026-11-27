@@ -12,19 +12,19 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
 
 public partial class EquipmentIns
 {
+    private CreationCloseRequest? _pendingCreationClose;
+    private bool _creationDraftClosed;
+
     private bool PreservesCreationOutcome =>
         _creationUncertain || _creationAttempt is not null || _notSentCreationId is not null || _creationResult is not null;
 
     private bool HasUnacceptedCreationInput =>
-        IsModified || _draftNeedsReview || _creationRawPending || _restoreCreationRaw || _editorSaveFailed;
+        IsModified || _draftNeedsReview || _creationRawPending || _restoreCreationRaw || _editorSaveFailed || _retainedCreationInput;
 
-    private bool ConfirmExternalExit => _saving || HasUnacceptedCreationInput || PreservesCreationOutcome;
+    private bool ConfirmExternalExit => !_creationDraftClosed &&
+        (_saving || HasUnacceptedCreationInput || PreservesCreationOutcome || _pendingCreationClose is not null);
 
-    private async Task CancelAsync()
-    {
-        if (!_disposed && await PrepareEditorExitAsync(_pageCts.Token))
-            await CloseAsync();
-    }
+    private Task CancelAsync() => PrepareEditorExitAsync(CloseAsync, _pageCts.Token);
 
     private async Task BeforeInternalNavigationAsync(LocationChangingContext context)
     {
@@ -36,31 +36,41 @@ public partial class EquipmentIns
             return;
         }
 
+        if (_creationDraftClosed && _creationDraft is null) return;
         using var request = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken, _pageCts.Token);
-        if (!await PrepareEditorExitAsync(request.Token))
-            context.PreventNavigation();
+        var approved = false;
+        var awaitingDecision = true;
+        await PrepareEditorExitAsync(() =>
+        {
+            if (awaitingDecision)
+                approved = true;
+            else
+            {
+                _allowNavigation = true;
+                Navigation.NavigateTo(context.TargetLocation);
+            }
+            return Task.CompletedTask;
+        }, request.Token);
+        awaitingDecision = false;
+        if (!approved) context.PreventNavigation();
     }
 
-    private async Task<bool> PrepareEditorExitAsync(CancellationToken token)
+    private async Task PrepareEditorExitAsync(Func<Task> exit, CancellationToken token)
     {
-        if (_disposed || _loading || _saving || _applyingCreationRaw || token.IsCancellationRequested)
-            return false;
+        if (_disposed || _loading || _saving || _applyingCreationRaw || _pendingCreationClose is not null || token.IsCancellationRequested)
+            return;
 
-        if (_creationResult is not null && !_receiptPersisted)
+        if (_creationResult is not null && (!_receiptPersisted || _creationLateEditorPayload is not null))
         {
             _validationMessage = "Нажмите «Обновить», чтобы проверить результат создания оборудования.";
-            return false;
+            return;
         }
-
-        // The durable attempt and its accepted input remain available after leaving the editor.
-        if (PreservesCreationOutcome)
-            return true;
 
         if (_creationDraft is not { } registration)
         {
-            if (!HasUnacceptedCreationInput) return true;
-            _validationMessage = "Хранилище черновика недоступно. Ввод остался на форме.";
-            return false;
+            if (_creationDraftClosed || !HasUnacceptedCreationInput) await exit();
+            else _validationMessage = "Хранилище черновика недоступно. Ввод остался на форме.";
+            return;
         }
 
         _saving = true;
@@ -73,12 +83,15 @@ public partial class EquipmentIns
         {
             if (_creationAutosave is { } pending)
                 await pending;
-            if (!Current()) return false;
+            if (!Current()) return;
 
             var scope = await registration.ReadEditorScopeAsync(CreationScope, token);
-            if (!Current()) return false;
-            if (scope.HasOperation) return true;
-            if (!HasUnacceptedCreationInput && !scope.HasRaw) return true;
+            if (!Current()) return;
+            if (!HasUnacceptedCreationInput && !scope.HasRaw)
+            {
+                await CloseCreationDraftAsync(registration, scope.Revision, exit, token);
+                return;
+            }
 
             var copyId = QueryInt("copyId");
             var initialType = QueryInt("codetype");
@@ -92,51 +105,55 @@ public partial class EquipmentIns
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
                 dialog.Close(DialogResult.Cancel());
-                return false;
+                return;
             }
             if (!Current() || result is not { Canceled: false, Data: ClayEditorCancelChoice choice } ||
                 choice == ClayEditorCancelChoice.Continue)
-                return false;
+                return;
 
             CreationReset? fresh = null;
             if (choice == ClayEditorCancelChoice.ResetAndStay)
             {
+                if (scope.HasOperation || PreservesCreationOutcome)
+                {
+                    _validationMessage = "Сначала проверьте исход предыдущего создания.";
+                    return;
+                }
                 fresh = await ReadCreationResetAsync(copyId, initialType, token);
-                if (!Current()) return false;
+                if (!Current()) return;
                 if (fresh is null)
                 {
                     _validationMessage = "Не удалось подтвердить доступ или прочитать исходное оборудование. Черновик сохранён.";
-                    return false;
+                    return;
                 }
             }
 
-            var original = fresh is null ? null : Snapshot(fresh.Model, fresh.Date, TimeSpan.Zero);
-            var replacement = fresh is null ? null :
-                System.Text.Json.JsonSerializer.Serialize(new CreationEditorDraft(source, original!, fresh.Model, fresh.Date, TimeSpan.Zero));
-            if (live != Snapshot() || !await registration.ReplaceEditorScopeAsync(CreationScope, scope.Revision, replacement, token))
+            if (live != Snapshot())
             {
                 if (Current()) _validationMessage = "Ввод изменился. Подтвердите отмену ещё раз.";
-                return false;
+                return;
             }
-
-            if (!Current()) return false;
-            InvalidateCreationSelections();
-            if (fresh is not null)
+            if (fresh is null)
             {
-                ApplyCreationReset(fresh, original!, replacement!, copyId > 0);
-                return false;
+                await CloseCreationDraftAsync(registration, scope.Revision, exit, token);
+                return;
             }
 
-            _canEdit = false;
-            UpdateOptions();
-            _validationMessage = "Ввод отменён. Если окно осталось открытым, закройте его или обновите страницу.";
-            return true;
+            var original = Snapshot(fresh.Model, fresh.Date, TimeSpan.Zero);
+            var replacement = System.Text.Json.JsonSerializer.Serialize(
+                new CreationEditorDraft(source, original, fresh.Model, fresh.Date, TimeSpan.Zero));
+            if (!await registration.ReplaceEditorScopeAsync(CreationScope, scope.Revision, replacement, token) || !Current())
+            {
+                if (Current()) _validationMessage = "Ввод изменился. Подтвердите отмену ещё раз.";
+                return;
+            }
+            InvalidateCreationSelections();
+            ApplyCreationReset(fresh, original, replacement, copyId > 0);
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { return false; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception error) when (error is JSException or InvalidOperationException or SqlException or TimeoutException)
         {
             if (Current()) _validationMessage = "Не удалось завершить отмену. Черновик сохранён.";
-            return false;
         }
         finally
         {
@@ -144,6 +161,55 @@ public partial class EquipmentIns
             if (!_disposed) await InvokeAsync(StateHasChanged);
         }
     }
+
+    private Task CloseCreationDraftAsync(ClayDraftRegistration registration, long revision, Func<Task> exit, CancellationToken ct)
+    {
+        if (_pendingCreationClose is not null)
+            throw new InvalidOperationException("Сначала подтвердите прежнее удаление черновика.");
+        var pending = new CreationCloseRequest(registration, revision, _operationVersion, SourceKey, exit);
+        _pendingCreationClose = pending;
+        return RetryCreationCloseAsync(pending, ct);
+    }
+
+    private async Task RetryCreationCloseAsync(CreationCloseRequest pending, CancellationToken ct)
+    {
+        bool Current() => IsCurrentCreationInput(pending.Registration, pending.Version) && SourceKey == pending.Source &&
+            ReferenceEquals(_pendingCreationClose, pending);
+        if (!Current()) return;
+        try
+        {
+            if (!await pending.Registration.CloseRamIfRevisionAsync(pending.Revision, ct))
+            {
+                if (Current())
+                {
+                    _pendingCreationClose = null;
+                    _validationMessage = "Ввод изменился перед закрытием. Подтвердите закрытие ещё раз.";
+                }
+                return;
+            }
+        }
+        catch (Exception error) when (error is JSException or InvalidOperationException or OperationCanceledException or TimeoutException)
+        {
+            if (Current()) _validationMessage = "Удаление черновика не подтверждено. Нажмите «Обновить», чтобы повторить закрытие.";
+            return;
+        }
+        if (!Current()) return;
+        _pendingCreationClose = null;
+        _creationDraft = null;
+        _creationDraftClosed = true;
+        _creationInstance = Guid.NewGuid();
+        _canEdit = false;
+        _saving = false;
+        InvalidateCreationSelections();
+        UpdateOptions();
+        try { await pending.Exit(); }
+        catch (Exception error) when (error is JSException or InvalidOperationException or OperationCanceledException)
+        {
+            if (!_disposed) _validationMessage = "Черновик удалён. Не удалось завершить переход или закрыть окно.";
+        }
+    }
+
+    private sealed record CreationCloseRequest(ClayDraftRegistration Registration, long Revision, int Version, string Source, Func<Task> Exit);
 
     private async Task<CreationReset?> ReadCreationResetAsync(int copyId, int initialType, CancellationToken token)
     {

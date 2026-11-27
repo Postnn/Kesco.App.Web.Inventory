@@ -120,7 +120,8 @@ public partial class Net
 
     private async Task TrackNetInputAsync()
     {
-        if (!_loaded || _loading || _cancellingInput || _operationContext is not { } context || !IsCurrentInput(context))
+        if (!_loaded || _loading || _cancellingInput || _pendingNetClose is not null ||
+            _operationContext is not { } context || !IsCurrentInput(context))
             return;
         if (!context.InputRestoreStarted && !_saving)
         {
@@ -143,7 +144,7 @@ public partial class Net
             await context.InputGate.WaitAsync(_pageCts.Token);
             acquired = true;
             if (!IsCurrentInput(context) || _model is not { } model || context.InputBaseline is null ||
-                !context.InputReady || context.InputConflict || _loading || _cancellingInput)
+                !context.InputReady || context.InputConflict || _loading || _cancellingInput || _pendingNetClose is not null)
                 return 0;
             var current = Snapshot(model);
             if (submitted is not null && submitted != current)
@@ -225,18 +226,18 @@ public partial class Net
         ReferenceEquals(_operationContext, context) && Id == context.PortId &&
         CurrentUser?.Id == context.EmployeeId && _model?.Id == context.PortId;
 
-    private async Task<bool> HasLateRawAsync(NetOperationContext context)
+    private async Task<ClayDraftEditorScopeState?> ReadNetCloseScopeAsync(NetOperationContext context)
     {
         try
         {
             var scope = await context.Registration.ReadEditorScopeAsync(NetInputScope, _pageCts.Token);
-            return !IsCurrentInput(context) || scope.HasRaw;
+            return IsCurrentInput(context) ? scope : null;
         }
         catch (Exception ex) when (IsJournalError(ex))
         {
             if (IsCurrentInput(context))
                 _validationMessage = "Запись подтверждена. Проверка более позднего ввода недоступна, форма оставлена открытой.";
-            return true;
+            return null;
         }
     }
 

@@ -1,4 +1,7 @@
 using System.Data;
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text.Json;
 using Clayzor.Lib.DALC;
 using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.Inventory;
@@ -7,7 +10,7 @@ using Dapper;
 namespace Kesco.App.Web.Inventory.Services;
 
 /// <summary>Чтение, серверная валидация, сохранение, удаление и синхронизация телефонных номеров.</summary>
-public class PhoneFormService
+public partial class PhoneFormService
 {
     private readonly DbManager _db;
     private const Роли WriteRole = Роли.Специалист_по_инвентаризации_оборудования;
@@ -112,30 +115,33 @@ public class PhoneFormService
     }
 
     /// <summary>Повторно выполняет локальную и серверную валидацию, затем атомарно сохраняет diff.</summary>
-    public virtual async Task<PhoneSaveResult> SaveAsync(PhoneSaveRequest request, string? windowsPrincipal, int employeeId, TelSqlBoundary? boundary = null)
+    public virtual async Task<PhoneSaveResult> SaveAsync(PhoneSaveRequest request, string? windowsPrincipal, int employeeId,
+        Guid attemptId, TelSqlBoundary? boundary = null)
     {
         await EnsureWriteAccessAsync(windowsPrincipal, employeeId, CancellationToken.None);
         var issues = PhoneFormValidator.Validate(request).ToList();
         issues.AddRange(await ValidateServerAsync(request));
         if (issues.Any(item => item.Severity == PhoneValidationSeverity.Blocking))
             return new PhoneSaveResult { PhoneId = request.Phone.Id, Issues = issues };
-        var command = PhoneSaveBuilder.Build(request);
+        var command = PhoneSaveBuilder.BuildEnlisted(request);
         if (boundary is not null)
-        {
             await boundary.Prepare();
-            await EnsureWriteAccessAsync(windowsPrincipal, employeeId, CancellationToken.None);
-            boundary.Dispatch();
+        try
+        {
+            var receipt = await TelSqlJournal.SaveAsync(_db, windowsPrincipal, employeeId, request.Phone.Id,
+                request.OriginalPhone.ChangedAtUtc, attemptId, command.Sql, command.Parameters, boundary?.Dispatch,
+                CancellationToken.None, workflowBound: boundary?.WorkflowBound == true);
+            return new PhoneSaveResult { PhoneId = receipt.ResultEntityId!.Value, Saved = true, Issues = issues };
         }
-        var id = await _db.ExecuteWriteScalarAsync<int>(command.Sql, command.Parameters);
-        if (request.Phone.Id > 0 && id == PhoneSaveBuilder.VersionConflictStatus)
+        catch (TelSqlRejectedException error) when (error.VersionConflict)
+        {
             return new PhoneSaveResult
             {
                 PhoneId = request.Phone.Id,
                 VersionConflict = true,
-                Issues = [new PhoneValidationIssue("OriginalPhone", "Телефонный номер уже изменён или удалён. Проверьте исходную запись и свой ввод.")],
+                Issues = [new PhoneValidationIssue("OriginalPhone", error.Message)],
             };
-        if (id <= 0) throw new InvalidOperationException("База данных не вернула идентификатор телефонного номера.");
-        return new PhoneSaveResult { PhoneId = id, Saved = true, Issues = issues };
+        }
     }
 
     /// <summary>Выполняет параметризованные проверки номера, типа, порта, зависимостей и legacy-предупреждений.</summary>
@@ -305,23 +311,102 @@ public class PhoneFormService
     }
 
     /// <summary>Проверяет зависимости и удаляет телефон со связями в короткой транзакции.</summary>
-    public virtual async Task DeleteAsync(int id, string? windowsPrincipal, int employeeId, TelSqlBoundary? boundary = null)
+    public virtual async Task DeleteAsync(Phone original, string? windowsPrincipal, int employeeId,
+        Guid attemptId, TelSqlBoundary? boundary = null)
     {
         await EnsureWriteAccessAsync(windowsPrincipal, employeeId, CancellationToken.None);
-        if (await _db.ExecuteScalarAsync<int>(SQLQueries.SELECT_ТелефонЗависимыеПриУдалении,
-                new { Id = id }, commandType: CommandType.Text) > 0)
-            throw new InvalidOperationException("Номер нельзя удалить: от него зависят ведомые или отображаемые номера.");
-        var sql = "SET XACT_ABORT ON; BEGIN TRY BEGIN TRANSACTION;\n" + SQLQueries.DELETE_ТелефонДляФормы +
-                  "\nCOMMIT TRANSACTION; END TRY BEGIN CATCH IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; " +
-                  "DECLARE @ErrorMessage nvarchar(4000) = ERROR_MESSAGE(), @ErrorSeverity int = ERROR_SEVERITY(), @ErrorState int = ERROR_STATE(); " +
-                  "RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState); END CATCH;";
+        if (original.Id <= 0)
+            throw new TelSqlRejectedException("Недопустимый идентификатор удаляемого телефонного номера.");
         if (boundary is not null)
-        {
             await boundary.Prepare();
-            await EnsureWriteAccessAsync(windowsPrincipal, employeeId, CancellationToken.None);
-            boundary.Dispatch();
+        await TelSqlJournal.DeleteAsync(_db, windowsPrincipal, employeeId, original, attemptId, boundary?.Dispatch,
+            CancellationToken.None, workflowBound: boundary?.WorkflowBound == true);
+    }
+
+    /// <summary>Проверяет удаление до предварительных команд АТС.</summary>
+    public virtual Task ValidateDeleteProposalAsync(Phone original, string? principal, int employeeId, CancellationToken ct) =>
+        TelSqlJournal.ValidateDeleteAsync(_db, principal, employeeId, original, ct);
+
+    /// <summary>Проверяет открытый серверный слот номера или создания.</summary>
+    public virtual Task<bool> ReadSqlPendingAsync(string? principal, int employeeId, int phoneId, CancellationToken ct) =>
+        TelSqlJournal.ReadPendingAsync(_db, principal, employeeId, phoneId, ct);
+
+    /// <summary>Читает подтверждение точной SQL-попытки без отправки записи или команд АТС.</summary>
+    public virtual Task<InventoryOperationReceipt?> ReadSqlReceiptAsync(string? principal, int employeeId, int phoneId,
+        bool deleting, Guid attemptId, CancellationToken ct) =>
+        TelSqlJournal.ReadReceiptAsync(_db, principal, employeeId, phoneId, deleting, attemptId, ct);
+
+    internal virtual Task<TelWorkflowSummary?> ReadActiveWorkflowAsync(string? principal, int employeeId, int phoneId,
+        CancellationToken ct) =>
+        TelAtsWorkflow.ReadActiveAsync(_db, principal, employeeId, phoneId, ct);
+
+    internal virtual Task ImportLegacyTelOperationsAsync(string? principal, int employeeId, int phoneId,
+        IReadOnlyCollection<(Guid AttemptId, bool Deleting)> evidence, CancellationToken ct) =>
+        TelSqlJournal.ImportLegacyOperationsAsync(_db, principal, employeeId, phoneId, evidence, ct);
+
+
+    internal virtual Task BeginWorkflowAsync(string? principal, int employeeId, Guid attemptId, int phoneId,
+        bool deleting, IReadOnlyList<PhoneSyncOperation> prePlan, CancellationToken ct) =>
+        TelAtsWorkflow.BeginAsync(_db, principal, employeeId, attemptId, phoneId, deleting,
+            prePlan.Select(FingerprintPhoneSyncStep).ToArray(), ct);
+
+    internal virtual Task MarkWorkflowSqlReadyAsync(string? principal, int employeeId, Guid attemptId,
+        IReadOnlyList<PhoneSyncOperation> postPlan, CancellationToken ct) =>
+        TelAtsWorkflow.MarkSqlReadyAsync(_db, principal, employeeId, attemptId,
+            postPlan.Select(FingerprintPhoneSyncStep).ToArray(), ct);
+
+    internal virtual Task CompleteWorkflowAsync(string? principal, int employeeId, Guid attemptId, CancellationToken ct) =>
+        TelAtsWorkflow.CompleteAsync(_db, principal, employeeId, attemptId, ct);
+
+    internal virtual Task<bool> TryAbandonWorkflowAsync(string? principal, int employeeId, Guid attemptId, CancellationToken ct) =>
+        TelAtsWorkflow.TryAbandonAsync(_db, principal, employeeId, attemptId, ct);
+
+    internal virtual async Task<PhoneSyncOperationResult> SynchronizeWorkflowStepAsync(Guid attemptId,
+        string? principal, int employeeId, int phoneId, bool beforeSql, int stepIndex, PhoneSyncOperation operation,
+        CancellationToken ct, Func<PhoneSyncOperation, Task>? prepareDispatch = null)
+    {
+        var identity = attemptId.ToString("N");
+        var assessingStep = false;
+        try
+        {
+            if (attemptId == Guid.Empty || stepIndex < 0 || phoneId <= 0 ||
+                beforeSql && operation is not { Kind: PhoneSyncKind.Xorcom, Deleting: true })
+                throw new UnauthorizedAccessException("Не удалось подтвердить контекст команды АТС.");
+
+            var (procedure, fill) = await PreparePhoneSyncAsync(phoneId, operation, ct, requireExplicitDelete: true);
+            if (prepareDispatch is not null)
+                await prepareDispatch(operation);
+            await AuthorizeWorkflowTargetAsync(principal, employeeId, phoneId, beforeSql, operation, ct);
+
+            var fingerprint = FingerprintPhoneSyncStep(operation);
+            ct.ThrowIfCancellationRequested();
+            assessingStep = true;
+            if (await TelAtsWorkflow.BeginStepAsync(_db, principal, employeeId, attemptId, phoneId,
+                    beforeSql, stepIndex, fingerprint, ct))
+            {
+                await ExecuteReturnCodeAsync(procedure, new DynamicParameters(), fill, () => ct.ThrowIfCancellationRequested());
+                await TelAtsWorkflow.ConfirmStepAsync(_db, principal, employeeId, attemptId, phoneId,
+                    beforeSql, stepIndex, fingerprint, CancellationToken.None);
+            }
+            return new PhoneSyncOperationResult(identity, operation, PhoneSyncPhase.Succeeded);
         }
-        await _db.ExecuteAsync(sql, new { Id = id }, commandType: CommandType.Text);
+        catch (Exception error) when (error is InvalidOperationException or UnauthorizedAccessException or
+            System.Data.Common.DbException or TimeoutException or OperationCanceledException or Microsoft.JSInterop.JSException)
+        {
+            if (assessingStep)
+                return new PhoneSyncOperationResult(identity, operation, PhoneSyncPhase.Unknown,
+                    "Исход команды АТС не подтверждён. Повтор заблокирован.");
+            var phase = error is UnauthorizedAccessException or InvalidOperationException
+                ? PhoneSyncPhase.Rejected : PhoneSyncPhase.NotSent;
+            return new PhoneSyncOperationResult(identity, operation, phase,
+                "Не удалось проверить цель или подготовить команду АТС. Команда не отправлена.");
+        }
+    }
+
+    private static string FingerprintPhoneSyncStep(PhoneSyncOperation operation)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new { Kind = (int)operation.Kind, operation.Key, operation.Deleting });
+        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     }
 
     /// <summary>Выполняет процедуры АТС и возвращает совместимый результат каждой операции.</summary>
@@ -365,46 +450,12 @@ public class PhoneFormService
             var dispatched = false;
             try
             {
-                async Task ExecuteDispatchedAsync(
-                    string procedure,
-                    DynamicParameters parameters,
-                    Action<DynamicParameters> fill)
-                {
-                    if (prepareDispatch is not null)
-                        await prepareDispatch(operation);
-                    if (authorize is not null)
-                        await authorize(operation);
-                    await ExecuteReturnCodeAsync(procedure, parameters, fill, () => dispatched = true);
-                }
-                switch (operation.Kind)
-                {
-                    case PhoneSyncKind.Meridian:
-                        await ExecuteDispatchedAsync(SQLQueries.SP_ТелефонСинхронизацияMeridian, new DynamicParameters(),
-                            parameters =>
-                            {
-                                parameters.Add("@ПортАТС", operation.Key);
-                                parameters.Add("@ОткрытьСоединение", 1);
-                                parameters.Add("@ЗакрытьСоединение", 1);
-                                parameters.Add("@showTrace", 2);
-                            });
-                        break;
-                    case PhoneSyncKind.Xorcom:
-                        var hasDelete = (await _db.QueryRequiredAsync<int>(SQLQueries.SELECT_ПроцедураИмеетПараметр,
-                            new { ProcedureName = SQLQueries.SP_PhoneSync_Xorcom, ParameterName = "@Удаление" }))
-                            .SingleOrDefault() > 0;
-                        await ExecuteDispatchedAsync(SQLQueries.SP_PhoneSync_Xorcom, new DynamicParameters(), parameters =>
-                        {
-                            parameters.Add("@КодТелефонногоНомера", phoneId);
-                            if (hasDelete) parameters.Add("@Удаление", operation.Deleting);
-                        });
-                        break;
-                    case PhoneSyncKind.Ccm:
-                        await ExecuteDispatchedAsync(SQLQueries.SP_PhoneSync_Ccm, new DynamicParameters(),
-                            parameters => parameters.Add("@КодОборудования", int.Parse(operation.Key)));
-                        break;
-                    default:
-                        throw new InvalidOperationException("Неизвестный вид синхронизации АТС.");
-                }
+                var (procedure, fill) = await PreparePhoneSyncAsync(phoneId, operation, CancellationToken.None);
+                if (prepareDispatch is not null)
+                    await prepareDispatch(operation);
+                if (authorize is not null)
+                    await authorize(operation);
+                await ExecuteReturnCodeAsync(procedure, new DynamicParameters(), fill, () => dispatched = true);
                 results.Add(new PhoneSyncOperationResult(attemptId, operation, PhoneSyncPhase.Succeeded));
             }
             catch (Microsoft.Data.SqlClient.SqlException ex)
@@ -423,6 +474,56 @@ public class PhoneFormService
             }
         }
         return results;
+    }
+
+    private async Task<(string Procedure, Action<DynamicParameters> Fill)> PreparePhoneSyncAsync(
+        int phoneId, PhoneSyncOperation operation, CancellationToken ct, bool requireExplicitDelete = false)
+    {
+        switch (operation.Kind)
+        {
+            case PhoneSyncKind.Meridian:
+                return (SQLQueries.SP_ТелефонСинхронизацияMeridian, parameters =>
+                {
+                    parameters.Add("@ПортАТС", operation.Key);
+                    parameters.Add("@ОткрытьСоединение", 1);
+                    parameters.Add("@ЗакрытьСоединение", 1);
+                    parameters.Add("@showTrace", 2);
+                });
+            case PhoneSyncKind.Xorcom:
+                var hasDelete = (await _db.QueryRequiredAsync<int>(SQLQueries.SELECT_ПроцедураИмеетПараметр,
+                    new { ProcedureName = SQLQueries.SP_PhoneSync_Xorcom, ParameterName = "@Удаление" }, ct)).SingleOrDefault() > 0;
+                if (requireExplicitDelete && operation.Deleting && !hasDelete)
+                    throw new InvalidOperationException("Процедура Xorcom не подтверждает возможность удаления.");
+                return (SQLQueries.SP_PhoneSync_Xorcom, parameters =>
+                {
+                    parameters.Add("@КодТелефонногоНомера", phoneId);
+                    if (hasDelete) parameters.Add("@Удаление", operation.Deleting);
+                });
+            case PhoneSyncKind.Ccm:
+                return (SQLQueries.SP_PhoneSync_Ccm, parameters => parameters.Add("@КодОборудования", int.Parse(operation.Key)));
+            default:
+                throw new InvalidOperationException("Неизвестный вид синхронизации АТС.");
+        }
+    }
+
+    private async Task AuthorizeWorkflowTargetAsync(string? principal, int employeeId, int phoneId,
+        bool beforeSql, PhoneSyncOperation operation, CancellationToken ct)
+    {
+        if (beforeSql || operation.Kind == PhoneSyncKind.Xorcom)
+        {
+            await AuthorizeTelDispatchAsync(principal, employeeId, phoneId, operation, ct);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(operation.Key) || operation.Key.Any(char.IsControl) ||
+            operation.Kind == PhoneSyncKind.Ccm && (operation.Deleting ||
+                !int.TryParse(operation.Key, NumberStyles.None, CultureInfo.InvariantCulture, out var id) || id <= 0 ||
+                id.ToString(CultureInfo.InvariantCulture) != operation.Key))
+            throw new UnauthorizedAccessException("Цель команды АТС не подтверждена.");
+
+        // Meridian и CCM могут обслуживать прежний порт или оборудование, уже снятое со связи.
+        // Их точная цель сверяется с серверным планом SQL операции в BeginStepAsync.
+        await EnsureWriteAccessAsync(principal, employeeId, ct);
     }
 
     private async Task ExecuteReturnCodeAsync(

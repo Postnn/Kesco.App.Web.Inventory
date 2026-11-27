@@ -1,4 +1,8 @@
 using System.Text.Json;
+using Clayzor.Lib.Web.Controls.Components.Form;
+using MudBlazor;
+using MudBlazor.Extensions;
+using MudBlazor.Extensions.Options;
 using Clayzor.Lib.Web.Controls.Services;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Telefon;
@@ -11,6 +15,10 @@ public sealed class TelRelationDraftSession<T> where T : class
     private readonly Func<bool> _current;
     private readonly Action<string?> _remember;
     private readonly Func<T, Task<long>> _accept;
+    private readonly Func<Task<(T Value, DateTime ChangedAtUtc)?>> _readFresh;
+    private readonly IDialogService _dialogs;
+    private readonly bool _isNew;
+    private IDialogReference? _cancelChoice;
     private string? _published;
     private bool _restoreRaw;
     private bool _triedRaw;
@@ -20,13 +28,17 @@ public sealed class TelRelationDraftSession<T> where T : class
 
     internal TelRelationDraftSession(ClayDraftRegistration registration, string scope, string rootClass,
         CancellationToken cancellation, Func<bool> current, Action<string?> remember, Func<T, Task<long>> accept,
-        string? stored, bool raw, T original, DateTime originalChangedAtUtc)
+        string? stored, bool raw, T original, DateTime originalChangedAtUtc, IDialogService dialogs,
+        Func<Task<(T Value, DateTime ChangedAtUtc)?>> readFresh, bool isNew)
     {
         _registration = registration;
         _cancellation = cancellation;
         _current = current;
         _remember = remember;
         _accept = accept;
+        _dialogs = dialogs;
+        _readFresh = readFresh;
+        _isNew = isNew;
         Scope = scope;
         RootClass = rootClass;
         Original = original;
@@ -50,10 +62,11 @@ public sealed class TelRelationDraftSession<T> where T : class
     public string RootClass { get; }
 
     internal T Initial { get; }
-    private T Original { get; }
-    private DateTime OriginalChangedAtUtc { get; }
-    internal bool Conflicted { get; }
+    internal T Original { get; private set; }
+    private DateTime OriginalChangedAtUtc { get; set; }
+    internal bool Conflicted { get; private set; }
     internal bool Busy { get; private set; }
+    internal int InputVersion { get; private set; }
     internal bool NeedsRawRestore => _restoreRaw;
     internal bool CanApply => !_closed && !Conflicted && !Busy && !_restoreRaw;
     internal string? Error { get; private set; }
@@ -129,24 +142,89 @@ public sealed class TelRelationDraftSession<T> where T : class
         finally { Busy = false; }
     }
 
-    internal async Task<bool> CancelAsync()
+    internal async Task<bool> CancelAsync(Func<T> readVisible, Action<T> applyReset, Action render)
     {
         if (_closed || !_current())
             return true;
         if (Busy)
             return false;
         Busy = true;
+        render();
         try
         {
+            var visible = JsonSerializer.Serialize(readVisible());
             var state = await _registration.ReadEditorScopeAsync(Scope, _cancellation);
-            return await ClearAsync(state.Revision);
-        }
-        catch (Exception ex) when (IsDraftError(ex))
-        {
-            Error = "Не удалось отменить черновик связи. Ввод оставлен в редакторе.";
+            if (!_current() || state.HasOperation)
+                return false;
+
+            var choice = ClayEditorCancelChoice.CloseWithoutSaving;
+            if (state.HasRaw || Conflicted || visible != JsonSerializer.Serialize(Original))
+            {
+                var parameters = new DialogParameters<ClayEditorCancelDialog>();
+                if (_isNew)
+                    parameters.Add(x => x.ResetText, "Отменить мои изменения и начать заново");
+                _cancelChoice = await _dialogs.ShowExAsync<ClayEditorCancelDialog>("Отмена изменений", parameters,
+                    new DialogOptionsEx { DragMode = MudDialogDragMode.Simple, CloseButton = true, CloseOnEscapeKey = true });
+                if (!_current())
+                    return false;
+                var result = await _cancelChoice.Result.WaitAsync(_cancellation);
+                if (!_current() || result is not { Canceled: false, Data: ClayEditorCancelChoice selected } ||
+                    selected == ClayEditorCancelChoice.Continue)
+                    return false;
+                choice = selected;
+            }
+
+            if (choice == ClayEditorCancelChoice.CloseWithoutSaving)
+                return visible == JsonSerializer.Serialize(readVisible()) && await ClearAsync(state.Revision);
+
+            var fresh = await _readFresh();
+            if (!_current())
+                return false;
+            if (fresh is not { } row)
+            {
+                Error = "Не удалось подтвердить актуальную связь. Ввод сохранён. Обновите основную форму.";
+                return false;
+            }
+
+            var replacement = JsonSerializer.Serialize(new RelationDraft(1, row.Value, row.Value, row.ChangedAtUtc));
+            if (visible != JsonSerializer.Serialize(readVisible()) ||
+                !await _registration.ReplaceEditorScopeAsync(Scope, state.Revision, replacement, _cancellation))
+            {
+                Error = "Ввод изменился. Повторите отмену.";
+                return false;
+            }
+            if (!_current())
+                return false;
+
+            ++_publishSequence;
+            Original = row.Value;
+            OriginalChangedAtUtc = row.ChangedAtUtc;
+            _published = replacement;
+            _remember(replacement);
+            _restoreRaw = _triedRaw = _autoSaveFailed = Conflicted = false;
+            Error = null;
+            applyReset(row.Value);
+            InputVersion++;
             return false;
         }
-        finally { Busy = false; }
+        catch (Exception ex) when (IsDraftError(ex) || ex is System.Data.Common.DbException or UnauthorizedAccessException or TimeoutException)
+        {
+            if (_current())
+                Error = "Не удалось завершить отмену связи. Ввод сохранён.";
+            return false;
+        }
+        finally
+        {
+            DismissCancelChoice();
+            Busy = false;
+            if (_current()) render();
+        }
+    }
+
+    internal void DismissCancelChoice()
+    {
+        _cancelChoice?.Close(DialogResult.Cancel());
+        _cancelChoice = null;
     }
 
     private async Task<bool> ClearAsync(long expectedRevision)

@@ -12,15 +12,22 @@ public static class PhoneSaveBuilder
 {
     internal const int VersionConflictStatus = -1;
     /// <summary>Создаёт транзакционный batch; при INSERT использует @@IDENTITY для всех связей.</summary>
-    public static PhoneSaveCommand Build(PhoneSaveRequest request)
+    public static PhoneSaveCommand Build(PhoneSaveRequest request) => Build(request, enlisted: false);
+
+    internal static PhoneSaveCommand BuildEnlisted(PhoneSaveRequest request) => Build(request, enlisted: true);
+
+    private static PhoneSaveCommand Build(PhoneSaveRequest request, bool enlisted)
     {
         RequireOriginalVersion(request);
         var phone = request.Phone;
         var parameters = MainParameters(phone);
         var sql = new StringBuilder();
-        sql.AppendLine("SET XACT_ABORT ON;");
-        sql.AppendLine("BEGIN TRY");
-        sql.AppendLine("    BEGIN TRANSACTION;");
+        if (!enlisted)
+        {
+            sql.AppendLine("SET XACT_ABORT ON;");
+            sql.AppendLine("BEGIN TRY");
+            sql.AppendLine("    BEGIN TRANSACTION;");
+        }
         sql.AppendLine("    DECLARE @PhoneId int = @Id;");
         if (phone.Id <= 0)
         {
@@ -31,25 +38,31 @@ public static class PhoneSaveBuilder
         {
             parameters.Add("ExpectedChangedAt", request.OriginalPhone.ChangedAtUtc, DbType.DateTime);
             parameters.Add("VersionConflictStatus", VersionConflictStatus, DbType.Int32);
-            sql.AppendLine(SQLQueries.CHECK_ТелефонИсходнаяВерсияДляСохранения);
+            sql.AppendLine(enlisted ? SQLQueries.CHECK_ТелефонИсходнаяВерсияДляСохраненияEnlisted :
+                SQLQueries.CHECK_ТелефонИсходнаяВерсияДляСохранения);
             AppendGroupDiff(sql, parameters, request.OriginalRelations.GroupMembers, request.Relations.GroupMembers);
             if (!MainEquals(request.OriginalPhone, phone))
             {
                 sql.AppendLine(SQLQueries.UPDATE_ТелефонДляФормы).AppendLine(";");
-                sql.AppendLine(SQLQueries.CHECK_ТелефонОбновленаОднаСтрока);
+                sql.AppendLine(enlisted ? SQLQueries.CHECK_ТелефонОбновленаОднаСтрокаEnlisted :
+                    SQLQueries.CHECK_ТелефонОбновленаОднаСтрока);
             }
         }
 
         AppendParallelDiff(sql, parameters, request.OriginalRelations.ParallelCalls, request.Relations.ParallelCalls);
         AppendEquipmentDiff(sql, parameters, request.OriginalRelations.Equipment, request.Relations.Equipment);
-        sql.AppendLine("    COMMIT TRANSACTION;");
+        if (!enlisted)
+            sql.AppendLine("    COMMIT TRANSACTION;");
         sql.AppendLine("    SELECT @PhoneId;");
-        sql.AppendLine("END TRY");
-        sql.AppendLine("BEGIN CATCH");
-        sql.AppendLine("    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;");
-        sql.AppendLine("    DECLARE @ErrorMessage nvarchar(4000) = ERROR_MESSAGE(), @ErrorSeverity int = ERROR_SEVERITY(), @ErrorState int = ERROR_STATE();");
-        sql.AppendLine("    RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);");
-        sql.AppendLine("END CATCH;");
+        if (!enlisted)
+        {
+            sql.AppendLine("END TRY");
+            sql.AppendLine("BEGIN CATCH");
+            sql.AppendLine("    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;");
+            sql.AppendLine("    DECLARE @ErrorMessage nvarchar(4000) = ERROR_MESSAGE(), @ErrorSeverity int = ERROR_SEVERITY(), @ErrorState int = ERROR_STATE();");
+            sql.AppendLine("    RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);");
+            sql.AppendLine("END CATCH;");
+        }
         return new PhoneSaveCommand(sql.ToString(), parameters);
     }
 

@@ -13,75 +13,90 @@
     <TitleContent>SIM-карта</TitleContent>
     <DialogContent>
         <ClayFormActions Form="InventoryFormHelp.EquipmentSim" />
-        @if (!string.IsNullOrWhiteSpace(_loadError))
-        {
-            <MudAlert Severity="Severity.Error">@_loadError</MudAlert>
-        }
-        @if (!string.IsNullOrWhiteSpace(_error))
-        {
-            <MudAlert Severity="Severity.Error">@_error</MudAlert>
-        }
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Номер телефона:</span>
-            <ClayTextBox @bind-Value="PhoneNumber" Options="_phoneOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Активация:</span>
-            <div class="equipment-ins-date">
-                <ClayDatePicker @bind-Value="ActivatedDate" Options="_activationDateOptions" />
-                <ClayTime @bind-Value="ActivatedTime" Options="_activationTimeOptions" />
-                <ClayToolbarButton Options="_nowButtonOptions" OnClick="SetActivationNow" Disabled="@_saving" />
+        @EditorPresence
+        <div @ref="_sensitiveCancelRoot">
+        <ClayEditorFocusScope @key="ScopedInputVersion" Label="SIM-карта" Ready="@(IsEditorCurrent() && !_saving && !_saveBlocked && !RawRestoreBlocked && _ready && !_loading && !_readinessInFlight && _loadError is null && !_versionConflict)" Inert="@CancelPending" AdvanceOnEnter="true">
+            @if (!string.IsNullOrWhiteSpace(_loadError))
+            {
+                <MudAlert Severity="Severity.Error">@_loadError</MudAlert>
+            }
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error">@_error</MudAlert>
+            }
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Номер телефона:</span>
+                <ClayFieldChange Changed="@IsFieldChanged(nameof(PhoneNumber), PhoneNumber)" RawBaseline="@OpeningFieldText(nameof(PhoneNumber))">
+                    <ClayTextBox @bind-Value="PhoneNumber" Options="_phoneOptions" />
+                </ClayFieldChange>
             </div>
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Договор:</span>
-            <ClaySelect TItem="MobileContractLookup" TValue="int?"
-                        DataSource="ContractSource"
-                        ValueSelector="@(item => (int?)item.Id)"
-                        TextSelector="@(item => item.Name)"
-                        @bind-Value="ContractId"
-                        SelectedItemChanged="OnContractChanged"
-                        Options="_contractOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Лицо ПДн:</span>
-            <ClaySelect TItem="PersonLookup" TValue="int?"
-                        DataSource="PersonalDataSource"
-                        ValueSelector="@(item => (int?)item.Id)"
-                        TextSelector="@(item => item.Name)"
-                        @bind-Value="PersonalDataPersonId"
-                        SelectedItemChanged="OnPersonalDataChanged"
-                        Options="_personOptions" />
-            <ClayToolbarButton Options="_fillButtonOptions" OnClick="FillPersonalDataAsync" Disabled="@(CurrentEmployeeId is null)" />
-        </div>
-        @if (!string.IsNullOrWhiteSpace(_personalDataAdvisoryError))
-        {
-            <MudAlert Severity="Severity.Error">@_personalDataAdvisoryError</MudAlert>
-        }
-        @if (!string.IsNullOrWhiteSpace(_personalDataAdvisory))
-        {
-            <MudAlert Severity="Severity.Warning">@_personalDataAdvisory</MudAlert>
-        }
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">PIN:</span>
-            <ClayTextBox @bind-Value="Secrets.Pin" Options="_pinOptions" />
-            <span class="equipment-ins-label">PIN2:</span>
-            <ClayTextBox @bind-Value="Secrets.Pin2" Options="_pin2Options" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">PUK:</span>
-            <ClayTextBox @bind-Value="Secrets.Puk" Options="_pukOptions" />
-            <span class="equipment-ins-label">PUK2:</span>
-            <ClayTextBox @bind-Value="Secrets.Puk2" Options="_pukOptions" />
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Активация:</span>
+                <div class="equipment-ins-date">
+                    <ClayFieldChange Changed="@IsFieldChanged(nameof(ActivatedDate), ActivatedDate)" RawBaseline="@OpeningFieldDate(nameof(ActivatedDate), _activationDateOptions.DateFormat)">
+                        <ClayDatePicker @bind-Value="ActivatedDate" Options="_activationDateOptions" />
+                    </ClayFieldChange>
+                    <ClayFieldChange Changed="@IsFieldChanged(nameof(ActivatedTime), ActivatedTime)" RawBaseline="@OpeningFieldTime(nameof(ActivatedTime), _activationTimeOptions.TimeFormat)">
+                        <ClayTime @bind-Value="ActivatedTime" Options="_activationTimeOptions" />
+                    </ClayFieldChange>
+                    <ClayToolbarButton Options="_nowButtonOptions" OnClick="SetActivationNow" Disabled="@_saving" />
+                </div>
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Договор:</span>
+                <ClayFieldChange Changed="@IsFieldChanged(nameof(ContractId), ContractId)" WatchLookupRaw="true">
+                    <ClaySelect TItem="MobileContractLookup" TValue="int?"
+                                DataSource="ContractSource"
+                                ValueSelector="@(item => (int?)item.Id)"
+                                TextSelector="@(item => item.Name)"
+                                @bind-Value="ContractId"
+                                SelectedItemChanged="OnContractChanged"
+                                Options="_contractOptions" />
+                </ClayFieldChange>
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Лицо ПДн:</span>
+                <ClayFieldChange Changed="@IsFieldChanged(nameof(PersonalDataPersonId), PersonalDataPersonId)" WatchLookupRaw="true">
+                    <ClaySelect TItem="PersonLookup" TValue="int?"
+                                DataSource="PersonalDataSource"
+                                ValueSelector="@(item => (int?)item.Id)"
+                                TextSelector="@(item => item.Name)"
+                                @bind-Value="PersonalDataPersonId"
+                                SelectedItemChanged="OnPersonalDataChanged"
+                                Options="_personOptions" />
+                </ClayFieldChange>
+                <ClayToolbarButton Options="_fillButtonOptions" OnClick="FillPersonalDataAsync" Disabled="@(CurrentEmployeeId is null)" />
+            </div>
+            @if (!string.IsNullOrWhiteSpace(_personalDataAdvisoryError))
+            {
+                <MudAlert Severity="Severity.Error">@_personalDataAdvisoryError</MudAlert>
+            }
+            @if (!string.IsNullOrWhiteSpace(_personalDataAdvisory))
+            {
+                <MudAlert Severity="Severity.Warning">@_personalDataAdvisory</MudAlert>
+            }
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">PIN:</span>
+                <ClayTextBox @bind-Value="Secrets.Pin" Options="_pinOptions" />
+                <span class="equipment-ins-label">PIN2:</span>
+                <ClayTextBox @bind-Value="Secrets.Pin2" Options="_pin2Options" />
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">PUK:</span>
+                <ClayTextBox @bind-Value="Secrets.Puk" Options="_pukOptions" />
+                <span class="equipment-ins-label">PUK2:</span>
+                <ClayTextBox @bind-Value="Secrets.Puk2" Options="_pukOptions" />
+            </div>
+        </ClayEditorFocusScope>
         </div>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelScopedAsync" Disabled="@(_saving || CancelPending || _readinessInFlight)" />
         @if (_loadError is not null && !_pendingRawRetry)
         {
-            <ClayToolbarButton Options="_retryButtonOptions" OnClick="InitializeReadinessAsync" Disabled="@(_loading || _readinessInFlight)" />
+            <ClayToolbarButton Options="_retryButtonOptions" OnClick="InitializeReadinessAsync" Disabled="@(_loading || _readinessInFlight || CancelPending)" />
         }
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || _readinessInFlight || !_ready || _loadError is not null || _saving || _saveBlocked)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || _readinessInFlight || !_ready || _loadError is not null || _saving || _saveBlocked || _versionConflict || CancelPending)" />
     </DialogActions>
 </MudDialog>
 
@@ -94,11 +109,17 @@
     private readonly ClayTextBoxOptions _phoneOptions = new() { Required = true, MaxLength = 50, DraftKey = "sim.phone" };
     private readonly ClayDatePickerOptions _activationDateOptions = new() { Required = true, DraftKey = "sim.activation-date" };
     private readonly ClayTimeOptions _activationTimeOptions = new() { Required = true, DraftKey = "sim.activation-time" };
-    private readonly ClaySelectOptions _contractOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите договор", DraftKey = "sim.contract", ReadOnly = true };
-    private readonly ClaySelectOptions _personOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите лицо персональных данных", DraftKey = "sim.person", ReadOnly = true };
-    private readonly ClayTextBoxOptions _pinOptions = new() { MaxLength = 4, InputType = InputType.Password, Disabled = true, DraftKey = "sim.pin" };
-    private readonly ClayTextBoxOptions _pin2Options = new() { MaxLength = 8, InputType = InputType.Password, Disabled = true, DraftKey = "sim.pin2" };
-    private readonly ClayTextBoxOptions _pukOptions = new() { MaxLength = 8, InputType = InputType.Password, Disabled = true, DraftKey = "sim.puk" };
+    private readonly ClaySelectOptions _contractOptions = new() { AdvanceFocusOnSelection = true, Required = true, AutoSelectSingle = true, Placeholder = "Выберите договор", DraftKey = "sim.contract", ReadOnly = true };
+    private readonly ClaySelectOptions _personOptions = new() { AdvanceFocusOnSelection = true, AutoSelectSingle = true, Placeholder = "Выберите лицо персональных данных", DraftKey = "sim.person", ReadOnly = true };
+    private readonly ClayTextBoxOptions _pinOptions = new() { MaxLength = 4, InputType = InputType.Password, Disabled = true };
+    private readonly ClayTextBoxOptions _pin2Options = new() { MaxLength = 8, InputType = InputType.Password, Disabled = true };
+    private readonly ClayTextBoxOptions _pukOptions = new() { MaxLength = 8, InputType = InputType.Password, Disabled = true };
+    private ElementReference _sensitiveCancelRoot;
+    private int? _freshResetCustomerType;
+    private bool _refreshResetAdvisory;
+    /// <inheritdoc />
+    protected override ElementReference? SensitiveCancellationRoot => _sensitiveCancelRoot;
+
     private bool _loading = true;
     private bool _ready;
     private bool _secretReady;
@@ -177,12 +198,24 @@
         _resolvedPersonalDataPersonId = PersonalDataPersonId;
         _restoreContractPending = ContractId is not null;
         PersonalDataSource.ContractId = ContractId;
+        if (_freshResetCustomerType is { } customerType)
+        {
+            _freshResetCustomerType = null;
+            PersonalDataSource.CustomerType = customerType;
+            _restoreContractPending = false;
+            _refreshResetAdvisory = true;
+        }
     }
 
     /// <inheritdoc />
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         await base.OnAfterRenderAsync(firstRender);
+        if (_refreshResetAdvisory && IsEditorCurrent())
+        {
+            _refreshResetAdvisory = false;
+            await RefreshPersonalDataAdvisoryAsync();
+        }
         if (!firstRender)
             return;
 
@@ -193,7 +226,7 @@
 
     private async Task InitializeReadinessAsync()
     {
-        if (_readinessInFlight || _saving || !IsEditorCurrent())
+        if (_readinessInFlight || _saving || CancelPending || !IsEditorCurrent())
             return;
         _readinessInFlight = true;
         try { await ReadAuthorizedInputAsync(); }
@@ -258,7 +291,6 @@
                 return;
             if (_versionConflict)
             {
-                _saveBlocked = true;
                 _error = "Исходное состояние SIM не подтверждено. Ввод сохранён. Сверьте актуальные данные перед записью.";
                 await InvokeAsync(StateHasChanged);
             }
@@ -469,6 +501,27 @@
         ActivatedDate = now.Date;
         ActivatedTime = now.TimeOfDay;
         await InvokeAsync(StateHasChanged);
+    }
+
+    internal void AcceptFreshResetSecrets(EquipmentSimSecrets fresh, int customerType)
+    {
+        ++_readinessVersion;
+        ++_contractVersion;
+        ++_personVersion;
+        ++_personSelectionRevision;
+        ++_advisoryVersion;
+        Secrets.Pin = fresh.Pin;
+        Secrets.Pin2 = fresh.Pin2;
+        Secrets.Puk = fresh.Puk;
+        Secrets.Puk2 = fresh.Puk2;
+        _freshResetCustomerType = customerType;
+        _versionConflict = _pendingRawRetry = _retryRequiresReopen = _contractReadFailed = false;
+        _loading = false;
+        _secretReady = _ready = true;
+        _loadError = null;
+        _personalDataAdvisory = _personalDataAdvisoryError = null;
+        _contractOptions.ReadOnly = _personOptions.ReadOnly = false;
+        SetSecretInputsDisabled(false);
     }
 
     private Task Apply()

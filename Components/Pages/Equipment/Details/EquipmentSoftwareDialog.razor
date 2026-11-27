@@ -11,52 +11,68 @@
     <TitleContent>Установленное ПО</TitleContent>
     <DialogContent>
         <ClayFormActions Form="InventoryFormHelp.EquipmentSoftware" />
-        @RawRestoreNotice
-        @if (!string.IsNullOrWhiteSpace(_error))
-        {
-            <MudAlert Severity="Severity.Error">@_error</MudAlert>
-        }
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">ПО:</span>
-            <ClaySelect TItem="SoftwareEquipmentLookup" TValue="int?"
-                        DataSource="SoftwareSource"
-                        ValueSelector="@(item => (int?)item.Id)"
-                        TextSelector="@(item => item.Name)"
-                        @bind-Value="Value.SoftwareId"
-                        SelectedItemChanged="OnSoftwareChanged"
-                        Options="_softwareOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Установлено:</span>
-            <ClayTextBox @bind-Value="Value.Installed" Options="_installedOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Дистрибутив:</span>
-            <ClayTextBox @bind-Value="Value.Distribution" Options="_distributionOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Установлено с:</span>
-            <ClayDatePicker @bind-Value="Value.InstalledAt" Options="_installedAtOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Деинсталлировано:</span>
-            <ClayDatePicker Value="Value.UninstalledAt" ValueChanged="OnUninstalledAtChanged" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Примечания:</span>
-            <ClayTextArea @bind-Value="Value.Notes" Options="_notesOptions" />
-        </div>
+        @EditorPresence
+        @{ var baseline = OpeningFieldValue<EquipmentSoftwareInstallation>(nameof(Value)); }
+        <ClayEditorFocusScope @key="ScopedInputVersion" Label="Установленное ПО" Ready="@(IsEditorCurrent() && !_saving && !_saveBlocked && !RawRestoreBlocked)" Inert="@CancelPending" AdvanceOnEnter="true">
+            @RawRestoreNotice
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error">@_error</MudAlert>
+            }
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">ПО:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.SoftwareId != baseline.SoftwareId)" WatchLookupRaw="true">
+                    <ClaySelect TItem="SoftwareEquipmentLookup" TValue="int?"
+                                DataSource="SoftwareSource"
+                                ValueSelector="@(item => (int?)item.Id)"
+                                TextSelector="@(item => item.Name)"
+                                @bind-Value="Value.SoftwareId"
+                                SelectedItemChanged="OnSoftwareChanged"
+                                Options="_softwareOptions" />
+                </ClayFieldChange>
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Установлено:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.Installed != baseline.Installed)" RawBaseline="@(baseline is null ? null : baseline.Installed ?? string.Empty)">
+                    <ClayTextBox @bind-Value="Value.Installed" Options="_installedOptions" />
+                </ClayFieldChange>
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Дистрибутив:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.Distribution != baseline.Distribution)" RawBaseline="@(baseline is null ? null : baseline.Distribution ?? string.Empty)">
+                    <ClayTextBox @bind-Value="Value.Distribution" Options="_distributionOptions" />
+                </ClayFieldChange>
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Установлено с:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.InstalledAt?.Date != baseline.InstalledAt?.Date)" RawBaseline="@(baseline is null ? null : ((DateTime?)baseline.InstalledAt)?.ToString(_installedAtOptions.DateFormat) ?? string.Empty)">
+                    <ClayDatePicker @bind-Value="Value.InstalledAt" Options="_installedAtOptions" />
+                </ClayFieldChange>
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Деинсталлировано:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.UninstalledAt?.Date != baseline.UninstalledAt?.Date)" RawBaseline="@(baseline is null ? null : ((DateTime?)baseline.UninstalledAt)?.ToString(new ClayDatePickerOptions().DateFormat) ?? string.Empty)">
+                    <ClayDatePicker Value="Value.UninstalledAt" ValueChanged="OnUninstalledAtChanged" />
+                </ClayFieldChange>
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Примечания:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.Notes != baseline.Notes)" RawBaseline="@(baseline is null ? null : baseline.Notes ?? string.Empty)">
+                    <ClayTextArea @bind-Value="Value.Notes" Options="_notesOptions" />
+                </ClayFieldChange>
+            </div>
+        </ClayEditorFocusScope>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked || RawRestoreBlocked)" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelScopedAsync" Disabled="@(_saving || CancelPending)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked || RawRestoreBlocked || CancelPending)" />
     </DialogActions>
 </MudDialog>
 
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClaySelectOptions _softwareOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите программное обеспечение", DraftKey = "software.software" };
+    private readonly ClaySelectOptions _softwareOptions = new() { AdvanceFocusOnSelection = true, Required = true, AutoSelectSingle = true, Placeholder = "Выберите программное обеспечение", DraftKey = "software.software" };
     private readonly ClayTextBoxOptions _installedOptions = new() { Required = true, MaxLength = 100, DraftKey = "software.installed" };
     private readonly ClayTextBoxOptions _distributionOptions = new() { Required = true, MaxLength = 100, DraftKey = "software.distribution" };
     private readonly ClayDatePickerOptions _installedAtOptions = new() { Required = true, DraftKey = "software.installed-at" };
@@ -68,6 +84,9 @@
     /// <inheritdoc />
     protected override void OnParametersSet() =>
         _okButtonOptions.Text = Value.UninstalledAt is null ? "OK" : "Подтвердить деинсталляцию";
+
+    /// <inheritdoc />
+    protected override void OnDraftStateRestored() => OnParametersSet();
 
     private void OnSoftwareChanged(SoftwareEquipmentLookup? software)
     {

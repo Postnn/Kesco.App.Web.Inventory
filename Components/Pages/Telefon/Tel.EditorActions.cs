@@ -14,6 +14,7 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Telefon;
 public partial class Tel
 {
     private bool _telEditorTransition;
+    private long? _telCloseRevision;
 
     private bool HasUnresolvedTelEditorWrite =>
         _telMarker is not null || _telProgress is not null || _notSentAttemptId is not null || HasPendingSync;
@@ -32,12 +33,17 @@ public partial class Tel
         _telEditorTransition = true;
         try
         {
+            if (_telCloseRevision is not null)
+            {
+                await CloseAsync();
+                return;
+            }
             var fingerprint = CurrentTelInputFingerprint();
             var scope = registration is null ? null : await registration.ReadEditorScopeAsync(TelInputScope, _pageCts.Token);
             if (!Current()) return;
             if (!HasTelParentInput && !HasUnresolvedTelEditorWrite && scope is not { HasRaw: true } and not { HasOperation: true })
             {
-                await CloseAsync();
+                await CloseAsync(scope?.Revision);
                 return;
             }
 
@@ -53,8 +59,8 @@ public partial class Tel
 
             if (HasUnresolvedTelEditorWrite || scope?.HasOperation == true)
             {
-                if (choice == ClayEditorCancelChoice.CloseWithoutSaving)
-                    await CloseAsync();
+                if (choice == ClayEditorCancelChoice.CloseWithoutSaving && fingerprint == CurrentTelInputFingerprint())
+                    await CloseAsync(scope?.Revision);
                 else
                     _telInputNotice = "Сначала требуется сверка предыдущей операции. Ввод и журнал сохранены.";
                 return;
@@ -75,23 +81,7 @@ public partial class Tel
                     _telInputNotice = "Владелец, право записи или ввод изменились. Черновик сохранён.";
                     return;
                 }
-                if (!await registration.ReplaceEditorScopeAsync(TelInputScope, scope.Revision, null, _pageCts.Token))
-                {
-                    if (Current()) _telInputNotice = "Ввод изменился. Подтвердите отмену ещё раз.";
-                    return;
-                }
-                if (!Current()) return;
-                if (fingerprint != CurrentTelInputFingerprint())
-                {
-                    await KeepLateEditorInputAsync(registration, reopen: true, Current);
-                    return;
-                }
-                _operationVersion++;
-                // Если браузер оставит окно открытым, отменённый снимок не должен записаться снова.
-                _telOriginalMissing = _telInputConflict = true;
-                _telRawRequested = _telRawPending = false;
-                _telInputNotice = "Ввод отменён. Если окно осталось открытым, закройте его.";
-                await CloseAsync();
+                await CloseAsync(scope.Revision);
                 return;
             }
 
@@ -130,6 +120,11 @@ public partial class Tel
         _telEditorTransition = true;
         try
         {
+            if (_telCloseRevision is not null)
+            {
+                await CloseAsync();
+                return;
+            }
             var fingerprint = CurrentTelInputFingerprint();
             var scope = registration is null ? null : await registration.ReadEditorScopeAsync(TelInputScope, _pageCts.Token);
             if (!Current()) return;
@@ -193,18 +188,16 @@ public partial class Tel
         if (!current()) return;
         if (fingerprint != CurrentTelInputFingerprint())
         {
-            await KeepLateEditorInputAsync(registration, reopen: false, current);
+            await KeepLateEditorInputAsync(registration, current);
             return;
         }
         PublishFreshTelEditor(fresh);
     }
 
-    private async Task KeepLateEditorInputAsync(ClayDraftRegistration registration, bool reopen, Func<bool> current)
+    private async Task KeepLateEditorInputAsync(ClayDraftRegistration registration, Func<bool> current)
     {
         _scheduledTelInput = null;
         _telInputNotice = "Поздний ввод оставлен в открытой форме.";
-        if (reopen)
-            await registration.OpenScopeAsync(TelInputScope, _pageCts.Token);
         if (!current() || _telOriginalMissing) return;
         var json = SerializeTelInput();
         await PersistTelInputScopeAsync(registration, json);

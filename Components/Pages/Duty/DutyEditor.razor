@@ -1,3 +1,4 @@
+@using Clayzor.Lib.Web.Controls.Components.Presence
 @using Clayzor.Lib.Entities.Inventory
 
 <NavigationLock ConfirmExternalNavigation="@ConfirmDutyExternalExit" OnBeforeInternalNavigation="BeforeNavigationAsync" />
@@ -15,6 +16,7 @@
     </Toolbar>
     <ChildContent>
         <MudText Typo="Typo.h6" HtmlTag="h1" Class="mb-2">Дежурство инженера</MudText>
+        <ClayPresencePanel Target="@GetPresenceTarget()" />
         @if (_loading)
         {
             <MudProgressLinear Indeterminate="true" />
@@ -104,8 +106,11 @@
         @if (_draft is { } draft)
         {
             <MudForm @key="_inputViewRevision" @ref="_form">
+                <ClayEditorFocusScope @key="RouteId" Label="Поля дежурства" Ready="@DutyInitialFocusReady">
                 <div class="d-flex flex-column gap-2" data-draft-scope="main" inert="@_busy">
-                    <ClayDatePicker Options="_dateOptions" Value="@AsPickerDate(draft.Date)" ValueChanged="SetDateAsync" />
+                    <ClayFieldChange Changed="@(CanEdit && _original is null && _baseline is not null && draft.Date != _baseline.Date)">
+                        <ClayDatePicker Options="_dateOptions" Value="@AsPickerDate(draft.Date)" ValueChanged="SetDateAsync" />
+                    </ClayFieldChange>
                     @if (draft.Date is { } day)
                     {
                         <MudText Typo="Typo.body2" Color="@(_workDay == false ? Color.Warning : Color.Default)">
@@ -123,26 +128,9 @@
                     }
                     else if (_engineers is not null)
                     {
-                        <ClaySelect TItem="DutyEngineer" TValue="int?" DataSource="_engineers" Options="_plannedOptions"
-                                    @ref="_planned" Value="@draft.PlannedId" ValueChanged="SetPlannedAsync"
-                                    ValueSelector="@(item => item.Id)" TextSelector="@(item => item.Name)">
-                            <ItemTemplate>
-                                <div class="d-flex justify-space-between gap-2">
-                                    <span>@context.Name</span><span>@context.Statistics</span>
-                                </div>
-                            </ItemTemplate>
-                        </ClaySelect>
-                    }
-
-                    @if (IsFact)
-                    {
-                        <MudText>Подтверждение дежурства:</MudText>
-                        <ClayRadioGroup TValue="DutyConfirmation?" Options="_radioOptions" Items="ConfirmationOptions"
-                                        Value="@draft.Confirmation" ValueChanged="SetConfirmationAsync" />
-                        @if (draft.Confirmation == DutyConfirmation.Other && _engineers is not null)
-                        {
-                            <ClaySelect TItem="DutyEngineer" TValue="int?" DataSource="_engineers" Options="_actualOptions"
-                                        @ref="_actual" Value="@draft.ActualId" ValueChanged="SetActualAsync"
+                        <ClayFieldChange Changed="@(CanEdit && _baseline is not null && draft.PlannedId != _baseline.PlannedId)">
+                            <ClaySelect TItem="DutyEngineer" TValue="int?" DataSource="_engineers" Options="_plannedOptions"
+                                        @ref="_planned" Value="@draft.PlannedId" ValueChanged="SetPlannedAsync"
                                         ValueSelector="@(item => item.Id)" TextSelector="@(item => item.Name)">
                                 <ItemTemplate>
                                     <div class="d-flex justify-space-between gap-2">
@@ -150,20 +138,49 @@
                                     </div>
                                 </ItemTemplate>
                             </ClaySelect>
+                        </ClayFieldChange>
+                    }
+
+                    @if (IsFact)
+                    {
+                        <MudText>Подтверждение дежурства:</MudText>
+                        <ClayFieldChange Changed="@(CanEdit && _baseline is not null && draft.Confirmation != _baseline.Confirmation)">
+                            <ClayRadioGroup TValue="DutyConfirmation?" Options="_radioOptions" Items="ConfirmationOptions"
+                                            Value="@draft.Confirmation" ValueChanged="SetConfirmationAsync" />
+                        </ClayFieldChange>
+                        @if (draft.Confirmation == DutyConfirmation.Other && _engineers is not null)
+                        {
+                            <ClayFieldChange Changed="@(CanEdit && _baseline is not null && draft.ActualId != _baseline.ActualId)">
+                                <ClaySelect TItem="DutyEngineer" TValue="int?" DataSource="_engineers" Options="_actualOptions"
+                                            @ref="_actual" Value="@draft.ActualId" ValueChanged="SetActualAsync"
+                                            ValueSelector="@(item => item.Id)" TextSelector="@(item => item.Name)">
+                                    <ItemTemplate>
+                                        <div class="d-flex justify-space-between gap-2">
+                                            <span>@context.Name</span><span>@context.Statistics</span>
+                                        </div>
+                                    </ItemTemplate>
+                                </ClaySelect>
+                            </ClayFieldChange>
                         }
                         @if (ShowTimeOff)
                         {
-                            <ClayCheckbox Label="Отгул вместо оплаты" State="@draft.WantsTimeOff" Disabled="@(!CanEdit)"
-                                          StateChanged="SetWantsTimeOffAsync" />
+                            <ClayFieldChange Changed="@(CanEdit && _baseline is not null && draft.WantsTimeOff != _baseline.WantsTimeOff)">
+                                <ClayCheckbox Label="Отгул вместо оплаты" State="@draft.WantsTimeOff" Disabled="@(!CanEdit)"
+                                              StateChanged="SetWantsTimeOffAsync" />
+                            </ClayFieldChange>
                             @if (draft.WantsTimeOff)
                             {
                                 <div @ref="_timeOffControl">
-                                    <ClayDatePicker Options="_timeOffOptions" Value="@AsPickerDate(draft.TimeOff)" ValueChanged="SetTimeOffAsync" />
+                                    <ClayFieldChange Changed="@(CanEdit && _baseline is not null && draft.TimeOff != _baseline.TimeOff)">
+                                        <ClayDatePicker Options="_timeOffOptions" Value="@AsPickerDate(draft.TimeOff)" ValueChanged="SetTimeOffAsync" />
+                                    </ClayFieldChange>
                                 </div>
                             }
                         }
-                        <ClayCheckbox Label="Подтверждаю закрытие дежурства" State="@draft.Close" Disabled="@(!CanEdit)"
-                                      StateChanged="SetCloseAsync" />
+                        <ClayFieldChange Changed="@(CanEdit && _baseline is not null && draft.Close != _baseline.Close)">
+                            <ClayCheckbox Label="Подтверждаю закрытие дежурства" State="@draft.Close" Disabled="@(!CanEdit)"
+                                          StateChanged="SetCloseAsync" />
+                        </ClayFieldChange>
                     }
                     @if (_original is { Closed: 1 } closed)
                     {
@@ -217,6 +234,7 @@
                         </section>
                     }
                 </div>
+                </ClayEditorFocusScope>
             </MudForm>
         }
     </ChildContent>
@@ -228,4 +246,3 @@
         }
     </Footer>
 </ClayEntityForm>
-

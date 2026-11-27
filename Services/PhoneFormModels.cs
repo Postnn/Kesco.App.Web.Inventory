@@ -102,7 +102,7 @@ public sealed class PhoneSaveResult
 }
 
 /// <summary>Подтверждение попытки и уведомление о первой возможной отправке SQL.</summary>
-public sealed record TelSqlBoundary(Func<Task> Prepare, Action Dispatch);
+public sealed record TelSqlBoundary(Func<Task> Prepare, Action Dispatch, bool WorkflowBound = false);
 
 /// <summary>SQL batch и параметры сохранения.</summary>
 public sealed record PhoneSaveCommand(string Sql, DynamicParameters Parameters);

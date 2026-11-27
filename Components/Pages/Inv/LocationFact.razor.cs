@@ -2,8 +2,10 @@ using System.Globalization;
 using System.Text.Json;
 using Clayzor.Lib.DALC;
 using Clayzor.Lib.Entities.Inventory;
+using Clayzor.Lib.Web.Controls.Components;
 using Clayzor.Lib.Web.Controls.Components.Form;
 using Clayzor.Lib.Web.Controls.Components.Grid;
+using Clayzor.Lib.Web.Controls.Components.Presence;
 using Clayzor.Lib.Web.Controls.Components.Select;
 using Clayzor.Lib.Web.Controls.Services;
 using Clayzor.Lib.Web.DBSelect.Employees;
@@ -12,6 +14,7 @@ using Clayzor.Lib.Web.DBSelect.Locations;
 using Kesco.App.Web.Inventory.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.Data.SqlClient;
 using Microsoft.JSInterop;
 using MudBlazor;
@@ -26,10 +29,7 @@ public partial class LocationFact : IAsyncDisposable
     private const string DraftScope = "main";
     private const string WorkplaceScope = "workplace";
     private const string OperationKind = "confirm-location";
-    private static readonly ClayTextBoxOptions LegacyLocationInput = new() { Label = "Расположение, поисковый текст", ReadOnly = true, DraftKey = "fact.location" };
-    private static readonly ClayTextBoxOptions LegacyResponsibleInput = new() { Label = "Ответственный, поисковый текст", ReadOnly = true, DraftKey = "fact.responsible" };
-    private static readonly ClayTextBoxOptions LegacySearchInput = new() { Label = "Поиск оборудования", ReadOnly = true, DraftKey = "fact.search" };
-    private static readonly ClayTextAreaOptions LegacyNotesInput = new() { Label = "Примечание", ReadOnly = true, Lines = 3, DraftKey = "fact.notes" };
+    private const string DraftForm = "location-fact";
     private static readonly ClaySelectOptions LocationOptions = new() { Label = "Расположение", DraftKey = "fact.location", Required = true };
     private static readonly ClaySelectOptions EmployeeOptions = new() { Label = "Поиск по ответственному", DraftKey = "fact.responsible" };
     private static readonly ClayTextAreaOptions NotesOptions = new() { Label = "Примечание", Lines = 3, MaxLength = 500, DraftKey = "fact.notes" };
@@ -45,6 +45,8 @@ public partial class LocationFact : IAsyncDisposable
     };
     private readonly ClaySelectOptions _equipmentOptions = new() { Label = "Поиск по SN, Инв:№, коду", DraftKey = "fact.search", Disabled = true, AutoSelectSingle = true };
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly Guid _draftInstance = Guid.NewGuid();
+    private string DraftRootClass => $"location-fact-draft-{_draftInstance:N}";
     private ClaySelect<LocationLookup, int?>? _locationSelect;
     private ClaySelect<LocationFactMatch, int?>? _equipmentSelect;
     private LocationFactEquipmentSource _equipmentSource = null!;
@@ -75,11 +77,9 @@ public partial class LocationFact : IAsyncDisposable
     private bool _restoreRaw;
     private bool _restoreWorkplaceRaw;
     private bool _workplaceRawIncomplete;
-    private bool _legacyRawPending;
-    private bool _showLegacyRaw;
-    private bool _restoreLegacyRaw;
-    private bool _legacyRawIncomplete;
     private bool _restoreIncomplete;
+    private bool _unboundEditorRaw;
+    private bool _pageDraftClosed;
     private bool _ready;
     private bool _busy;
     private bool _blocked;
@@ -89,11 +89,62 @@ public partial class LocationFact : IAsyncDisposable
     private string? _notSentAttemptId;
     private ClayDraftOperation? _pendingOperation;
     private ConfirmedFact? _confirmedCleanup;
+    private bool _serverWriteChecked;
+    private bool _serverWritePending;
+    private DateTime? _serverLastConfirmed;
     private bool _disposed;
-    private bool CanConfirm => CurrentUser?.HasRole(LocationFactData.RequiredRole) == true && _registration is not null && !_blocked && !_legacyRawPending;
-    private bool CanSubmitPending => CanConfirm && !_busy && !_conflict && !_restoreRaw && !_restoreIncomplete &&
+    private (int DialogVersion, int EquipmentId, int SiteId, int EmployeeId, ClayPresenceTarget Target)? _presence;
+
+    private ClayPresenceTarget? GetPresenceTarget()
+    {
+        if (_disposed || !_dialogVisible || _scanOperation || !CanConfirm ||
+            _pending is not { Equipment.EquipmentId: > 0, Site.Id: > 0 } pending ||
+            _site?.Id != pending.Site.Id || CurrentUser is not { Id: > 0 } employee)
+            return null;
+
+        var generation = _dialogVersion;
+        var equipmentId = pending.Equipment.EquipmentId;
+        var siteId = pending.Site.Id;
+        var employeeId = employee.Id;
+        if (_presence is { } previous && previous.DialogVersion == generation && previous.EquipmentId == equipmentId &&
+            previous.SiteId == siteId && previous.EmployeeId == employeeId)
+            return previous.Target;
+
+        var connectionString = Db.ConnectionString;
+        var target = new ClayPresenceTarget(ClayPresenceKey.Create("inventory", "equipment", equipmentId),
+            async (principal, token) =>
+            {
+                bool Current() => !_disposed && _dialogVisible && !_scanOperation && CanConfirm &&
+                    _dialogVersion == generation && CurrentUser?.Id == employeeId &&
+                    _pending?.Equipment.EquipmentId == equipmentId && _pending?.Site.Id == siteId && _site?.Id == siteId;
+                if (!Current() || principal.Identity is not { IsAuthenticated: true, Name: { Length: > 0 } login })
+                    return null;
+
+                try
+                {
+                    using var db = new DbManager(connectionString);
+                    var expected = _pending!;
+                    var actor = await LocationFactData.RequirePresenceEditorAsync(db, login, employeeId,
+                        expected, token);
+                    if (!Current() || !ReferenceEquals(_pending, expected))
+                        return null;
+                    return new(actor.Id, actor.Name, ClayPresenceActivity.Editing);
+                }
+                catch (Exception error) when (error is LocationFactConflict or UnauthorizedAccessException)
+                {
+                    return null;
+                }
+            });
+        _presence = (generation, equipmentId, siteId, employeeId, target);
+        return target;
+    }
+
+    private bool CanConfirm => CurrentUser?.HasRole(LocationFactData.RequiredRole) == true && _registration is not null && !_blocked && !_unboundEditorRaw;
+    private bool CanSubmitPending => CanConfirm && _serverWriteChecked && !_serverWritePending &&
+        !_busy && !_conflict && !_restoreRaw && !_restoreIncomplete &&
         _pending is { } expected && _site?.Id == expected.Site.Id;
     private bool CanEditPending => _dialogVisible && _pending is not null && !_blocked && !_busy && !_askRelocation;
+    private bool ProtectExternalExit => _registration is not null && !_pageDraftClosed;
     private CancellationToken Token => _lifetime.Token;
 
     [Inject] private DbManager Db { get; set; } = null!;
@@ -126,19 +177,41 @@ public partial class LocationFact : IAsyncDisposable
                     _focusLocation = true;
                     return;
                 }
-                _registration = await Drafts.RegisterHandleAsync("location-fact", "workplace", CurrentUser.Id.ToString(CultureInfo.InvariantCulture),
-                    1, ".location-fact, .location-fact-dialog", Token);
+                var actorId = CurrentUser.Id;
+                var userKey = actorId.ToString(CultureInfo.InvariantCulture);
+                var token = Token;
+                bool Current() => !_disposed && !token.IsCancellationRequested && _registration is null &&
+                    CurrentUser is { } current && current.Id == actorId && current.HasRole(LocationFactData.RequiredRole);
+
+                var opened = await Drafts.TransferLegacyAndRegisterRamAsync(DraftForm, WorkplaceScope, userKey,
+                    async (evidence, ct) =>
+                    {
+                        if (!Current()) throw new InvalidOperationException("Контекст инвентаризации изменился.");
+                        await ImportLegacyEvidenceAsync(actorId, evidence, ct);
+                        ct.ThrowIfCancellationRequested();
+                        if (!Current()) throw new InvalidOperationException("Контекст инвентаризации изменился.");
+                        return await Drafts.RegisterRamHandleAsync(DraftForm, WorkplaceScope, userKey,
+                            1, "." + DraftRootClass, _draftInstance, ct);
+                    }, Current, token);
+                if (!Current())
+                {
+                    await opened.DisposeAsync();
+                    return;
+                }
+                _registration = opened;
                 var restore = _registration.Restore;
                 _pendingOperation = restore.OperationSnapshot;
                 _blocked = _pendingOperation is not null;
                 var sent = ReadCommand(_pendingOperation);
-                if (_pendingOperation is { Status: ClayDraftOperationStatus.Confirmed } confirmed && sent is not null)
+                if (_pendingOperation is { } operation && sent is not null &&
+                    await ReadVerifiedConfirmationAsync(operation, sent, CurrentUser.Id) is { } checkedAt)
                 {
-                    _confirmedCleanup = new ConfirmedFact(confirmed, sent, CheckedAt: null, Scanner: false, ReceiptRecorded: true);
+                    _confirmedCleanup = new ConfirmedFact(operation, sent, checkedAt, Scanner: false,
+                        ReceiptRecorded: operation.Status == ClayDraftOperationStatus.Confirmed);
                     _message = "Проверка записана. Повторное подтверждение недоступно.";
                 }
-                else if (_pendingOperation is { } operation)
-                    _message = $"Исход попытки {operation.AttemptId} требует сверки. Повтор записи заблокирован.";
+                else if (_pendingOperation is { } unresolved)
+                    _message = $"Исход попытки {unresolved.AttemptId} требует сверки. Повтор записи заблокирован.";
 
                 var draft = restore.TypedScopes?.TryGetValue(DraftScope, out var json) == true
                     ? JsonSerializer.Deserialize<FactDraft>(json)
@@ -165,6 +238,8 @@ public partial class LocationFact : IAsyncDisposable
                     _scanOperation = draft?.Scanner == true;
                     _conflict = draft?.Conflict == true;
                     _dialogError = _message;
+                    if (!_blocked)
+                        await ReadPendingServerJournalAsync(_pending);
                     if (_confirmedCleanup is null)
                     {
                         ShowDialog();
@@ -178,8 +253,7 @@ public partial class LocationFact : IAsyncDisposable
                     if (restore.HasDraft)
                     {
                         var readiness = await _registration.GetRestoreReadinessAsync(Token);
-                        _legacyRawPending = ScopeNeedsRestore(readiness, DraftScope);
-                        _showLegacyRaw = _restoreLegacyRaw = _legacyRawPending;
+                        _unboundEditorRaw = ScopeNeedsRestore(readiness, DraftScope);
                     }
                 }
 
@@ -217,23 +291,13 @@ public partial class LocationFact : IAsyncDisposable
             await RetryStorageAsync();
             if (!_disposed) StateHasChanged();
         }
-        if (_showLegacyRaw)
-        {
-            if (_restoreLegacyRaw && !_busy)
-            {
-                _restoreLegacyRaw = false;
-                await RestoreLegacyInputsAsync();
-                if (!_disposed) StateHasChanged();
-            }
-            return;
-        }
         if (_restoreWorkplaceRaw && !_busy && _registration is not null)
         {
             _restoreWorkplaceRaw = false;
             await RestoreWorkplaceInputsAsync();
             if (!_disposed) StateHasChanged();
         }
-        if (_restoreRaw && _registration is not null)
+        if (_restoreRaw && !_busy && _registration is not null)
         {
             _restoreRaw = false;
             try { await RestoreEditorAsync(); }
@@ -269,30 +333,35 @@ public partial class LocationFact : IAsyncDisposable
     private static bool ScopeNeedsRestore(ClayDraftRestoreReadiness readiness, string scope) =>
         readiness.PendingScopes.Contains(scope, StringComparer.Ordinal) || readiness.FailedScopes.Contains(scope, StringComparer.Ordinal);
 
-    private void ReturnToWorkplace()
+    private async Task ImportLegacyEvidenceAsync(int actorId, IReadOnlyList<ClayLegacyDraftOperationEvidence> evidence,
+        CancellationToken ct)
     {
-        if (_busy)
-            return;
-
-        _showLegacyRaw = false;
-        _restoreWorkplaceRaw = true;
-    }
-
-    private async Task RestoreLegacyInputsAsync()
-    {
-        if (!_showLegacyRaw || _busy || _disposed || _registration is not { } registration)
-            return;
-
-        _busy = _legacyRawIncomplete = true;
-        try
+        if (evidence.Count == 0) return;
+        var attempts = new Dictionary<Guid, (int SiteId, int EquipmentId)>();
+        foreach (var item in evidence)
         {
-            var applied = await registration.ApplyRawWithResultAsync(DraftScope, Token);
-            var readiness = await registration.GetRestoreReadinessAsync(Token);
-            _legacyRawIncomplete = applied.Pending.Count != 0 || ScopeNeedsRestore(readiness, DraftScope);
+            if (item is null || item.Kind != OperationKind ||
+                !Guid.TryParseExact(item.AttemptId, "N", out var id) || id == Guid.Empty || item.Data is not { Length: <= 100 })
+                throw new InvalidOperationException("Прежняя попытка инвентаризации не подтверждена.");
+            using var data = JsonDocument.Parse(item.Data);
+            if (data.RootElement.ValueKind != JsonValueKind.Object ||
+                data.RootElement.EnumerateObject().Count() != 2 ||
+                !data.RootElement.TryGetProperty("SiteId", out var site) ||
+                site.ValueKind != JsonValueKind.Number || !site.TryGetInt32(out var siteId) || siteId <= 0 ||
+                !data.RootElement.TryGetProperty("EquipmentId", out var equipment) ||
+                equipment.ValueKind != JsonValueKind.Number || !equipment.TryGetInt32(out var equipmentId) || equipmentId <= 0)
+                throw new InvalidOperationException("Не удалось подтвердить рабочее место и оборудование прежней проверки.");
+            var target = (siteId, equipmentId);
+            if (attempts.TryGetValue(id, out var previous) && previous != target)
+                throw new InvalidOperationException("Сохранены разные цели одной прежней попытки инвентаризации.");
+            attempts[id] = target;
         }
-        catch (Exception e) when (e is JSException or InvalidOperationException) { }
-        catch (OperationCanceledException) when (_disposed) { }
-        finally { _busy = false; }
+        var principal = await PrincipalAsync();
+        ct.ThrowIfCancellationRequested();
+        if (_disposed || CurrentUser?.Id != actorId)
+            throw new InvalidOperationException("Контекст инвентаризации изменился.");
+        await LocationFactData.ImportLegacyOperationsAsync(Db, principal, actorId,
+            attempts.Select(item => (item.Key, item.Value.SiteId, item.Value.EquipmentId)).ToArray(), ct);
     }
 
     private async Task RestoreWorkplaceInputsAsync()
@@ -416,12 +485,13 @@ public partial class LocationFact : IAsyncDisposable
         {
             await _registration!.OpenScopeAsync(DraftScope, Token);
             _pending = await LocationFactData.ReadForConfirmAsync(Db, site.Id, id, Token);
+            await ReadPendingServerJournalAsync(_pending);
             _scanOperation = scan;
             _broken = !scan && _pending.Broken;
             _notes = scan ? "" : _pending.Notes;
             _askRelocation = scan && _pending.DifferentLocation;
             await PersistAsync();
-            immediate = scan && !_askRelocation;
+            immediate = scan && !_askRelocation && _serverWriteChecked && !_serverWritePending;
             if (!immediate) ShowDialog();
         }
         catch (LocationFactConflict error) { _message = error.Message; }
@@ -479,7 +549,8 @@ public partial class LocationFact : IAsyncDisposable
 
     private async Task ConfirmAsync(bool move)
     {
-        if (!CanSubmitPending || _pending is not { } expected || _registration is not { } registration) return;
+        if (!CanSubmitPending || CurrentUser is not { } actor || _pending is not { } expected ||
+            _registration is not { } registration) return;
         var command = new FactCommand(expected, _notes, _broken, move);
         if (LocationFactData.Validate(expected.Equipment.FactName, command.Notes, command.Broken, command.Move) is { } validation)
         { _dialogError = validation; _askRelocation = false; return; }
@@ -495,11 +566,21 @@ public partial class LocationFact : IAsyncDisposable
             await registration.EnsureCommandAllowedAsync(Token);
             var principal = await PrincipalAsync();
             Token.ThrowIfCancellationRequested();
-            requestedAttemptId = Guid.NewGuid().ToString("N");
+            var serverAttemptId = Guid.NewGuid();
+            requestedAttemptId = serverAttemptId.ToString("N");
+            var intent = JsonSerializer.Serialize(command);
             attempt = await registration.BeginOperationAsync(
-                new ClayDraftOperationIntent(OperationKind, JsonSerializer.Serialize(command), [DraftScope], requestedAttemptId), Token);
+                new ClayDraftOperationIntent(OperationKind, intent, [DraftScope], requestedAttemptId,
+                    BlockOtherDraftOperations: true), Token);
+            if (attempt.AttemptId != requestedAttemptId || attempt.Kind != OperationKind || attempt.Data != intent ||
+                attempt.Status != ClayDraftOperationStatus.Running || attempt.Scopes is not [{ Name: DraftScope }])
+            {
+                attempt = null;
+                throw new InvalidOperationException("Журнал не подтвердил исходную попытку.");
+            }
             _pendingOperation = attempt;
-            var checkedAt = await LocationFactData.ConfirmAsync(Db, principal, command.Expected, command.Notes, command.Broken, command.Move, Token);
+            var checkedAt = await LocationFactData.ConfirmAsync(Db, principal, actor.Id, serverAttemptId,
+                command.Expected, command.Notes, command.Broken, command.Move, Token);
             _confirmedCleanup = new ConfirmedFact(attempt, command, checkedAt, scanner, ReceiptRecorded: false);
             await FinishConfirmedAsync(registration);
         }
@@ -623,8 +704,8 @@ public partial class LocationFact : IAsyncDisposable
 
     private async Task RecordFailureAsync(ClayDraftRegistration registration, ClayDraftOperation attempt, Exception error)
     {
-        var rejected = error is LocationFactConflict or UnauthorizedAccessException ||
-            error is SqlException sql && !DbManager.IsConnectivityError(sql) && sql.Number != -2;
+        var rejected = error is LocationFactConflict or UnauthorizedAccessException or
+            InventoryOperationPendingException or InventoryOperationReservationException;
         if (rejected)
         {
             try { await registration.RejectOperationAsync(attempt.Revision, Token); }
@@ -635,6 +716,11 @@ public partial class LocationFact : IAsyncDisposable
             }
 
             _pendingOperation = null;
+            if (error is InventoryOperationPendingException or InventoryOperationReservationException)
+            {
+                _serverWriteChecked = false;
+                _serverWritePending = true;
+            }
             _conflict = error is LocationFactConflict;
             if (_conflict)
             {
@@ -645,13 +731,54 @@ public partial class LocationFact : IAsyncDisposable
                     return;
                 }
             }
-            _dialogError = error is SqlException ? "База отклонила подтверждение или перемещение." : error.Message;
+            _dialogError = error.Message;
             return;
         }
 
         try { await registration.UnknownOperationAsync(attempt.Revision, Token); }
         catch (Exception e) when (e is JSException or InvalidOperationException or OperationCanceledException) { }
         BlockDraft($"Исход попытки {attempt.AttemptId} требует сверки. Черновик сохранён, повтор записи заблокирован.");
+    }
+
+    private async Task<DateTime?> ReadVerifiedConfirmationAsync(ClayDraftOperation operation, FactCommand command, int employeeId)
+    {
+        if (operation.Scopes is not [{ Name: DraftScope }] ||
+            !Guid.TryParse(operation.AttemptId, out var attemptId) || attemptId == Guid.Empty ||
+            command.Expected.Site.Id <= 0 || command.Expected.Equipment.EquipmentId <= 0)
+            return null;
+        try
+        {
+            return await LocationFactData.ReadConfirmedAsync(Db, await PrincipalAsync(), employeeId, attemptId,
+                command.Expected.Equipment.EquipmentId, command.Expected.Site.Id, Token);
+        }
+        catch (Exception error) when (error is SqlException or TimeoutException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    private async Task ReadPendingServerJournalAsync(LocationFactSnapshot expected)
+    {
+        _serverWriteChecked = _serverWritePending = false;
+        _serverLastConfirmed = null;
+        if (CurrentUser is not { } actor || _site?.Id != expected.Site.Id)
+            return;
+
+        bool Current() => !_disposed && !Token.IsCancellationRequested && CurrentUser?.Id == actor.Id &&
+            _site?.Id == expected.Site.Id && ReferenceEquals(_pending, expected);
+        try
+        {
+            var state = await LocationFactData.ReadJournalAsync(Db, await PrincipalAsync(), actor.Id,
+                expected.Equipment.EquipmentId, expected.Site.Id, Token);
+            if (!Current()) return;
+            _serverWriteChecked = true;
+            _serverWritePending = state.HasPending;
+            _serverLastConfirmed = state.Latest;
+        }
+        catch (Exception error) when (error is SqlException or TimeoutException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            if (Current()) _dialogError = "Не удалось проверить серверный журнал. Подтверждение недоступно.";
+        }
     }
 
     private async Task CompareAsync()
@@ -661,7 +788,18 @@ public partial class LocationFact : IAsyncDisposable
         _busy = true;
         try
         {
+            if (_pendingOperation is { } operation && _registration is { } registration &&
+                CurrentUser is { } actor && ReadCommand(operation) is { } command &&
+                await ReadVerifiedConfirmationAsync(operation, command, actor.Id) is { } checkedAt)
+            {
+                _confirmedCleanup = new ConfirmedFact(operation, command, checkedAt, Scanner: false,
+                    ReceiptRecorded: operation.Status == ClayDraftOperationStatus.Confirmed);
+                await FinishConfirmedAsync(registration);
+                return;
+            }
             _comparison = await LocationFactData.ReadForConfirmAsync(Db, expected.Site.Id, expected.Equipment.EquipmentId, Token);
+            if (!_blocked && _pending is not null)
+                await ReadPendingServerJournalAsync(_pending);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -770,6 +908,7 @@ public partial class LocationFact : IAsyncDisposable
             _conflict = _restoreRaw = _restoreIncomplete = false;
             _askRelocation = scanner && fresh.DifferentLocation;
             _dialogError = null;
+            await ReadPendingServerJournalAsync(fresh);
             ShowDialog();
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
@@ -804,6 +943,8 @@ public partial class LocationFact : IAsyncDisposable
         _dialogVisible = false;
         _pending = null;
         _comparison = null;
+        _serverWriteChecked = _serverWritePending = false;
+        _serverLastConfirmed = null;
         _conflict = false;
         _askRelocation = false;
         _dialogError = null;
@@ -837,12 +978,94 @@ public partial class LocationFact : IAsyncDisposable
         if (!await Windows.OpenAsync(url, "location-fact:" + url, Token)) _message = "Браузер заблокировал открытие карточки.";
     }
 
+    private async Task BeforeInternalNavigationAsync(LocationChangingContext context)
+    {
+        if (_busy)
+        {
+            context.PreventNavigation();
+            return;
+        }
+        if (_registration is not { } registration) return;
+        using var exit = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken, Token);
+        var token = exit.Token;
+        var actorId = CurrentUser?.Id;
+        bool Current() => !_disposed && !token.IsCancellationRequested && ReferenceEquals(_registration, registration) &&
+            CurrentUser?.Id == actorId;
+
+        _busy = true;
+        try
+        {
+            var editor = await registration.ReadEditorScopeAsync(DraftScope, token);
+            var workplace = await registration.ReadEditorScopeAsync(WorkplaceScope, token);
+            if (!Current() || editor.Revision != workplace.Revision)
+            {
+                context.PreventNavigation();
+                if (Current()) _message = "Ввод изменился. Повторите переход после проверки.";
+                return;
+            }
+            if ((_pending is not null || editor.HasRaw || workplace.HasRaw || _restoreIncomplete ||
+                _workplaceRawIncomplete || _unboundEditorRaw) && !await ConfirmPageExitAsync(token))
+            {
+                context.PreventNavigation();
+                return;
+            }
+            if (!Current() || !await registration.CloseRamIfRevisionAsync(workplace.Revision, token))
+            {
+                context.PreventNavigation();
+                if (Current()) _message = "Ввод изменился. Повторите переход после проверки.";
+                return;
+            }
+            if (ReferenceEquals(_registration, registration))
+            {
+                _registration = null;
+                _pageDraftClosed = true;
+                _pendingOperation = null;
+                _confirmedCleanup = null;
+                _storageRetryRequired = false;
+                ClosePending();
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { context.PreventNavigation(); }
+        catch (Exception error) when (error is JSException or InvalidOperationException)
+        {
+            context.PreventNavigation();
+            if (Current()) _message = "Не удалось удалить временные данные. Повторите переход.";
+        }
+        finally
+        {
+            _busy = false;
+            if (!_disposed) await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task<bool> ConfirmPageExitAsync(CancellationToken token)
+    {
+        var parameters = new DialogParameters<ConfirmDialog>
+        {
+            { dialog => dialog.Title, "Закрытие формы" },
+            { dialog => dialog.Message, "Покинуть форму с несохранёнными изменениями?" },
+            { dialog => dialog.ConfirmText, "Да" },
+            { dialog => dialog.CancelText, "Нет" },
+        };
+        var dialog = await Dialogs.ShowExAsync<ConfirmDialog>("Закрытие формы", parameters,
+            new DialogOptionsEx { CloseOnEscapeKey = true, CloseButton = true, DragMode = MudDialogDragMode.Simple });
+        try { return await dialog.Result.WaitAsync(token) is { Canceled: false }; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            dialog.Close(DialogResult.Cancel());
+            return false;
+        }
+    }
+
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
+        if (_disposed) return;
         _disposed = true;
         await _lifetime.CancelAsync();
-        if (_registration is not null) await _registration.DisposeAsync();
+        var registration = _registration;
+        _registration = null;
+        if (registration is not null) await registration.DisposeAsync();
         _lifetime.Dispose();
     }
 

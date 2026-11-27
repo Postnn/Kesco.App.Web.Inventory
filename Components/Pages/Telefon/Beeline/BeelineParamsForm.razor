@@ -1,3 +1,4 @@
+@using Clayzor.Lib.Web.Controls.Components.Presence
 @using System.Globalization
 @page "/Telefon/BeelineParams"
 @page "/Telefon/BeelineParams.aspx"
@@ -14,7 +15,7 @@
             <ClayToolbarButton Options="Ok" Disabled="@(Busy || Loading || _openingSim || ConfirmedCleanupPending || _contract is null || Draft is null || Dirty && !CanSave)"
                                OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="SaveButton" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
-            <ClayToolbarButton Options="ReloadButton" Disabled="@(!(CanRefresh || CanRetryRecovery) || _openingSim || _retryingRecovery)" OnClick="RefreshBeelineAsync" />
+            <ClayToolbarButton Options="ReloadButton" Disabled="@(!(CanRefresh || CanRetryRecovery) || _openingSim || _retryingRecovery || _checkingServerJournal)" OnClick="RefreshBeelineAsync" />
             <ClayToolbarButton Options="CancelButton" Disabled="@(Busy || Loading || _openingSim || _retryingRecovery)" OnClick="CancelBeelineAsync" />
         </ClayToolbar>
     </Toolbar>
@@ -28,11 +29,19 @@
         {
             <MudAlert Severity="Severity.Warning" Class="mb-2">@Message</MudAlert>
         }
+        @if (!Loading && ServerJournalMessage is { } journalMessage)
+        {
+            <MudAlert Severity="@(ServerJournalBlocked ? Severity.Warning : Severity.Info)" Class="mb-2">@journalMessage</MudAlert>
+        }
         @if (Validation.Count != 0)
         {
             <MudAlert Severity="Severity.Error" Class="mb-2">
                 <ul>@foreach (var error in Validation) { <li>@error</li> }</ul>
             </MudAlert>
+        }
+        @if (GetPresenceTarget() is { } presenceTarget)
+        {
+            <ClayPresencePanel Target="presenceTarget" />
         }
         @if (_contract is { } contract && Draft is { } draft && !ShowRecovery)
         {
@@ -45,31 +54,39 @@
                 <MudAlert Severity="Severity.Warning" Class="mb-2">Сохранённый Time Zone отсутствует в списке. Для записи выберите настроенный вариант.</MudAlert>
             }
 
-            <div class="d-flex flex-column gap-2" data-draft-scope="main" inert="@(DraftInputSuppressed || _openingSim)">
-                <ClayTextBox Options="BaseNumberOptions" Value="@contract.BaseNumber" />
-                @if (contract.MobileBudget)
-                {
-                    <ClayTextBox Options="BudgetNumberOptions" Value="@contract.BudgetNumber" />
+            var baseline = AcceptedDraftBaseline;
+            <ClayEditorFocusScope @key="RouteKey" Label="Параметры договора Билайн" Ready="@(Editable && CanCommit && !ServerJournalBlocked && !_openingSim)" AdvanceOnEnter="true">
+                <div class="d-flex flex-column gap-2" data-draft-scope="main" inert="@(DraftInputSuppressed || _openingSim)">
+                    <ClayTextBox Options="BaseNumberOptions" Value="@contract.BaseNumber" />
+                    @if (contract.MobileBudget)
+                    {
+                        <ClayTextBox Options="BudgetNumberOptions" Value="@contract.BudgetNumber" />
+                        <div class="d-flex align-items-center flex-wrap gap-2">
+                            <MudLink OnClick="OpenSimAsync">Номер телефона МБ:</MudLink>
+                            <ClayTextBox Options="BudgetPhoneOptions" Value="@contract.BudgetPhone" />
+                        </div>
+                        <MudText Typo="Typo.body2">Мобильный бюджет</MudText>
+                    }
+                    <ClayTextBox Options="CustomerOptions" Value="@contract.Customer" />
+                    @if (contract.MobileBudget)
+                    {
+                        <ClayTextBox Options="UserOptions" Value="@contract.UserName" />
+                    }
                     <div class="d-flex align-items-center flex-wrap gap-2">
-                        <MudLink OnClick="OpenSimAsync">Номер телефона МБ:</MudLink>
-                        <ClayTextBox Options="BudgetPhoneOptions" Value="@contract.BudgetPhone" />
+                        <ClayDatePicker Options="ActualDateOptions" Value="@contract.Actual.Date" />
+                        <ClayTextBox Options="ActualTimeOptions" Value="@contract.Actual.ToString("HH:mm:ss", CultureInfo.InvariantCulture)" />
                     </div>
-                    <MudText Typo="Typo.body2">Мобильный бюджет</MudText>
-                }
-                <ClayTextBox Options="CustomerOptions" Value="@contract.Customer" />
-                @if (contract.MobileBudget)
-                {
-                    <ClayTextBox Options="UserOptions" Value="@contract.UserName" />
-                }
-                <div class="d-flex align-items-center flex-wrap gap-2">
-                    <ClayDatePicker Options="ActualDateOptions" Value="@contract.Actual.Date" />
-                    <ClayTextBox Options="ActualTimeOptions" Value="@contract.Actual.ToString("HH:mm:ss", CultureInfo.InvariantCulture)" />
+                    <ClayFieldChange Changed="@(Editable && !_zoneOptions.ReadOnly && !_zoneOptions.Disabled && baseline is not null && draft.TimeZone != baseline.TimeZone)">
+                        <ClayDropDownList TItem="string" TValue="string" Options="_zoneOptions" Items="@ZoneChoices"
+                                          Value="@draft.TimeZone" ValueChanged="ChangeZoneAsync"
+                                          ValueSelector="@Identity" TextSelector="@Identity" />
+                    </ClayFieldChange>
+                    <ClayFieldChange Changed="@(Editable && !_emailOptions.ReadOnly && !_emailOptions.Disabled && baseline is not null && draft.EmailManager != baseline.EmailManager)"
+                                     RawBaseline="@(Editable && baseline is not null ? baseline.EmailManager ?? string.Empty : null)">
+                        <ClayTextBox Options="_emailOptions" Value="@draft.EmailManager" ValueChanged="ChangeEmailAsync" />
+                    </ClayFieldChange>
                 </div>
-                <ClayDropDownList TItem="string" TValue="string" Options="_zoneOptions" Items="@ZoneChoices"
-                                  Value="@draft.TimeZone" ValueChanged="ChangeZoneAsync"
-                                  ValueSelector="@Identity" TextSelector="@Identity" />
-                <ClayTextBox Options="_emailOptions" Value="@draft.EmailManager" ValueChanged="ChangeEmailAsync" />
-            </div>
+            </ClayEditorFocusScope>
         }
         else if (ShowRecovery)
         {
@@ -120,4 +137,3 @@
         }
     </Footer>
 </ClayEntityForm>
-

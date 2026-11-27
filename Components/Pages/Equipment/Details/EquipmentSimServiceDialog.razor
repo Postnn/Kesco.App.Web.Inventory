@@ -8,52 +8,70 @@
     <TitleContent>Дополнительная услуга SIM</TitleContent>
     <DialogContent>
         <ClayFormActions Form="InventoryFormHelp.EquipmentSimService" />
-        @RawRestoreNotice
-        @if (!string.IsNullOrWhiteSpace(_error))
-        {
-            <MudAlert Severity="Severity.Error">@_error</MudAlert>
-        }
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Тип услуги:</span>
-            <ClayDropDownList TItem="SimServiceType" TValue="string"
-                              Items="Types"
-                              ValueSelector="@(item => item.Id)"
-                              TextSelector="@(item => item.Name)"
-                              Value="Value.ServiceTypeId"
-                              ValueChanged="OnTypeChanged"
-                              Options="_typeOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Название:</span>
-            <ClayTextBox @bind-Value="Value.ServiceName" Options="_nameOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Подключена:</span>
-            <ClayDatePicker @bind-Value="Value.DateFrom" Options="_fromOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Прекращена:</span>
-            <ClayDatePicker @bind-Value="Value.DateTo" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Включение:</span>
-            <ClayNumber Value="@((decimal?)Value.ActivationCost)" ValueChanged="value => Value.ActivationCost = value ?? 0" Options="_costOptions" />
-            <span class="equipment-ins-label">В день:</span>
-            <ClayNumber Value="@((decimal?)Value.DailyCost)" ValueChanged="value => Value.DailyCost = value ?? 0" Options="_costOptions" />
-            <span class="equipment-ins-label">В месяц:</span>
-            <ClayNumber Value="@((decimal?)Value.MonthlyCost)" ValueChanged="value => Value.MonthlyCost = value ?? 0" Options="_costOptions" />
-        </div>
+        @EditorPresence
+        @{ var baseline = OpeningFieldValue<EquipmentSimService>(nameof(Value)); }
+        <ClayEditorFocusScope @key="ScopedInputVersion" Label="Дополнительная услуга SIM" Ready="@(IsEditorCurrent() && !_saving && !_saveBlocked && !RawRestoreBlocked)" Inert="@CancelPending" AdvanceOnEnter="true">
+            @RawRestoreNotice
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error">@_error</MudAlert>
+            }
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Тип услуги:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.ServiceTypeId != baseline.ServiceTypeId)">
+                    <ClayDropDownList TItem="SimServiceType" TValue="string"
+                                      Items="Types"
+                                      ValueSelector="@(item => item.Id)"
+                                      TextSelector="@(item => item.Name)"
+                                      Value="Value.ServiceTypeId"
+                                      ValueChanged="OnTypeChanged"
+                                      Options="_typeOptions" />
+                </ClayFieldChange>
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Название:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.ServiceName != baseline.ServiceName)" RawBaseline="@(baseline is null ? null : baseline.ServiceName ?? string.Empty)">
+                    <ClayTextBox @bind-Value="Value.ServiceName" Options="_nameOptions" />
+                </ClayFieldChange>
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Подключена:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.DateFrom?.Date != baseline.DateFrom?.Date)" RawBaseline="@(baseline is null ? null : ((DateTime?)baseline.DateFrom)?.ToString(_fromOptions.DateFormat) ?? string.Empty)">
+                    <ClayDatePicker @bind-Value="Value.DateFrom" Options="_fromOptions" />
+                </ClayFieldChange>
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Прекращена:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.DateTo?.Date != baseline.DateTo?.Date)" RawBaseline="@(baseline is null ? null : ((DateTime?)baseline.DateTo)?.ToString(new ClayDatePickerOptions().DateFormat) ?? string.Empty)">
+                    <ClayDatePicker @bind-Value="Value.DateTo" />
+                </ClayFieldChange>
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Включение:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.ActivationCost != baseline.ActivationCost)" RawBaseline="@(baseline is null ? null : ((decimal?)baseline.ActivationCost)?.ToString("0.00", System.Globalization.CultureInfo.CurrentCulture) ?? string.Empty)">
+                    <ClayNumber Value="@((decimal?)Value.ActivationCost)" ValueChanged="value => Value.ActivationCost = value ?? 0" Options="_costOptions" />
+                </ClayFieldChange>
+                <span class="equipment-ins-label">В день:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.DailyCost != baseline.DailyCost)" RawBaseline="@(baseline is null ? null : ((decimal?)baseline.DailyCost)?.ToString("0.00", System.Globalization.CultureInfo.CurrentCulture) ?? string.Empty)">
+                    <ClayNumber Value="@((decimal?)Value.DailyCost)" ValueChanged="value => Value.DailyCost = value ?? 0" Options="_costOptions" />
+                </ClayFieldChange>
+                <span class="equipment-ins-label">В месяц:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.MonthlyCost != baseline.MonthlyCost)" RawBaseline="@(baseline is null ? null : ((decimal?)baseline.MonthlyCost)?.ToString("0.00", System.Globalization.CultureInfo.CurrentCulture) ?? string.Empty)">
+                    <ClayNumber Value="@((decimal?)Value.MonthlyCost)" ValueChanged="value => Value.MonthlyCost = value ?? 0" Options="_costOptions" />
+                </ClayFieldChange>
+            </div>
+        </ClayEditorFocusScope>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked || RawRestoreBlocked)" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelScopedAsync" Disabled="@(_saving || CancelPending)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || CancelPending || _saveBlocked || RawRestoreBlocked)" />
     </DialogActions>
 </MudDialog>
 
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClayDropDownListOptions _typeOptions = new() { DraftKey = "sim-service.type" };
+    private readonly ClayDropDownListOptions _typeOptions = new() { AdvanceFocusOnSelection = true, DraftKey = "sim-service.type" };
     private readonly ClayTextBoxOptions _nameOptions = new() { MaxLength = 100, DraftKey = "sim-service.name" };
     private readonly ClayDatePickerOptions _fromOptions = new() { Required = true, DraftKey = "sim-service.from" };
     private readonly ClayNumberOptions _costOptions = new() { Precision = 2, DraftKey = "sim-service.cost" };
@@ -91,6 +109,9 @@
         Value.DailyCost = type.DailyCost;
         Value.MonthlyCost = type.MonthlyCost;
     }
+
+    /// <inheritdoc />
+    protected override void OnDraftStateRestored() => OnParametersSet();
 
     private async Task Apply()
     {

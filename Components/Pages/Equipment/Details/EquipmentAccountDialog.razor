@@ -7,34 +7,52 @@
     <TitleContent>@(IsEdit ? "Изменение учётной записи" : "Новая учётная запись")</TitleContent>
     <DialogContent>
         <ClayFormActions Form="InventoryFormHelp.EquipmentAccount" />
-        @if (!string.IsNullOrWhiteSpace(_error))
+        @if (IsEdit && PresenceTarget is null)
         {
-            <MudAlert Severity="Severity.Error">@_error</MudAlert>
+            <small role="status">Не удалось получить сведения о присутствии</small>
         }
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Логин:</span>
-            <ClayTextBox Value="Login" ValueChanged="OnLoginChanged" Options="_loginOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Пароль:</span>
-            <ClayTextBox @bind-Value="Password" Options="_passwordOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Права:</span>
-            <ClayCheckbox @bind-State="LimitedRights" Label="Ограниченные права" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Примечание:</span>
-            <ClayTextBox @bind-Value="Notes" Options="_notesOptions" />
+        else
+        {
+            @EditorPresence
+        }
+        <div @ref="_sensitiveCancelRoot">
+        <ClayEditorFocusScope @key="ScopedInputVersion" Label="Учётная запись" Ready="@(IsEditorCurrent() && !_saving && !_saveBlocked && !RawRestoreBlocked && !_loading && !_readinessInFlight && !_readFailed)" Inert="@CancelPending" AdvanceOnEnter="true">
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error">@_error</MudAlert>
+            }
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Логин:</span>
+                <ClayFieldChange Changed="@IsFieldChanged(nameof(Login), Login)" RawBaseline="@OpeningFieldText(nameof(Login))">
+                    <ClayTextBox Value="Login" ValueChanged="OnLoginChanged" Options="_loginOptions" />
+                </ClayFieldChange>
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Пароль:</span>
+                <ClayTextBox @bind-Value="Password" Options="_passwordOptions" />
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Права:</span>
+                <ClayFieldChange Changed="@IsFieldChanged(nameof(LimitedRights), LimitedRights)">
+                    <ClayCheckbox @bind-State="LimitedRights" Label="Ограниченные права" />
+                </ClayFieldChange>
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Примечание:</span>
+                <ClayFieldChange Changed="@IsFieldChanged(nameof(Notes), Notes)" RawBaseline="@OpeningFieldText(nameof(Notes))">
+                    <ClayTextBox @bind-Value="Notes" Options="_notesOptions" />
+                </ClayFieldChange>
+            </div>
+        </ClayEditorFocusScope>
         </div>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelScopedAsync" Disabled="@(_loading || _readinessInFlight || _saving || CancelPending)" />
         @if (_readFailed && !_pendingRawRetry)
         {
-            <ClayToolbarButton Options="_retryButtonOptions" OnClick="LoadSecretsAndRawAsync" Disabled="@(_loading || _readinessInFlight)" />
+            <ClayToolbarButton Options="_retryButtonOptions" OnClick="LoadSecretsAndRawAsync" Disabled="@(_loading || _readinessInFlight || CancelPending)" />
         }
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || _readinessInFlight || _readFailed || _saving || _saveBlocked)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_loading || _readinessInFlight || _readFailed || _saving || _saveBlocked || CancelPending)" />
     </DialogActions>
 </MudDialog>
 
@@ -42,8 +60,12 @@
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _retryButtonOptions = new() { Text = "Повторить" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
+    private ElementReference _sensitiveCancelRoot;
+
+    /// <inheritdoc />
+    protected override ElementReference? SensitiveCancellationRoot => _sensitiveCancelRoot;
     private readonly ClayTextBoxOptions _loginOptions = new() { Required = true, MaxLength = 50, DraftKey = "account.login" };
-    private readonly ClayTextBoxOptions _passwordOptions = new() { MaxLength = 128, InputType = InputType.Password, DraftKey = "account.password", ReadOnly = true, Disabled = true };
+    private readonly ClayTextBoxOptions _passwordOptions = new() { MaxLength = 128, InputType = InputType.Password, ReadOnly = true, Disabled = true };
     private readonly ClayTextBoxOptions _notesOptions = new() { MaxLength = 300, DraftKey = "account.notes" };
     private bool _loading = true;
     private bool _readFailed;
@@ -227,6 +249,17 @@
         Login = value ?? string.Empty;
         if (!_readFailed && !_versionConflict)
             _error = null;
+    }
+
+    internal void AcceptFreshResetPassword(string password)
+    {
+        Password = password;
+        _versionConflict = false;
+        _readFailed = false;
+        _pendingRawRetry = false;
+        _retryRequiresReopen = false;
+        _passwordOptions.Disabled = false;
+        _passwordOptions.ReadOnly = false;
     }
 
     private Task Apply()

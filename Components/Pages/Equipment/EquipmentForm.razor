@@ -1,3 +1,4 @@
+@using Clayzor.Lib.Web.Controls.Components.Presence
 @page "/Equipment/EquipmentForm"
 @layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
 @using Clayzor.Lib.Entities.Inventory
@@ -24,7 +25,7 @@
 <PageTitle>@Title</PageTitle>
 <NavigationLock ConfirmExternalNavigation="@ConfirmExternalExit" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
-<div data-draft-owner="@_draftOwner" style="display: contents" inert="@(_mainTransition || _recoveringEquipmentDraft)">
+<div data-draft-owner="@_draftOwner" style="display: contents" inert="@(_mainTransition || _draftAttachingInstance == _draftInstance)">
 <ClayEntityForm @key="_mainFormRevision" Options="_entityFormOptions">
     <Toolbar>
         <ClayToolbar>
@@ -32,7 +33,7 @@
             {
                 <ClayMenu Icon="@Icons.Material.Filled.ArrowDropDown" ButtonOptions="_operationsOptions"
                           AnchorOrigin="Origin.BottomLeft" TransformOrigin="Origin.TopLeft"
-                          Disabled="@(_loading || _saving || !_loaded)">
+                          Disabled="@(_loading || _saving || !_loaded || MainCloseInProgress || _mainDraftCancelled)">
                     @if (CanConfigurePhone)
                     {
                         <MudMenuItem Icon="@Icons.Material.Filled.SettingsPhone" OnClick="ConfigurePhoneEquipmentAsync">
@@ -54,7 +55,8 @@
                     }
                 </ClayMenu>
             }
-            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit || !MainRawReady || EquipmentRecoveryWriteBlocked)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !MainCloseInProgress && !_mainDraftCancelled &&
+                (!_loaded || !_canEdit || !MainRawReady || EquipmentRecoveryWriteBlocked))" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
             @if (ShowSimDetail)
             {
@@ -74,11 +76,7 @@
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
-        @if (_equipmentRecoveryNotice is not null)
-        {
-            <MudAlert Severity="Severity.Warning" data-testid="equipment-recovery">@_equipmentRecoveryNotice</MudAlert>
-        }
-
+        <div style="display: contents" inert="@(MainCloseInProgress || _mainDraftCancelled)">
         @if (_notFound)
         {
             <MudAlert Severity="Severity.Warning">Оборудование с указанным идентификатором не найдено.</MudAlert>
@@ -94,15 +92,48 @@
         }
         else if (_model is not null)
         {
+            <ClayPresencePanel Target="@GetPresenceTarget()" />
             if (!_canEdit)
             {
                 <MudAlert Severity="Severity.Warning" Class="mb-3">
                     Для изменения оборудования требуется роль «Специалист по инвентаризации оборудования» (43).
                 </MudAlert>
             }
+            if (_priorMainSaveConfirmed && !_loading && !MainServerWriteBlocked && _draftOperation is null)
+            {
+                <MudAlert Severity="Severity.Info">
+                    Предыдущее сохранение оборудования подтверждено сервером.
+                </MudAlert>
+            }
+            if (!string.IsNullOrWhiteSpace(_warningMessage) &&
+                !(_mainServerWriteCheckFailed && ErrorService.HasOperationContext && ErrorService.ErrorMessage == _warningMessage))
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-3">
+                    <div>@_warningMessage</div>
+                    @if (_mainConflictFresh is not null)
+                    {
+                        <div class="d-flex flex-wrap gap-2 mt-2">
+                            <ClayToolbarButton Options="_keepDraftOptions" OnClick="() => ResolveMainConflict(true)" />
+                            <ClayToolbarButton Options="_takeFreshOptions" OnClick="() => ResolveMainConflict(false)" />
+                        </div>
+                    }
+                    @if (_draftOperationUnresolved)
+                    {
+                        <div class="d-flex flex-wrap gap-2 mt-2">
+                            <ClayToolbarButton Options="_reconcileOptions" OnClick="ReconcileDraftOperationAsync" />
+                        </div>
+                    }
+                    @if (_pendingPhoneSync?.Attempt is not null)
+                    {
+                        <div class="d-flex flex-wrap gap-2 mt-2">
+                            <ClayToolbarButton Options="_reconcileAtsOptions" OnClick="ReconcilePendingPhoneSyncAsync" />
+                        </div>
+                    }
+                </MudAlert>
+            }
             if (!string.IsNullOrWhiteSpace(_draftStorageError))
             {
-                <MudAlert Severity="Severity.Error" Class="mb-3">@_draftStorageError</MudAlert>
+                <MudAlert Severity="Severity.Warning" Class="mb-3">@_draftStorageError</MudAlert>
             }
             if (_mainRawRestorePending)
             {
@@ -145,24 +176,35 @@
             }
 
             <MudForm @ref="_form">
+                <ClayEditorFocusScope @key="Id" @ref="_equipmentFocusScope" Label="Поля оборудования" Ready="@EquipmentFocusReady" AdvanceOnEnter="true">
+                @{ var baseline = MainFieldChangeBaseline; }
                 <div class="equipment-form-fields">
                     <div class="equipment-form-pair equipment-form-writeoff-row">
                         <span class="equipment-form-label">SN:</span>
-                        <ClayTextBox @bind-Value="_model.SerialNumber" Options="_snOptions" />
+                        <ClayFieldChange Changed="@(baseline is not null && baseline.Equipment.SerialNumber != _model.SerialNumber)" RawBaseline="@(baseline is not null ? baseline?.Equipment?.SerialNumber ?? string.Empty : null)">
+                            <ClayTextBox @bind-Value="_model.SerialNumber" Options="_snOptions" />
+                        </ClayFieldChange>
                         <span class="equipment-form-label">Списано:</span>
                         <div class="equipment-form-writeoff">
                             <div class="equipment-form-writeoff-date">
-                                <ClayDatePicker @bind-Value="_writeOffDate" Options="_writeOffDateOptions" />
+                                <ClayFieldChange Changed="@(baseline is not null && baseline.WriteOffDate != _writeOffDate)"
+                                                 RawBaseline="@(baseline is null ? null : baseline.WriteOffDate?.ToString(_writeOffDateOptions.DateFormat) ?? string.Empty)">
+                                    <ClayDatePicker @bind-Value="_writeOffDate" Options="_writeOffDateOptions" />
+                                </ClayFieldChange>
                             </div>
-                            <ClayTime @bind-Value="_writeOffTime" Options="_writeOffTimeOptions" />
+                            <ClayFieldChange Changed="@(baseline is not null && baseline.WriteOffTime != _writeOffTime)">
+                                <ClayTime @bind-Value="_writeOffTime" Options="_writeOffTimeOptions" />
+                            </ClayFieldChange>
                             <span class="equipment-form-label">№</span>
                             <div class="equipment-form-writeoff-document">
-                                <ClaySelect TItem="DocumentLookup" TValue="int?"
-                                            DataSource="WriteOffDocumentSource"
-                                            ValueSelector="@(item => (int?)item.Id)"
-                                            TextSelector="@(item => item.DisplayName)"
-                                            @bind-Value="_model.DocumentWriteOffId"
-                                            Options="_writeOffDocumentOptions" />
+                                <ClayFieldChange Changed="@(baseline is not null && baseline.Equipment.DocumentWriteOffId != _model.DocumentWriteOffId)" WatchLookupRaw="@(baseline is not null)">
+                                    <ClaySelect TItem="DocumentLookup" TValue="int?"
+                                                DataSource="WriteOffDocumentSource"
+                                                ValueSelector="@(item => (int?)item.Id)"
+                                                TextSelector="@(item => item.DisplayName)"
+                                                @bind-Value="_model.DocumentWriteOffId"
+                                                Options="_writeOffDocumentOptions" />
+                                </ClayFieldChange>
                             </div>
                         </div>
                         @if (_model.DocumentWriteOffId is null && _writeOffActs.Count > 0)
@@ -175,31 +217,35 @@
                     <div class="equipment-form-pair">
                         <span class="equipment-form-label">Тип:</span>
                         <div>
-                            <ClaySelect TItem="EquipmentType" TValue="int?"
-                                        DataSource="EquipmentTypeSource"
-                                        ValueSelector="@(item => (int?)item.Id)"
-                                        TextSelector="@(item => item.Name)"
-                                        Value="_model.EquipmentTypeId"
-                                        ValueChanged="OnTypeIdChanged"
-                                        SelectedItem="_selectedType"
-                                        SelectedItemChanged="OnTypeChanged"
-                                        Cleared="OnTypeClearConfirmed"
-                                        Options="_typeOptions" />
+                            <ClayFieldChange Changed="@(baseline is not null && baseline.Equipment.EquipmentTypeId != _model.EquipmentTypeId)" WatchLookupRaw="@(baseline is not null)">
+                                <ClaySelect TItem="EquipmentType" TValue="int?"
+                                            DataSource="EquipmentTypeSource"
+                                            ValueSelector="@(item => (int?)item.Id)"
+                                            TextSelector="@(item => item.Name)"
+                                            Value="_model.EquipmentTypeId"
+                                            ValueChanged="OnTypeIdChanged"
+                                            SelectedItem="_selectedType"
+                                            SelectedItemChanged="OnTypeChanged"
+                                            Cleared="OnTypeClearConfirmed"
+                                            Options="_typeOptions" />
+                            </ClayFieldChange>
                             <ClayCheckbox State="_sortTypesByName" StateChanged="OnTypeSortChanged"
                                           Label="сортировать типы в списке по алфавиту" />
                         </div>
                         <span class="equipment-form-label">Модель:</span>
                         <div>
-                            <ClaySelect TItem="EquipmentModel" TValue="int?"
-                                        DataSource="ModelSource"
-                                        ValueSelector="@(item => (int?)item.Id)"
-                                        TextSelector="@(item => item.Name)"
-                                        Value="_model.ModelId"
-                                        ValueChanged="OnModelIdChanged"
-                                        SelectedItem="_selectedModel"
-                                        SelectedItemChanged="OnModelChangedAsync"
-                                        ViewItem="ModelViewItem"
-                                        Options="_modelOptions" />
+                            <ClayFieldChange Changed="@(baseline is not null && baseline.Equipment.ModelId != _model.ModelId)" WatchLookupRaw="@(baseline is not null)">
+                                <ClaySelect TItem="EquipmentModel" TValue="int?"
+                                            DataSource="ModelSource"
+                                            ValueSelector="@(item => (int?)item.Id)"
+                                            TextSelector="@(item => item.Name)"
+                                            Value="_model.ModelId"
+                                            ValueChanged="OnModelIdChanged"
+                                            SelectedItem="_selectedModel"
+                                            SelectedItemChanged="OnModelChangedAsync"
+                                            ViewItem="ModelViewItem"
+                                            Options="_modelOptions" />
+                            </ClayFieldChange>
                             @if (_selectedModel is not null && _model.ModelId is not null)
                             {
                                 if (!string.IsNullOrWhiteSpace(_selectedModel.PartNumber))
@@ -328,8 +374,10 @@
                         {
                             <div class="equipment-form-single">
                                 <span class="equipment-form-label">Камера:</span>
-                                <ClayCheckbox State="@(_model.CameraIsConnected != 0)" StateChanged="OnCameraChanged"
-                                              ReadOnly="@(!_canEdit)" Label="подключена камера" />
+                                <ClayFieldChange Changed="@(baseline is not null && (baseline.Equipment.CameraIsConnected != 0) != (_model.CameraIsConnected != 0))">
+                                    <ClayCheckbox State="@(_model.CameraIsConnected != 0)" StateChanged="OnCameraChanged"
+                                                  ReadOnly="@(!_canEdit)" Label="подключена камера" />
+                                </ClayFieldChange>
                             </div>
                         }
                     }
@@ -340,7 +388,9 @@
                             <div>
                                 @if (ShowNetworkName)
                                 {
-                                    <ClayTextBox @bind-Value="_model.NetworkName" Options="_networkNameOptions" />
+                                    <ClayFieldChange Changed="@(baseline is not null && baseline.Equipment.NetworkName != _model.NetworkName)" RawBaseline="@(baseline is not null ? baseline?.Equipment?.NetworkName ?? string.Empty : null)">
+                                        <ClayTextBox @bind-Value="_model.NetworkName" Options="_networkNameOptions" />
+                                    </ClayFieldChange>
                                     @if (!HideNetworkAndUps)
                                     {
                                         <div class="d-flex flex-wrap align-center gap-2 mt-1" data-testid="equipment-ping-trigger">
@@ -385,16 +435,22 @@
                             <div class="equipment-form-mac">
                                 @if (MacCount > 0)
                                 {
-                                    <ClayTextBox Value="@_model.MacAddress" ValueChanged="@(value => OnMacChanged(value, 1))" Options="_macOptions" />
+                                    <ClayFieldChange Changed="@(baseline is not null && baseline.Equipment.MacAddress != _model.MacAddress)" RawBaseline="@(baseline is not null ? baseline?.Equipment?.MacAddress ?? string.Empty : null)">
+                                        <ClayTextBox Value="@_model.MacAddress" ValueChanged="@(value => OnMacChanged(value, 1))" Options="_macOptions" />
+                                    </ClayFieldChange>
                                     @if (MacCount > 1)
                                     {
                                         <span class="equipment-form-label">MAC 2:</span>
-                                        <ClayTextBox Value="@_model.MacAddress2" ValueChanged="@(value => OnMacChanged(value, 2))" Options="_macOptions" />
+                                        <ClayFieldChange Changed="@(baseline is not null && baseline.Equipment.MacAddress2 != _model.MacAddress2)" RawBaseline="@(baseline is not null ? baseline?.Equipment?.MacAddress2 ?? string.Empty : null)">
+                                            <ClayTextBox Value="@_model.MacAddress2" ValueChanged="@(value => OnMacChanged(value, 2))" Options="_macOptions" />
+                                        </ClayFieldChange>
                                     }
                                     @if (MacCount > 2)
                                     {
                                         <span class="equipment-form-label">MAC ILO:</span>
-                                        <ClayTextBox Value="@_model.MacAddressIlo" ValueChanged="@(value => OnMacChanged(value, 3))" Options="_macOptions" />
+                                        <ClayFieldChange Changed="@(baseline is not null && baseline.Equipment.MacAddressIlo != _model.MacAddressIlo)" RawBaseline="@(baseline is not null ? baseline?.Equipment?.MacAddressIlo ?? string.Empty : null)">
+                                            <ClayTextBox Value="@_model.MacAddressIlo" ValueChanged="@(value => OnMacChanged(value, 3))" Options="_macOptions" />
+                                        </ClayFieldChange>
                                     }
                                 }
                             </div>
@@ -402,46 +458,25 @@
                     }
                     <div class="equipment-form-single equipment-form-top">
                         <span class="equipment-form-label">Примечания:</span>
-                        <ClayTextArea @bind-Value="_model.Description" Options="_descriptionOptions" />
+                        <ClayFieldChange Changed="@(baseline is not null && baseline.Equipment.Description != _model.Description)" RawBaseline="@(baseline is not null ? baseline?.Equipment?.Description ?? string.Empty : null)">
+                            <ClayTextArea @bind-Value="_model.Description" Options="_descriptionOptions" />
+                        </ClayFieldChange>
                     </div>
                     @if (ShowPhonePool)
                     {
                         <div class="equipment-form-single">
                             <span class="equipment-form-label">Пул телефона:</span>
-                            <ClaySelect TItem="PhonePoolLookup" TValue="int?"
-                                        DataSource="PhonePoolSource"
-                                        ValueSelector="@(item => (int?)item.Id)"
-                                        TextSelector="@(item => item.Name)"
-                                        @bind-Value="_model.PhonePoolId"
-                                        Options="_phonePoolOptions" />
+                            <ClayFieldChange Changed="@(baseline is not null && baseline.Equipment.PhonePoolId != _model.PhonePoolId)" WatchLookupRaw="@(baseline is not null)">
+                                <ClaySelect TItem="PhonePoolLookup" TValue="int?"
+                                            DataSource="PhonePoolSource"
+                                            ValueSelector="@(item => (int?)item.Id)"
+                                            TextSelector="@(item => item.Name)"
+                                            @bind-Value="_model.PhonePoolId"
+                                            Options="_phonePoolOptions" />
+                            </ClayFieldChange>
                         </div>
                     }
                 </div>
-            @if (!string.IsNullOrWhiteSpace(_warningMessage))
-            {
-                <MudAlert Severity="Severity.Warning" Class="mt-3">
-                    <div>@_warningMessage</div>
-                    @if (_mainConflictFresh is not null)
-                    {
-                        <div class="d-flex flex-wrap gap-2 mt-2">
-                            <ClayToolbarButton Options="_keepDraftOptions" OnClick="() => ResolveMainConflict(true)" />
-                            <ClayToolbarButton Options="_takeFreshOptions" OnClick="() => ResolveMainConflict(false)" />
-                        </div>
-                    }
-                    @if (_draftOperationUnresolved)
-                    {
-                        <div class="d-flex flex-wrap gap-2 mt-2">
-                            <ClayToolbarButton Options="_reconcileOptions" OnClick="ReconcileDraftOperationAsync" />
-                        </div>
-                    }
-                    @if (_pendingPhoneSync?.Attempt is not null)
-                    {
-                        <div class="d-flex flex-wrap gap-2 mt-2">
-                            <ClayToolbarButton Options="_reconcileAtsOptions" OnClick="ReconcilePendingPhoneSyncAsync" />
-                        </div>
-                    }
-                </MudAlert>
-            }
             @if (ShowAccounts)
             {
                 if (!_accountsVisible)
@@ -787,38 +822,46 @@
             <div class="equipment-form-fields equipment-form-ownership">
                 <div class="equipment-form-pair">
                     <span class="equipment-form-label">Владелец:</span>
-                    <ClaySelect TItem="PersonLookup" TValue="int?"
-                                DataSource="PersonSource"
-                                ValueSelector="@(item => (int?)item.Id)"
-                                TextSelector="@(item => item.Name)"
-                                Value="_model.OwnerId"
-                                ValueChanged="OnOwnerChangedAsync"
-                                Options="_ownerOptions" />
+                    <ClayFieldChange Changed="@(baseline is not null && baseline.Equipment.OwnerId != _model.OwnerId)" WatchLookupRaw="@(baseline is not null)">
+                        <ClaySelect TItem="PersonLookup" TValue="int?"
+                                    DataSource="PersonSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.Name)"
+                                    Value="_model.OwnerId"
+                                    ValueChanged="OnOwnerChangedAsync"
+                                    Options="_ownerOptions" />
+                    </ClayFieldChange>
                     <span class="equipment-form-label">Арендатор:</span>
-                    <ClaySelect TItem="PersonLookup" TValue="int?"
-                                DataSource="PersonSource"
-                                ValueSelector="@(item => (int?)item.Id)"
-                                TextSelector="@(item => item.Name)"
-                                @bind-Value="_model.TenantId"
-                                Options="_tenantOptions" />
+                    <ClayFieldChange Changed="@(baseline is not null && baseline.Equipment.TenantId != _model.TenantId)" WatchLookupRaw="@(baseline is not null)">
+                        <ClaySelect TItem="PersonLookup" TValue="int?"
+                                    DataSource="PersonSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.Name)"
+                                    @bind-Value="_model.TenantId"
+                                    Options="_tenantOptions" />
+                    </ClayFieldChange>
                 </div>
                 <div class="equipment-form-pair">
                     <span class="equipment-form-label">Документ поступления:</span>
-                    <ClaySelect TItem="DocumentLookup" TValue="int?"
-                                DataSource="ReceiptDocumentSource"
-                                ValueSelector="@(item => (int?)item.Id)"
-                                TextSelector="@(item => item.DisplayName)"
-                                Value="_model.DocumentReceiptOuId"
-                                ValueChanged="OnReceiptDocumentChangedAsync"
-                                Options="_receiptDocumentOptions" />
+                    <ClayFieldChange Changed="@(baseline is not null && baseline.Equipment.DocumentReceiptOuId != _model.DocumentReceiptOuId)" WatchLookupRaw="@(baseline is not null)">
+                        <ClaySelect TItem="DocumentLookup" TValue="int?"
+                                    DataSource="ReceiptDocumentSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.DisplayName)"
+                                    Value="_model.DocumentReceiptOuId"
+                                    ValueChanged="OnReceiptDocumentChangedAsync"
+                                    Options="_receiptDocumentOptions" />
+                    </ClayFieldChange>
                     <span class="equipment-form-label">Поставщик:</span>
-                    <ClaySelect TItem="PersonLookup" TValue="int?"
-                                DataSource="PersonSource"
-                                ValueSelector="@(item => (int?)item.Id)"
-                                TextSelector="@(item => item.Name)"
-                                Value="_model.ShipperId"
-                                ValueChanged="OnShipperChanged"
-                                Options="_shipperOptions" />
+                    <ClayFieldChange Changed="@(baseline is not null && baseline.Equipment.ShipperId != _model.ShipperId)" WatchLookupRaw="@(baseline is not null)">
+                        <ClaySelect TItem="PersonLookup" TValue="int?"
+                                    DataSource="PersonSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.Name)"
+                                    Value="_model.ShipperId"
+                                    ValueChanged="OnShipperChanged"
+                                    Options="_shipperOptions" />
+                    </ClayFieldChange>
                 </div>
             </div>
             @if (ShowSim)
@@ -912,8 +955,10 @@
                     </MudStack>
                 }
             }
+                </ClayEditorFocusScope>
             </MudForm>
         }
+        </div>
     </ChildContent>
     <Footer>
         <ClayChanged ChangedById="_model?.ChangedById"

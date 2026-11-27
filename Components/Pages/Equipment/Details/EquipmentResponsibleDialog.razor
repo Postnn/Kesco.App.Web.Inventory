@@ -15,73 +15,92 @@
     <TitleContent>@Title</TitleContent>
     <DialogContent>
         <ClayFormActions Form="InventoryFormHelp.EquipmentResponsible" />
-        @RawRestoreNotice
-        @if (!string.IsNullOrWhiteSpace(_error))
-        {
-            <MudAlert Severity="Severity.Error">@_error</MudAlert>
-        }
-        @if (Mode != EquipmentResponsibleDialogMode.Edit)
-        {
-            <div class="equipment-ins-row">
-                <span class="equipment-ins-label">Сотрудник:</span>
-                <ClaySelect TItem="Employee" TValue="int?"
-                            DataSource="EmployeeSource"
-                            ValueSelector="@(item => (int?)item.Id)"
-                            TextSelector="@(item => item.Name)"
-                            ViewItem="EmployeeViewItem"
-                            @bind-Value="EmployeeId"
-                            Options="_employeeOptions" />
-            </div>
-            <div class="equipment-ins-row">
-                <span class="equipment-ins-label">С:</span>
-                <div class="equipment-ins-date">
-                    <ClayDatePicker @bind-Value="FromDate" Options="_fromDateOptions" />
-                    <ClayTime @bind-Value="FromTime" Options="_fromTimeOptions" />
-                </div>
-            </div>
-            @if (Mode == EquipmentResponsibleDialogMode.Withdraw)
+        @EditorPresence
+        <ClayEditorFocusScope @key="ScopedInputVersion" Label="Ответственный за оборудование" Ready="@(IsEditorCurrent() && !_saving && !_saveBlocked && !RawRestoreBlocked)" Inert="@CancelPending" AdvanceOnEnter="true">
+            @RawRestoreNotice
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error">@_error</MudAlert>
+            }
+            @if (Mode != EquipmentResponsibleDialogMode.Edit)
             {
                 <div class="equipment-ins-row">
-                    <span class="equipment-ins-label">По:</span>
+                    <span class="equipment-ins-label">Сотрудник:</span>
+                    <ClayFieldChange Changed="@IsFieldChanged(nameof(EmployeeId), EmployeeId)" WatchLookupRaw="true">
+                        <ClaySelect TItem="Employee" TValue="int?"
+                                    DataSource="EmployeeSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.Name)"
+                                    ViewItem="EmployeeViewItem"
+                                    @bind-Value="EmployeeId"
+                                    Options="_employeeOptions" />
+                    </ClayFieldChange>
+                </div>
+                <div class="equipment-ins-row">
+                    <span class="equipment-ins-label">С:</span>
                     <div class="equipment-ins-date">
-                        <ClayDatePicker @bind-Value="ToDate" Options="_toDateOptions" />
-                        <ClayTime @bind-Value="ToTime" Options="_toTimeOptions" />
+                        <ClayFieldChange Changed="@IsFieldChanged(nameof(FromDate), FromDate)" RawBaseline="@OpeningFieldDate(nameof(FromDate), _fromDateOptions.DateFormat)">
+                            <ClayDatePicker @bind-Value="FromDate" Options="_fromDateOptions" />
+                        </ClayFieldChange>
+                        <ClayFieldChange Changed="@IsFieldChanged(nameof(FromTime), FromTime)" RawBaseline="@OpeningFieldTime(nameof(FromTime), _fromTimeOptions.TimeFormat)">
+                            <ClayTime @bind-Value="FromTime" Options="_fromTimeOptions" />
+                        </ClayFieldChange>
                     </div>
                 </div>
+                @if (Mode == EquipmentResponsibleDialogMode.Withdraw)
+                {
+                    <div class="equipment-ins-row">
+                        <span class="equipment-ins-label">По:</span>
+                        <div class="equipment-ins-date">
+                            <ClayFieldChange Changed="@IsFieldChanged(nameof(ToDate), ToDate)" RawBaseline="@OpeningFieldDate(nameof(ToDate), _toDateOptions.DateFormat)">
+                                <ClayDatePicker @bind-Value="ToDate" Options="_toDateOptions" />
+                            </ClayFieldChange>
+                            <ClayFieldChange Changed="@IsFieldChanged(nameof(ToTime), ToTime)" RawBaseline="@OpeningFieldTime(nameof(ToTime), _toTimeOptions.TimeFormat)">
+                                <ClayTime @bind-Value="ToTime" Options="_toTimeOptions" />
+                            </ClayFieldChange>
+                        </div>
+                    </div>
+                }
+                @if (RequireLocation)
+                {
+                    <div class="equipment-ins-row">
+                        <span class="equipment-ins-label">Новое расположение:</span>
+                        <ClayFieldChange Changed="@IsFieldChanged(nameof(LocationId), LocationId)" WatchLookupRaw="true">
+                            <ClaySelect TItem="LocationLookup" TValue="int?"
+                                        DataSource="LocationSource"
+                                        ValueSelector="@(item => (int?)item.Id)"
+                                        TextSelector="@(item => item.Name)"
+                                        @bind-Value="LocationId"
+                                        Options="_locationOptions" />
+                        </ClayFieldChange>
+                    </div>
+                }
             }
-            @if (RequireLocation)
-            {
-                <div class="equipment-ins-row">
-                    <span class="equipment-ins-label">Новое расположение:</span>
-                    <ClaySelect TItem="LocationLookup" TValue="int?"
-                                DataSource="LocationSource"
-                                ValueSelector="@(item => (int?)item.Id)"
-                                TextSelector="@(item => item.Name)"
-                                @bind-Value="LocationId"
-                                Options="_locationOptions" />
-                </div>
-            }
-        }
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Срок возврата:</span>
-            <ClayDatePicker @bind-Value="ReturnDate" Options="_returnDateOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Примечания:</span>
-            <ClayTextArea @bind-Value="Notes" Options="_notesOptions" />
-        </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Срок возврата:</span>
+                <ClayFieldChange Changed="@IsFieldChanged(nameof(ReturnDate), ReturnDate)" RawBaseline="@OpeningFieldDate(nameof(ReturnDate), _returnDateOptions.DateFormat)">
+                    <ClayDatePicker @bind-Value="ReturnDate" Options="_returnDateOptions" />
+                </ClayFieldChange>
+            </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Примечания:</span>
+                <ClayFieldChange Changed="@IsFieldChanged(nameof(Notes), Notes)" RawBaseline="@OpeningFieldText(nameof(Notes))">
+                    <ClayTextArea @bind-Value="Notes" Options="_notesOptions" />
+                </ClayFieldChange>
+            </div>
+        </ClayEditorFocusScope>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked || RawRestoreBlocked)" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelScopedAsync" Disabled="@(_saving || CancelPending)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked || RawRestoreBlocked || CancelPending)" />
     </DialogActions>
 </MudDialog>
 
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClaySelectOptions _employeeOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите сотрудника", DraftKey = "responsible.employee" };
-    private readonly ClaySelectOptions _locationOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите расположение", DraftKey = "responsible.location" };
+    private readonly ClaySelectOptions _employeeOptions = new() { AdvanceFocusOnSelection = true, AutoSelectSingle = true, Placeholder = "Выберите сотрудника", DraftKey = "responsible.employee" };
+    private readonly ClaySelectOptions _locationOptions = new() { AdvanceFocusOnSelection = true, Required = true, AutoSelectSingle = true, Placeholder = "Выберите расположение", DraftKey = "responsible.location" };
     private readonly ClayDatePickerOptions _fromDateOptions = new() { Required = true, DraftKey = "responsible.from-date" };
     private readonly ClayTimeOptions _fromTimeOptions = new() { Required = true, DraftKey = "responsible.from-time" };
     private readonly ClayDatePickerOptions _toDateOptions = new() { Required = true, DraftKey = "responsible.to-date" };
@@ -162,6 +181,9 @@
 
     private async Task OpenEmployeeViewAsync(Employee employee) =>
         await JS.InvokeVoidAsync("clayOpen", EquipmentIns.BuildEditUrl(Configuration["URI_user_form"]!, employee.Id), "_blank");
+
+    /// <inheritdoc />
+    protected override void OnDraftStateRestored() => OnParametersSet();
 
     private async Task Apply()
     {

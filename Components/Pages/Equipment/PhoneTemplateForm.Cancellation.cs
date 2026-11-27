@@ -1,6 +1,8 @@
 using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.Inventory;
+using Clayzor.Lib.Web.Controls.Components;
 using Clayzor.Lib.Web.Controls.Components.Form;
+using Clayzor.Lib.Web.Controls.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.JSInterop;
@@ -12,22 +14,25 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
 
 public partial class PhoneTemplateForm
 {
+    private bool _templateConflictNeedsReview;
+    private CancellationTokenSource? _templateConflictReview;
     private bool _templateTransitionApplying;
     private bool _templateInputDiscarded;
+    private (long DraftRevision, long? EditorRevision)? _pendingTemplateClose;
     private TemplateTransition? _releaseTransitionAfterRender;
 
     private Task CancelAsync() => ChangeTemplateEditorAsync(refresh: false);
 
     private async Task RefreshAsync()
     {
-        if (_disposed || _loading || _saving || _journalBusy)
+        if (_disposed || _loading || _saving || _journalBusy || _pendingTemplateClose is not null)
             return;
         if (_rawPending && !_editorWatchFailed && !_knownWrite)
         {
             await RetryTemplateRawAsync();
             return;
         }
-        if (_templateAttempt is not null && !_knownWrite && _notSentAttempt is null)
+        if ((_templateAttempt is not null || HasUnprovedTemplateSubmission) && !_knownWrite && _notSentAttempt is null)
         {
             await ObserveTemplateAsync();
             return;
@@ -42,11 +47,178 @@ public partial class PhoneTemplateForm
             await RetryTemplateInputAsync();
             return;
         }
+        if (_templateConflictNeedsReview)
+        {
+            await ReviewTemplateConflictAsync();
+            return;
+        }
         await ChangeTemplateEditorAsync(refresh: true);
+    }
+
+    private async Task ReviewTemplateConflictAsync()
+    {
+        if (!_canEdit || _model is not { } model || _writeBaseline is not { } original ||
+            _templateJournal is not { } journal || _templateTextModule is not { } module ||
+            _editorWatchGeneration is not { } generation || CurrentUser is not { Id: > 0 } employee ||
+            TemplateInputBlocked || !_journalReady || _serverWritePending || _templateAttempt is not null ||
+            _protectedSubmission is not null || _knownWrite || _notSentAttempt is not null)
+        {
+            _inputNotice = "Не удалось начать сверку шаблона. Ввод сохранён.";
+            return;
+        }
+
+        var version = _loadVersion;
+        using var review = CancellationTokenSource.CreateLinkedTokenSource(_pageCts.Token);
+        var token = review.Token;
+        var bound = new TemplateTransition(module, _editorRoot, generation);
+        bool Current() => !token.IsCancellationRequested && IsCurrentSave(model, version) &&
+            CurrentUser?.Id == employee.Id && _canEdit && ReferenceEquals(_templateJournal, journal) &&
+            ReferenceEquals(_templateConflictReview, review) && generation == _editorWatchGeneration && _writeBaseline == original;
+        var frozen = false;
+        _templateConflictReview = review;
+        _journalBusy = true;
+        try
+        {
+            var snapshot = await ReadCurrentTemplateAsync(token);
+            var scope = await journal.ReadEditorScopeAsync(TemplateInputScope, token);
+            var captured = await journal.ReadRebaseStateAsync(TemplateInputScope, token);
+            var readiness = await journal.GetRestoreReadinessAsync(token);
+            if (!Current())
+                return;
+            if (scope.HasOperation || scope.Revision != captured.Revision || !readiness.Complete)
+            {
+                _inputNotice = "Ввод изменился или не восстановлен полностью. Повторите сверку.";
+                return;
+            }
+
+            var shown = await ReadCurrentTemplateForResetAsync(model, requireEdit: true, token);
+            if (!Current())
+                return;
+            if (shown is null || await EquipmentModel.HasPendingPhoneTemplateWriteAsync(Db, employee, model.Id, token))
+            {
+                if (Current())
+                    _inputNotice = "Не удалось подтвердить доступ к актуальному шаблону. Ввод сохранён.";
+                return;
+            }
+            if (!Current())
+                return;
+            var freshBaseline = shown.CaptureWriteBaseline();
+            if (SameTemplateVersion(freshBaseline, original))
+            {
+                _templateConflictNeedsReview = false;
+                _inputNotice = "Исходная версия шаблона не изменилась. Ввод сохранён.";
+                return;
+            }
+
+            if (!await AskKeepTemplateInputAsync(token) || !Current())
+                return;
+
+            frozen = await module.InvokeAsync<bool>("freezeTemplateInput", token, bound.Root, generation, snapshot.Revision);
+            if (!Current() || !frozen)
+            {
+                if (Current())
+                    _inputNotice = "Ввод изменился. Повторите сверку шаблона.";
+                return;
+            }
+
+            var fresh = await ReadCurrentTemplateForResetAsync(model, requireEdit: true, token);
+            if (!Current())
+                return;
+            if (fresh is null || !SameTemplateVersion(fresh.CaptureWriteBaseline(), freshBaseline) ||
+                await EquipmentModel.HasPendingPhoneTemplateWriteAsync(Db, employee, model.Id, token))
+            {
+                if (Current())
+                    _inputNotice = "Актуальная версия или доступ изменились. Повторите сверку. Ввод сохранён.";
+                return;
+            }
+            if (!Current())
+                return;
+
+            // Сохраняем исходные окончания строк при эквивалентном тексте браузера.
+            var local = MatchesBrowserTemplateText(model.PhoneTemplate, snapshot.Text) ? model.PhoneTemplate : snapshot.Text;
+            var replacement = SerializeTemplateDraft(freshBaseline, local);
+            _templateTransitionApplying = true;
+            ++_templateInputEpoch;
+            if (!await journal.RebaseScopeAsync(TemplateInputScope, captured.Revision, replacement, [], token))
+            {
+                if (Current())
+                    _inputNotice = "Ввод изменился или хранилище недоступно. Повторите сверку.";
+                return;
+            }
+            if (!Current())
+                return;
+
+            _writeBaseline = freshBaseline;
+            model.PhoneTemplate = local;
+            model.ChangedAt = fresh.ChangedAt;
+            model.ChangedById = fresh.ChangedById;
+            model.ChangedByName = fresh.ChangedByName;
+            _scheduledInput = replacement;
+            _templateConflictNeedsReview = false;
+            _inputNotice = "Исходная версия обновлена. Ваш текст сохранён в редакторе.";
+            _errorMessage = null;
+        }
+        catch (Exception error) when (IsJournalError(error) || error is IOException)
+        {
+            if (Current())
+                _inputNotice = "Не удалось завершить сверку шаблона. Ввод сохранён.";
+        }
+        finally
+        {
+            if (ReferenceEquals(_templateConflictReview, review))
+            {
+                _templateConflictReview = null;
+                _templateTransitionApplying = false;
+                _journalBusy = false;
+            }
+            if (frozen)
+                await ReleaseTemplateTransitionAsync(bound);
+            if (!_disposed)
+                StateHasChanged();
+        }
+    }
+
+    private static bool SameTemplateVersion(EquipmentModelWriteBaseline a, EquipmentModelWriteBaseline b) =>
+        a.Id == b.Id && a.EquipmentTypeId == b.EquipmentTypeId && a.ChangedAt == b.ChangedAt &&
+        string.Equals(a.PhoneTemplate ?? string.Empty, b.PhoneTemplate ?? string.Empty, StringComparison.Ordinal);
+
+    private async Task<bool> AskKeepTemplateInputAsync(CancellationToken token)
+    {
+        const string title = "Сверка версии шаблона";
+        var dialog = await DialogService.ShowExAsync<ConfirmDialog>(title, new DialogParameters
+        {
+            { nameof(ConfirmDialog.Title), title },
+            { nameof(ConfirmDialog.Message), "В базе сохранена другая версия шаблона. Принять её как исходную версию и оставить ваш текст в редакторе?" },
+            { nameof(ConfirmDialog.ConfirmText), "Оставить мой текст" },
+            { nameof(ConfirmDialog.CancelText), "Продолжить без изменений" },
+        }, new DialogOptionsEx { DragMode = MudDialogDragMode.Simple, CloseOnEscapeKey = true, CloseButton = true });
+        try { return await dialog.Result.WaitAsync(token) is { Canceled: false }; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            dialog.Close(DialogResult.Cancel());
+            return false;
+        }
+    }
+
+    private void CancelTemplateConflictReview()
+    {
+        if (_templateConflictReview is not { } review)
+            return;
+
+        _templateConflictReview = null;
+        _templateTransitionApplying = false;
+        _journalBusy = false;
+        review.Cancel();
     }
 
     private async Task BeforeInternalNavigationAsync(LocationChangingContext context)
     {
+        if (_templateConflictReview is { } review)
+        {
+            context.PreventNavigation();
+            review.Cancel();
+            return;
+        }
         if (_allowNavigation)
         {
             _allowNavigation = false;
@@ -63,19 +235,36 @@ public partial class PhoneTemplateForm
     {
         if (_disposed || _loading || _saving || _journalBusy || _releaseTransitionAfterRender is not null)
             return;
-        if (_templateAttempt is not null || _protectedSubmission is not null || _knownWrite ||
-            _notSentAttempt is not null || _journalCandidates.Count > 0)
+        if (_pendingTemplateClose is { } pending && _templateJournal is { } closing)
+        {
+            if (refresh) return;
+            _journalBusy = true;
+            try { await CloseApprovedTemplateAsync(closing, pending.DraftRevision, pending.EditorRevision, target); }
+            finally { _journalBusy = false; }
+            return;
+        }
+
+        var unresolved = _templateAttempt is not null || _protectedSubmission is not null || _knownWrite ||
+            _notSentAttempt is not null;
+        if (refresh && unresolved)
         {
             _inputNotice = "Сначала завершите сверку предыдущей операции. Ввод и попытка сохранены.";
             return;
         }
+
 
         var model = _model;
         if (model is null || _templateInputDiscarded || !_canEdit)
         {
             if (!refresh)
             {
-                try { await LeaveTemplateAsync(target); }
+                try
+                {
+                    if (_templateJournal is { } retained)
+                        await CloseReadOnlyTemplateAsync(retained, unresolved, target, navigationToken);
+                    else
+                        await LeaveTemplateAsync(target);
+                }
                 catch (Exception ex) when (IsJournalError(ex))
                 {
                     _inputNotice = "Не удалось закрыть редактор.";
@@ -86,7 +275,7 @@ public partial class PhoneTemplateForm
             return;
         }
         if (_templateJournal is not { } journal || _templateTextModule is not { } module ||
-            _editorWatchGeneration is not { } generation || _restoreTemplateRawRequested || _restoringTemplateRaw || _rawPending)
+            _editorWatchGeneration is not { } generation || _restoreTemplateRawRequested || _restoringTemplateRaw)
         {
             _inputNotice = "Не удалось проверить защищённый ввод. Изменения оставлены в редакторе.";
             return;
@@ -105,12 +294,7 @@ public partial class PhoneTemplateForm
             var scope = await journal.ReadEditorScopeAsync(TemplateInputScope, token);
             if (!Current())
                 return;
-            if (scope.HasOperation)
-            {
-                _inputNotice = "Сначала завершите сверку предыдущей операции. Ввод и попытка сохранены.";
-                return;
-            }
-            var dirty = IsModified || scope.HasRaw || _inputMissingOriginal ||
+            var dirty = unresolved || scope.HasOperation || IsModified || scope.HasRaw || _inputMissingOriginal ||
                 !MatchesBrowserTemplateText(_writeBaseline?.PhoneTemplate, snapshot.Text);
             var choice = dirty ? await AskTemplateCancelChoiceAsync() : refresh
                 ? ClayEditorCancelChoice.ResetAndStay : ClayEditorCancelChoice.CloseWithoutSaving;
@@ -120,7 +304,12 @@ public partial class PhoneTemplateForm
             EquipmentModel? fresh = null;
             if (choice == ClayEditorCancelChoice.ResetAndStay)
             {
-                fresh = await ReadCurrentTemplateForResetAsync(model, requireEdit: true);
+                if (unresolved || scope.HasOperation)
+                {
+                    _inputNotice = "Сначала завершите сверку предыдущей операции. Ввод и попытка сохранены.";
+                    return;
+                }
+                fresh = await ReadCurrentTemplateForResetAsync(model, requireEdit: true, token);
                 if (fresh is null && Current())
                     _inputNotice = "Не удалось получить актуальный шаблон и подтвердить доступ. Ввод сохранён.";
                 if (fresh is null || !Current())
@@ -138,44 +327,32 @@ public partial class PhoneTemplateForm
 
             _templateTransitionApplying = true;
             ++_templateInputEpoch;
-            if (dirty || fresh is not null)
+            if (fresh is null)
             {
-                var replacement = fresh is null ? null : SerializeTemplateDraft(fresh.CaptureWriteBaseline(), fresh.PhoneTemplate);
-                if (!await journal.ReplaceEditorScopeAsync(TemplateInputScope, scope.Revision, replacement, token))
-                {
-                    if (Current())
-                        _inputNotice = "Ввод изменился или хранилище недоступно. Подтвердите отмену ещё раз.";
-                    return;
-                }
-                // Once the replacement is durable, the current route must show the same state even
-                // if a second navigation request canceled the first one.
-                if (!IsCurrentSave(model, version) || !ReferenceEquals(journal, _templateJournal))
-                    return;
-                _scheduledInput = replacement;
-                _inputSaveFailed = _inputMissingOriginal = false;
-                _inputNotice = null;
-                ++_templateEditorRenderKey;
-            }
-
-            if (fresh is not null)
-            {
-                _model = fresh;
-                _writeBaseline = fresh.CaptureWriteBaseline();
-                _releaseTransitionAfterRender = bound;
-                frozen = false;
+                await CloseApprovedTemplateAsync(journal, scope.Revision, snapshot.Revision, target);
                 return;
             }
-            if (dirty)
+
+            var replacement = SerializeTemplateDraft(fresh.CaptureWriteBaseline(), fresh.PhoneTemplate);
+            if (!await journal.ReplaceEditorScopeAsync(TemplateInputScope, scope.Revision, replacement, token))
             {
-                _templateInputDiscarded = true;
-                _templateOptions.ReadOnly = true;
-                model.PhoneTemplate = _writeBaseline?.PhoneTemplate ?? string.Empty;
-                _inputNotice = "Ввод отменён. Если окно осталось открытым, закройте или обновите его.";
-                _releaseTransitionAfterRender = bound;
-                frozen = false;
+                if (Current())
+                    _inputNotice = "Ввод изменился или хранилище недоступно. Подтвердите отмену ещё раз.";
+                return;
             }
-            if (Current())
-                await LeaveTemplateAsync(target, snapshot.Revision);
+            // Once the replacement is durable, the current route must show the same state even
+            // if a second navigation request canceled the first one.
+            if (!IsCurrentSave(model, version) || !ReferenceEquals(journal, _templateJournal))
+                return;
+            _scheduledInput = replacement;
+            _inputSaveFailed = _inputMissingOriginal = false;
+            _inputNotice = null;
+            ++_templateEditorRenderKey;
+            _model = fresh;
+            _templateConflictNeedsReview = false;
+            _writeBaseline = fresh.CaptureWriteBaseline();
+            _releaseTransitionAfterRender = bound;
+            frozen = false;
         }
         catch (Exception ex) when (IsJournalError(ex) || ex is IOException)
         {
@@ -201,9 +378,8 @@ public partial class PhoneTemplateForm
             ? choice : ClayEditorCancelChoice.Continue;
     }
 
-    private async Task<EquipmentModel?> ReadCurrentTemplateForResetAsync(EquipmentModel model, bool requireEdit)
+    private async Task<EquipmentModel?> ReadCurrentTemplateForResetAsync(EquipmentModel model, bool requireEdit, CancellationToken token)
     {
-        var token = _pageCts.Token;
         var actor = await Employee.GetCurrentWithRolesAsync(Db, await ReadPrincipalAsync(), token);
         if (actor is null || actor.Id != CurrentUser?.Id || (requireEdit && !actor.HasRole(Роли.Дежурный_инженер)))
             return null;
@@ -217,7 +393,7 @@ public partial class PhoneTemplateForm
         _journalBusy = true;
         try
         {
-            var fresh = await ReadCurrentTemplateForResetAsync(model, requireEdit: false);
+            var fresh = await ReadCurrentTemplateForResetAsync(model, requireEdit: false, _pageCts.Token);
             if (!IsCurrentSave(model, version)) return;
             if (fresh is null)
             {
@@ -225,6 +401,7 @@ public partial class PhoneTemplateForm
                 return;
             }
             _model = fresh;
+            _templateConflictNeedsReview = false;
             _writeBaseline = fresh.CaptureWriteBaseline();
             ++_templateEditorRenderKey;
             _inputNotice = null;
@@ -237,18 +414,103 @@ public partial class PhoneTemplateForm
         finally { _journalBusy = false; }
     }
 
+    private async Task CloseAtEditorRevisionAsync(long revision)
+    {
+        if (_templateJournal is not { } journal || _editorWatchGeneration is not { } generation ||
+            _templateTextModule is not { } module || _model is not { } model)
+            return;
+        var version = _loadVersion;
+        var token = _pageCts.Token;
+        var bound = new TemplateTransition(module, _editorRoot, generation);
+        if (!await module.InvokeAsync<bool>("freezeTemplateInput", token, bound.Root, generation, revision))
+            return;
+        try
+        {
+            if (!IsCurrentSave(model, version) || !ReferenceEquals(journal, _templateJournal) ||
+                generation != _editorWatchGeneration)
+                return;
+            var scope = await journal.ReadEditorScopeAsync(TemplateInputScope, token);
+            if (!IsCurrentSave(model, version) || !ReferenceEquals(journal, _templateJournal) ||
+                generation != _editorWatchGeneration || scope.HasOperation || scope.HasRaw || IsModified)
+                return;
+            await CloseApprovedTemplateAsync(journal, scope.Revision, revision);
+        }
+        finally { await ReleaseTemplateTransitionAsync(bound); }
+    }
+
+    private async Task CloseReadOnlyTemplateAsync(ClayDraftRegistration journal, bool unresolved, string? target,
+        CancellationToken navigationToken)
+    {
+        var version = _loadVersion;
+        bool Current() => !_disposed && !navigationToken.IsCancellationRequested && version == _loadVersion &&
+            ReferenceEquals(journal, _templateJournal);
+        _journalBusy = true;
+        try
+        {
+            var scope = await journal.ReadEditorScopeAsync(TemplateInputScope, _pageCts.Token);
+            if (!Current()) return;
+            if ((unresolved || scope.HasRaw || scope.HasOperation || IsModified) &&
+                await AskTemplateCancelChoiceAsync() != ClayEditorCancelChoice.CloseWithoutSaving)
+                return;
+            if (Current())
+                await CloseApprovedTemplateAsync(journal, scope.Revision, null, target);
+        }
+        finally { _journalBusy = false; }
+    }
+
+
+    private async Task CloseApprovedTemplateAsync(ClayDraftRegistration journal, long draftRevision,
+        long? editorRevision, string? target = null)
+    {
+        var version = _loadVersion;
+        _pendingTemplateClose = (draftRevision, editorRevision);
+        try
+        {
+            if (!await journal.CloseRamIfRevisionAsync(draftRevision, _pageCts.Token))
+            {
+                if (version == _loadVersion && ReferenceEquals(journal, _templateJournal))
+                {
+                    _pendingTemplateClose = null;
+                    _templateOptions.ReadOnly = !_canEdit || _editorWatchGeneration is null;
+                    _inputNotice = "Ввод изменился. Подтвердите закрытие ещё раз.";
+                }
+                return;
+            }
+            if (_disposed || version != _loadVersion || !ReferenceEquals(journal, _templateJournal))
+                return;
+            _pendingTemplateClose = null;
+            _templateJournal = null;
+            _templateRamOwner = null;
+            await ReleaseTemplateJournalAsync();
+            _templateInputDiscarded = true;
+            _templateOptions.ReadOnly = true;
+            if (_model is { } model) model.PhoneTemplate = _writeBaseline?.PhoneTemplate ?? string.Empty;
+            await LeaveTemplateAsync(target, editorRevision);
+        }
+        catch (Exception ex) when (IsJournalError(ex))
+        {
+            if (!_disposed && version == _loadVersion)
+            {
+                _templateOptions.ReadOnly = true;
+                _inputNotice = ReferenceEquals(journal, _templateJournal)
+                    ? "Не удалось удалить временные данные. Повторите закрытие."
+                    : "Временные данные удалены. Если окно осталось открытым, закройте его.";
+            }
+        }
+    }
+
     private async Task LeaveTemplateAsync(string? target, long? revision = null)
     {
-        if (target is null && revision is { } current)
-        {
-            await CloseAtEditorRevisionAsync(current);
-            return;
-        }
         _allowNavigation = true;
         try
         {
             if (target is not null)
                 Navigation.NavigateTo(target);
+            else if (revision is { } expected && _templateTextModule is { } module && _editorWatchGeneration is { } generation)
+            {
+                if (!await module.InvokeAsync<bool>("closeTemplateIfCurrent", _pageCts.Token, _editorRoot, generation, expected))
+                    _allowNavigation = false;
+            }
             else
                 await JS.InvokeVoidAsync("clayModelEquipmentForm.close");
         }
@@ -258,6 +520,7 @@ public partial class PhoneTemplateForm
             throw;
         }
     }
+
 
     private async Task ReleaseTemplateTransitionAfterRenderAsync()
     {

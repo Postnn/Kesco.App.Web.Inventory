@@ -1,3 +1,4 @@
+@using Clayzor.Lib.Web.Controls.Components.Presence
 @page "/Equipment/PhoneTemplateForm"
 @layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
 @using Clayzor.Lib.Entities.Inventory
@@ -9,7 +10,7 @@
 @inject IJSRuntime JS
 
 <PageTitle>@Title</PageTitle>
-<NavigationLock ConfirmExternalNavigation="@(IsModified || _templateAttempt is not null || _knownWrite)" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
+<NavigationLock ConfirmExternalNavigation="@(IsModified || _templateAttempt is not null || _knownWrite || _pendingTemplateClose is not null)" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
 <ClayEntityForm Options="_entityFormOptions">
     <Toolbar>
@@ -27,6 +28,10 @@
         <MudAlert Severity="Severity.Warning" Class="mb-3">
             <div>@_journalNotice</div>
         </MudAlert>
+    }
+    else if (_latestOwnTemplateConfirmed)
+    {
+        <div role="status">Предыдущая запись шаблона подтверждена сервером.</div>
     }
 
     @if (_inputNotice is not null)
@@ -48,6 +53,7 @@
     }
     else if (_model is not null)
     {
+        <ClayPresencePanel Target="@GetPresenceTarget()" />
         if (!_canEdit)
         {
             <MudAlert Severity="Severity.Warning" Class="mb-3">
@@ -76,8 +82,13 @@
     <div class="@_journalRoot" data-draft-scope="@TemplateInputScope" @ref="_editorRoot">
         @if (_model is not null)
         {
-            <ClayTextArea @key="_templateEditorRenderKey" Value="@_model.PhoneTemplate" Options="_templateOptions" />
-            <output data-template-line></output>
+            <ClayEditorFocusScope @key="Id" Label="Редактор шаблона телефона" Ready="@(!_disposed && !_loading && !_saving && _canEdit && !TemplateInputBlocked)">
+                <ClayFieldChange Changed="@(_canEdit && IsModified)"
+                                 RawBaseline="@(_canEdit && _writeBaseline is not null ? _writeBaseline.PhoneTemplate ?? string.Empty : null)">
+                    <ClayTextArea @key="_templateEditorRenderKey" Value="@_model.PhoneTemplate" Options="_templateOptions" />
+                </ClayFieldChange>
+                <output data-template-line></output>
+            </ClayEditorFocusScope>
         }
     </div>
     </ChildContent>
