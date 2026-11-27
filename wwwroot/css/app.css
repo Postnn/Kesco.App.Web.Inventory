@@ -215,7 +215,7 @@
     gap: 6px;
 }
 
-.equipment-form-mac > .mud-input-control {
+.equipment-form-mac > :is(.mud-input-control, .clay-field-change) {
     flex: 1 1 100px;
     min-width: 100px;
 }

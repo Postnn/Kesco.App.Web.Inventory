@@ -11,27 +11,31 @@
     <TitleContent>Подключение UPS</TitleContent>
     <DialogContent>
         <ClayFormActions Form="InventoryFormHelp.Equipment" />
-        @RawRestoreNotice
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">UPS:</span>
-            <ClaySelect TItem="UpsEquipmentLookup" TValue="int?"
-                        DataSource="UpsSource"
-                        ValueSelector="@(item => (int?)item.Id)"
-                        TextSelector="@(item => item.Name)"
-                        @bind-Value="Value"
-                        Options="_upsOptions" />
-        </div>
+        <ClayEditorFocusScope @key="ScopedInputVersion" Label="Подключение UPS" Ready="@(IsEditorCurrent() && !_saving && !_saveBlocked && !RawRestoreBlocked)" Inert="@CancelPending" AdvanceOnEnter="true">
+            @RawRestoreNotice
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">UPS:</span>
+                <ClayFieldChange Changed="@IsFieldChanged(nameof(Value), Value)" WatchLookupRaw="true">
+                    <ClaySelect TItem="UpsEquipmentLookup" TValue="int?"
+                                DataSource="UpsSource"
+                                ValueSelector="@(item => (int?)item.Id)"
+                                TextSelector="@(item => item.Name)"
+                                @bind-Value="Value"
+                                Options="_upsOptions" />
+                </ClayFieldChange>
+            </div>
+        </ClayEditorFocusScope>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButtonOptions" Disabled="@(Value is null || RawRestoreBlocked)" OnClick="Apply" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelScopedAsync" Disabled="@(_saving || CancelPending)" />
+        <ClayToolbarButton Options="_okButtonOptions" Disabled="@(Value is null || RawRestoreBlocked || CancelPending || _saving || _saveBlocked)" OnClick="Apply" />
     </DialogActions>
 </MudDialog>
 
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "Подключить", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClaySelectOptions _upsOptions = new() { AutoSelectSingle = true, Required = true, Placeholder = "Выберите UPS" };
+    private readonly ClaySelectOptions _upsOptions = new() { AdvanceFocusOnSelection = true, AutoSelectSingle = true, Required = true, Placeholder = "Выберите UPS" };
 
     /// <summary>Выбранный идентификатор UPS.</summary>
     [Parameter] public int? Value { get; set; }

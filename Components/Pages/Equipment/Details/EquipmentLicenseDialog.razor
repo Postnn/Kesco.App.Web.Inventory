@@ -8,66 +8,86 @@
     <TitleContent>Лицензия</TitleContent>
     <DialogContent>
         <ClayFormActions Form="InventoryFormHelp.EquipmentLicense" />
-        @RawRestoreNotice
-        @if (!string.IsNullOrWhiteSpace(_error))
-        {
-            <MudAlert Severity="Severity.Error">@_error</MudAlert>
-        }
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Тип:</span>
-            <ClayDropDownList TItem="LicenseType" TValue="int?"
-                              Items="Types"
-                              ValueSelector="@(item => (int?)item.Id)"
-                              TextSelector="@(item => item.Name)"
-                              Value="Value.LicenseTypeId"
-                              ValueChanged="OnTypeChanged"
-                              Options="_typeOptions" />
-        </div>
-        @if (!string.IsNullOrWhiteSpace(SelectedType?.Description))
-        {
-            <MudAlert Severity="Severity.Info">@SelectedType.Description</MudAlert>
-        }
-        @if (SelectedType?.Resale == 0)
-        {
+        @EditorPresence
+        @{ var baseline = OpeningFieldValue<EquipmentLicense>(nameof(Value)); }
+        <ClayEditorFocusScope @key="ScopedInputVersion" Label="Лицензия" Ready="@(IsEditorCurrent() && !_saving && !_saveBlocked && !RawRestoreBlocked)" Inert="@CancelPending" AdvanceOnEnter="true">
+            @RawRestoreNotice
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error">@_error</MudAlert>
+            }
             <div class="equipment-ins-row">
-                <span class="equipment-ins-label">Номер лицензиата:</span>
-                <ClayTextBox @bind-Value="Value.LicenseeNumber" Options="_numberOptions" />
+                <span class="equipment-ins-label">Тип:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.LicenseTypeId != baseline.LicenseTypeId)">
+                    <ClayDropDownList TItem="LicenseType" TValue="int?"
+                                      Items="Types"
+                                      ValueSelector="@(item => (int?)item.Id)"
+                                      TextSelector="@(item => item.Name)"
+                                      Value="Value.LicenseTypeId"
+                                      ValueChanged="OnTypeChanged"
+                                      Options="_typeOptions" />
+                </ClayFieldChange>
             </div>
-        }
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">URL проверки:</span>
-            <ClayTextBox @bind-Value="Value.VerificationUrl" Options="_urlOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Серверов:</span>
-            <ClayNumber Value="@((decimal?)Value.ServerCount)" ValueChanged="value => Value.ServerCount = (int?)value" Options="_serverOptions" />
-            <span class="equipment-ins-label">Клиентов:</span>
-            <ClayNumber Value="@((decimal?)Value.ClientCount)" ValueChanged="value => Value.ClientCount = (int?)value" Options="_clientOptions" />
-        </div>
-        @if (SelectedType?.Temporary > 0)
-        {
+            @if (!string.IsNullOrWhiteSpace(SelectedType?.Description))
+            {
+                <MudAlert Severity="Severity.Info">@SelectedType.Description</MudAlert>
+            }
+            @if (SelectedType?.Resale == 0)
+            {
+                <div class="equipment-ins-row">
+                    <span class="equipment-ins-label">Номер лицензиата:</span>
+                    <ClayFieldChange Changed="@(baseline is not null && Value.LicenseeNumber != baseline.LicenseeNumber)" RawBaseline="@(baseline is null ? null : baseline.LicenseeNumber ?? string.Empty)">
+                        <ClayTextBox @bind-Value="Value.LicenseeNumber" Options="_numberOptions" />
+                    </ClayFieldChange>
+                </div>
+            }
             <div class="equipment-ins-row">
-                <span class="equipment-ins-label">Действует с:</span>
-                <ClayDatePicker @bind-Value="Value.DateFrom" Options="_dateOptions" />
-                <span class="equipment-ins-label">по:</span>
-                <ClayDatePicker @bind-Value="Value.DateTo" Options="_dateOptions" />
+                <span class="equipment-ins-label">URL проверки:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.VerificationUrl != baseline.VerificationUrl)" RawBaseline="@(baseline is null ? null : baseline.VerificationUrl ?? string.Empty)">
+                    <ClayTextBox @bind-Value="Value.VerificationUrl" Options="_urlOptions" />
+                </ClayFieldChange>
             </div>
-        }
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Дистрибутив:</span>
-            <ClayTextBox @bind-Value="Value.Distribution" Options="_distributionOptions" />
-        </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Серверов:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.ServerCount != baseline.ServerCount)" RawBaseline="@(baseline is null ? null : ((decimal?)baseline.ServerCount)?.ToString("0", System.Globalization.CultureInfo.CurrentCulture) ?? string.Empty)">
+                    <ClayNumber Value="@((decimal?)Value.ServerCount)" ValueChanged="value => Value.ServerCount = (int?)value" Options="_serverOptions" />
+                </ClayFieldChange>
+                <span class="equipment-ins-label">Клиентов:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.ClientCount != baseline.ClientCount)" RawBaseline="@(baseline is null ? null : ((decimal?)baseline.ClientCount)?.ToString("0", System.Globalization.CultureInfo.CurrentCulture) ?? string.Empty)">
+                    <ClayNumber Value="@((decimal?)Value.ClientCount)" ValueChanged="value => Value.ClientCount = (int?)value" Options="_clientOptions" />
+                </ClayFieldChange>
+            </div>
+            @if (SelectedType?.Temporary > 0)
+            {
+                <div class="equipment-ins-row">
+                    <span class="equipment-ins-label">Действует с:</span>
+                    <ClayFieldChange Changed="@(baseline is not null && Value.DateFrom?.Date != baseline.DateFrom?.Date)" RawBaseline="@(baseline is null ? null : ((DateTime?)baseline.DateFrom)?.ToString(_dateOptions.DateFormat) ?? string.Empty)">
+                        <ClayDatePicker @bind-Value="Value.DateFrom" Options="_dateOptions" />
+                    </ClayFieldChange>
+                    <span class="equipment-ins-label">по:</span>
+                    <ClayFieldChange Changed="@(baseline is not null && Value.DateTo?.Date != baseline.DateTo?.Date)" RawBaseline="@(baseline is null ? null : ((DateTime?)baseline.DateTo)?.ToString(_dateOptions.DateFormat) ?? string.Empty)">
+                        <ClayDatePicker @bind-Value="Value.DateTo" Options="_dateOptions" />
+                    </ClayFieldChange>
+                </div>
+            }
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Дистрибутив:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.Distribution != baseline.Distribution)" RawBaseline="@(baseline is null ? null : baseline.Distribution ?? string.Empty)">
+                    <ClayTextBox @bind-Value="Value.Distribution" Options="_distributionOptions" />
+                </ClayFieldChange>
+            </div>
+        </ClayEditorFocusScope>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked || RawRestoreBlocked)" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelScopedAsync" Disabled="@(_saving || CancelPending)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || CancelPending || _saveBlocked || RawRestoreBlocked)" />
     </DialogActions>
 </MudDialog>
 
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClayDropDownListOptions _typeOptions = new() { Required = true, DraftKey = "license.type" };
+    private readonly ClayDropDownListOptions _typeOptions = new() { AdvanceFocusOnSelection = true, Required = true, DraftKey = "license.type" };
     private readonly ClayTextBoxOptions _numberOptions = new() { Required = true, MaxLength = 50, DraftKey = "license.number" };
     private readonly ClayTextBoxOptions _urlOptions = new() { MaxLength = 50, DraftKey = "license.url" };
     private readonly ClayNumberOptions _serverOptions = new() { Required = true, Min = 0, DraftKey = "license.servers" };
@@ -85,6 +105,9 @@
 
     /// <inheritdoc />
     protected override void OnParametersSet() => _dateOptions.Required = SelectedType?.Temporary > 0;
+
+    /// <inheritdoc />
+    protected override void OnDraftStateRestored() => OnParametersSet();
 
     private void OnTypeChanged(int? id)
     {

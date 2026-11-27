@@ -184,7 +184,7 @@ public partial class EquipmentIns : IAsyncDisposable
             await InvokeAsync(LoadAsync);
     }
 
-    private string SourceKey => $"{QueryInt("copyId")}:{QueryInt("codetype")}";
+    private string SourceKey => FormattableString.Invariant($"{QueryInt("copyId")}:{QueryInt("codetype")}");
 
     private async Task LoadAsync()
     {
@@ -199,15 +199,21 @@ public partial class EquipmentIns : IAsyncDisposable
         _createdEquipmentId = null;
         _createdEditUrl = null;
         _creationResult = null;
+        _unverifiedCreationReceipt = null;
         _creationAttempt = null;
+        _creationSentSnapshot = null;
+        _creationLateEditorPayload = null;
+        _retainedCreationInput = false;
+        _creationServerChecked = _creationServerPending = false;
+        _creationServerNotice = null;
+        _priorCreatedEquipmentId = null;
         _receiptPersisted = _creationUncertain = _creationRawPending = _restoreCreationRaw = false;
         _creationRawFailed = _applyingCreationRaw = false;
         _notSentCreationId = null;
         _sourceUnavailable = _draftNeedsReview = _editorRestored = _editorSaveFailed = false;
         _lastEditorDraft = _freshOriginal = null;
-        _creationRecoveryCandidates = [];
-        _creationRecoveryReady = false;
-        _creationRecoveryNotice = null;
+        _pendingCreationClose = null;
+        _creationDraftClosed = false;
         CurrentUser = null;
         _confirmedOwnerId = null;
         _shipperVersion++;
@@ -254,7 +260,7 @@ public partial class EquipmentIns : IAsyncDisposable
             _receiptTime = TimeSpan.Zero;
             _freshOriginal = _originalSnapshot = Snapshot();
             _validationMessage = null;
-            await AttachCreationDraftAsync(currentUser, version);
+            await AttachCreationDraftAsync(currentUser, principal, version);
             if (!IsCurrent(version)) return;
             if (_sourceUnavailable && !_editorRestored && _createdEquipmentId is null && !_creationUncertain)
             {
@@ -534,16 +540,16 @@ public partial class EquipmentIns : IAsyncDisposable
 
     private async Task SaveAsync(bool closeAfterSave)
     {
-        if (!_loaded || !_canEdit || CreationBlocked || _creationDraft is not { } registration)
+        if (!_loaded || !_canEdit || CreationBlocked || _creationDraft is not { } registration || CurrentUser is not { } actor)
             return;
         if (_createdEquipmentId is not null)
         {
             if (_saving)
                 return;
             if (closeAfterSave)
-                await CloseAsync();
+                await CancelAsync();
             else
-                OpenCreatedEquipment();
+                await OpenCreatedEquipment();
             return;
         }
         if (_saving)
@@ -556,6 +562,7 @@ public partial class EquipmentIns : IAsyncDisposable
         }
 
         var version = ++_operationVersion;
+        var serverAttemptId = Guid.NewGuid();
         _saving = true;
         _validationMessage = null;
         StateHasChanged();
@@ -578,8 +585,10 @@ public partial class EquipmentIns : IAsyncDisposable
             var principal = await PrincipalAsync();
             if (!IsCurrent(version))
                 return;
-            var id = await Service.CreateAsync(_model, principal, CurrentUser?.Id ?? 0, _pageCts.Token,
-                (request, ct) => BeginCreationAsync(request, registration, version, ct));
+            if (!await ReadCreationServerStateAsync(actor, principal, version, _pageCts.Token))
+                return;
+            var id = await Service.CreateJournaledAsync(_model, principal, actor.Id, serverAttemptId, _pageCts.Token,
+                (request, ct) => BeginCreationAsync(request, registration, version, serverAttemptId, ct));
             if (!IsCurrent(version))
                 return;
             if (id <= 0)
@@ -588,23 +597,63 @@ public partial class EquipmentIns : IAsyncDisposable
                 throw new InvalidOperationException("Не получено подтверждение отправленной попытки.");
 
             _creationResult = new CreationReceipt(SourceKey, attempt.AttemptId, attempt.Revision, id);
-            _model.Id = id;
             _createdEquipmentId = id;
             _createdEditUrl = editFormUrl is null ? null : BuildEditUrl(editFormUrl, id);
-            _originalSnapshot = Snapshot();
+            var laterInput = _creationSentSnapshot is { } submitted && Snapshot() != submitted;
+            if (laterInput)
+            {
+                _creationLateEditorPayload = BuildEditorDraft(_model, _originalSnapshot);
+                _retainedCreationInput = true;
+            }
+            else
+            {
+                _model.Id = id;
+                _originalSnapshot = Snapshot();
+            }
             await FinishCreationAsync(registration, _pageCts.Token);
+            if (!IsCurrentCreationInput(registration, version)) return;
+            var scope = await registration.ReadEditorScopeAsync(CreationScope, _pageCts.Token);
+            if (!IsCurrentCreationInput(registration, version)) return;
+            if (laterInput || scope.HasRaw || scope.HasOperation)
+            {
+                _retainedCreationInput = laterInput || scope.HasRaw;
+                _validationMessage = $"Оборудование №{id} создано. Более поздний ввод сохранён.";
+                return;
+            }
+            var beforeExit = Snapshot();
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _pageCts.Token);
             if (!IsCurrent(version))
                 return;
-            if (closeAfterSave)
+            if (Snapshot() != beforeExit)
             {
-                await CloseAsync();
+                _retainedCreationInput = true;
+                var later = JsonSerializer.Deserialize<EquipmentEntity>(JsonSerializer.Serialize(_model))!;
+                later.Id = 0;
+                _creationLateEditorPayload = BuildEditorDraft(later, _freshOriginal ?? _originalSnapshot);
+                await FinishCreationAsync(registration, _pageCts.Token);
+                if (IsCurrent(version)) _validationMessage = $"Оборудование №{id} создано. Более поздний ввод сохранён.";
                 return;
             }
-            _allowNavigation = true;
-            Navigation.NavigateTo(_createdEditUrl!);
+            await CloseCreationDraftAsync(registration, scope.Revision,
+                closeAfterSave ? CloseAsync : () => NavigateToCreatedAsync(_createdEditUrl!), _pageCts.Token);
         }
         catch (OperationCanceledException) when (!IsCurrent(version)) { }
+        catch (EquipmentCreationRejectedException error) when (IsCurrent(version) && _creationResult is null)
+        {
+            try
+            {
+                if (_creationAttempt is { } rejected)
+                    await registration.RejectOperationAsync(rejected.Revision, _pageCts.Token);
+                if (!IsCurrentCreationInput(registration, version)) return;
+                _creationAttempt = null;
+                _creationUncertain = false;
+                _validationMessage = error.Message;
+            }
+            catch (Exception storageError) when (storageError is JSException or InvalidOperationException or OperationCanceledException)
+            {
+                if (IsCurrentCreationInput(registration, version)) SetCreationUnknown();
+            }
+        }
         catch (Exception error) when (IsCurrent(version))
         {
             if (_creationResult is { } receipt)
@@ -668,17 +717,33 @@ public partial class EquipmentIns : IAsyncDisposable
 
     private async Task RefreshAsync()
     {
-        if (_applyingCreationRaw) return;
-        if (CreationCleanupPending || _notSentCreationId is not null)
+        if (_applyingCreationRaw || _saving || _creationDraftClosed) return;
+        if (_pendingCreationClose is { } pending)
+        {
+            _saving = true;
+            try { await RetryCreationCloseAsync(pending, _pageCts.Token); }
+            finally { if (!_disposed) _saving = false; }
+            return;
+        }
+        if (CreationCleanupPending || _notSentCreationId is not null || _creationAttempt is not null ||
+            _unverifiedCreationReceipt is not null)
         {
             await RetryCreationCompletionAsync();
             return;
         }
         if (_creationUncertain || _createdEquipmentId is not null)
             return;
-        if (CreationRecoveryBlocked && _creationDraft is { } registration)
+        if (_creationDraft is null && !_creationServerChecked && CurrentUser is { } draftActor &&
+            draftActor.HasRole(Роли.Специалист_по_инвентаризации_оборудования))
         {
-            await ScanCreationRecoveryAsync(registration, _operationVersion, _pageCts.Token);
+            await LoadAsync();
+            return;
+        }
+        if ((!_creationServerChecked || _creationServerPending) && CurrentUser is { } actor &&
+            actor.HasRole(Роли.Специалист_по_инвентаризации_оборудования))
+        {
+            var version = _operationVersion;
+            await ReadCreationServerStateAsync(actor, await PrincipalAsync(), version, _pageCts.Token);
             return;
         }
         if (_editorSaveFailed)

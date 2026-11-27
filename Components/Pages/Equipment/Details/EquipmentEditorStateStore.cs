@@ -10,6 +10,7 @@ internal static class EquipmentEditorStateStore
     {
         nameof(EquipmentEditorDialogBase<object>.Save),
         nameof(EquipmentEditorDialogBase<object>.EditorContext),
+        nameof(EquipmentEditorDialogBase<object>.PresenceTarget),
         "Dialog", "Password", "Secrets", "Configurations", "Types", "AvailableServers",
         "Today", "Now", "FreshOriginal", "FreshOriginalActive",
     };
@@ -19,8 +20,7 @@ internal static class EquipmentEditorStateStore
         var state = new Dictionary<string, object?>(StringComparer.Ordinal);
         foreach (var property in component.GetType().GetProperties())
         {
-            if (!IsStateProperty(property) || Excluded.Contains(property.Name) || IsSecret(property.Name) ||
-                typeof(Delegate).IsAssignableFrom(property.PropertyType))
+            if (!IsStateProperty(property) || Excluded.Contains(property.Name) || IsSecret(property.Name))
                 continue;
             state[property.Name] = property.GetValue(component);
         }
@@ -89,6 +89,7 @@ internal static class EquipmentEditorStateStore
 
     private static bool IsStateProperty(System.Reflection.PropertyInfo property) =>
         property.CanRead && property.SetMethod?.IsPublic == true && property.GetIndexParameters().Length == 0 &&
+        !typeof(Delegate).IsAssignableFrom(property.PropertyType) &&
         property.GetCustomAttributes(typeof(CascadingParameterAttribute), true).Length == 0;
 
     private static bool IsSecret(string name) =>

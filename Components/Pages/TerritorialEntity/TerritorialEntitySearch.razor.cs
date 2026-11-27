@@ -78,10 +78,12 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
         _clid = 0;
         _viewState = null;
         _pendingMove = null;
+        _moveAttempt = null;
         _knownMoveCleanup = null;
+        _latestOwnMove = null;
+        _moveOutcomeReadFailed = false;
         _moveJournalEnabled = _moveJournalReady = _legacyMoveBlocked = false;
         _moveNotSentAttemptId = null;
-        _moveCandidates = [];
         _moveComparison = null;
         _checked.Clear();
         _selectionStorageKey = null;
@@ -412,9 +414,29 @@ public partial class TerritorialEntitySearch : IAsyncDisposable, Clayzor.Lib.Web
         finally { _returning = false; }
     }
 
-    private Task CloseAsync() => JS.InvokeVoidAsync("clayModelEquipmentForm.close", _lifetime.Token).AsTask();
+    private async Task CloseAsync()
+    {
+        if (await CloseMoveRegistrationAsync(_lifetime.Token))
+            await JS.InvokeVoidAsync("clayModelEquipmentForm.close", _lifetime.Token);
+    }
 
-    private Task ReloadTreeAsync() => RefreshViewAsync(_generation, reloadTree: true);
+    private async Task ReloadTreeAsync()
+    {
+        var generation = _generation;
+        await RefreshViewAsync(generation, reloadTree: true);
+        if (IsCurrent(generation) && !_moving && !_moveClosing && _moveCloseRevision is null && _moveRegistration is { } registration)
+        {
+            try
+            {
+                await ScanMoveJournalAsync(registration, generation);
+                await ReadOwnMoveOutcomeAsync(registration, generation);
+            }
+            catch (Exception error) when (IsMoveStorageError(error))
+            {
+                if (IsCurrent(generation)) _moveJournalReady = false;
+            }
+        }
+    }
 
     private bool IsCurrent(long generation) => !_disposed && generation == _generation;
 

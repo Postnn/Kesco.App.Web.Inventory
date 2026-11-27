@@ -1,3 +1,4 @@
+@using Clayzor.Lib.Web.Controls.Components.Presence
 @page "/TerritorialEntity/TerritorialEntity_form"
 @page "/TerritorialEntity/TerritorialEntity_form.aspx"
 @layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
@@ -10,11 +11,11 @@
 <ClayEntityForm Options="FormOptions">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="OkButton" Disabled="@(Busy || Loading || Draft is null || (Dirty && !CanCommit))" OnClick="@(() => SaveAsync(true))" />
-            <ClayToolbarButton Options="ApplyButton" Disabled="@(!Editable || !CanCommit || !Dirty)" OnClick="@(() => SaveAsync(false))" />
+            <ClayToolbarButton Options="OkButton" Disabled="@(Busy || Loading || Draft is null || (Dirty && (!CanCommit || _treeWritePending)))" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="ApplyButton" Disabled="@(!Editable || !CanCommit || !Dirty || _treeWritePending)" OnClick="@(() => SaveAsync(false))" />
             @if (CanDeleteTerritory)
             {
-                <ClayToolbarButton Options="DeleteButton" Disabled="@(Dirty || !CanCommit)" OnClick="DeleteTerritoryAsync" />
+                <ClayToolbarButton Options="DeleteButton" Disabled="@(Dirty || !CanCommit || _treeWritePending)" OnClick="DeleteTerritoryAsync" />
             }
             <ClayToolbarButton Options="ReloadButton" Disabled="@(!CanRefresh)" OnClick="RefreshAsync" />
             <ClayToolbarButton Options="CancelButton" Disabled="@Busy" OnClick="CancelAsync" />
@@ -29,6 +30,10 @@
         {
             <MudAlert Severity="Severity.Warning" Class="mb-2">@Message</MudAlert>
         }
+        @if (_treeWritePending)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-2">Есть незавершённая серверная операция с деревом территорий. Повтор записи заблокирован.</MudAlert>
+        }
         @if (Validation.Count > 0)
         {
             <MudAlert Severity="Severity.Error" Class="mb-2">
@@ -40,37 +45,39 @@
         {
             var generation = EditorGeneration;
             var baseline = AcceptedDraftBaseline;
-            <div @key="generation" class="d-flex flex-column gap-2 territorial-form-fields" data-draft-scope="main" inert="@DraftInputSuppressed">
-                <ClayFieldChange Changed="@(baseline is not null && draft.Record.Type != baseline.Record.Type)">
-                    <ClayDropDownList TItem="TerritorialEntityOption" TValue="int?" Options="_typeOptions"
-                                      Items="_types" ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
-                                      Value="@((int)draft.Record.Type > 0 ? (int?)draft.Record.Type : null)" ValueChanged="@(value => ChangeTypeAsync(generation, value))" />
-                </ClayFieldChange>
-                <ClayFieldChange Changed="@(baseline is not null && draft.Classification != baseline.Classification)">
-                    <ClayTextBox Options="_classificationOptions" Value="@draft.Classification" ValueChanged="@(value => ChangeClassificationAsync(generation, value))" />
-                </ClayFieldChange>
-                <ClayFieldChange Changed="@(baseline is not null && draft.Record.Name != baseline.Record.Name)">
-                    <ClayTextBox Options="_nameOptions" Value="@draft.Record.Name" ValueChanged="@(value => ChangeAsync(generation, record => record with { Name = value ?? "" }))" />
-                </ClayFieldChange>
-                <ClayFieldChange Changed="@(baseline is not null && draft.Record.AlternateName != baseline.Record.AlternateName)">
-                    <ClayTextBox Options="_alternateNameOptions" Value="@draft.Record.AlternateName" ValueChanged="@(value => ChangeAsync(generation, record => record with { AlternateName = value ?? "" }))" />
-                </ClayFieldChange>
-                <ClayFieldChange Changed="@(baseline is not null && draft.Record.Caption != baseline.Record.Caption)">
-                    <ClayTextBox Options="_captionOptions" Value="@draft.Record.Caption" ValueChanged="@(value => ChangeAsync(generation, record => record with { Caption = value ?? "" }))" />
-                </ClayFieldChange>
-                <ClayFieldChange Changed="@(baseline is not null && draft.Record.AlternateCaption != baseline.Record.AlternateCaption)">
-                    <ClayTextBox Options="_alternateCaptionOptions" Value="@draft.Record.AlternateCaption" ValueChanged="@(value => ChangeAsync(generation, record => record with { AlternateCaption = value ?? "" }))" />
-                </ClayFieldChange>
-                <ClayFieldChange Changed="@(baseline is not null && draft.Record.Abbreviation != baseline.Record.Abbreviation)">
-                    <ClayTextBox Options="_abbreviationOptions" Value="@draft.Record.Abbreviation" ValueChanged="@(value => ChangeAsync(generation, record => record with { Abbreviation = value ?? "" }))" />
-                </ClayFieldChange>
-                <ClayFieldChange Changed="@(baseline is not null && draft.Record.CountryCode != baseline.Record.CountryCode)">
-                    <ClayTextBox Options="_countryOptions" Value="@draft.Record.CountryCode" ValueChanged="@(value => ChangeAsync(generation, record => record with { CountryCode = value ?? "" }))" />
-                </ClayFieldChange>
-                <ClayFieldChange Changed="@(baseline is not null && draft.Record.Direction != baseline.Record.Direction)">
-                    <ClayTextBox Options="_directionOptions" Value="@draft.Record.Direction" ValueChanged="@(value => ChangeAsync(generation, record => record with { Direction = value ?? "" }))" />
-                </ClayFieldChange>
-            </div>
+            <ClayEditorFocusScope @key="RouteKey" Label="Поля территории" Ready="@(Editable && CanCommit)" AdvanceOnEnter="true">
+                <div @key="generation" class="d-flex flex-column gap-2 territorial-form-fields" data-draft-scope="main" inert="@DraftInputSuppressed">
+                    <ClayFieldChange Changed="@(baseline is not null && draft.Record.Type != baseline.Record.Type)">
+                        <ClayDropDownList TItem="TerritorialEntityOption" TValue="int?" Options="_typeOptions"
+                                          Items="_types" ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                          Value="@((int)draft.Record.Type > 0 ? (int?)draft.Record.Type : null)" ValueChanged="@(value => ChangeTypeAsync(generation, value))" />
+                    </ClayFieldChange>
+                    <ClayFieldChange Changed="@(baseline is not null && draft.Classification != baseline.Classification)" RawBaseline="@(Editable && baseline is not null ? baseline.Classification ?? string.Empty : null)">
+                        <ClayTextBox Options="_classificationOptions" Value="@draft.Classification" ValueChanged="@(value => ChangeClassificationAsync(generation, value))" />
+                    </ClayFieldChange>
+                    <ClayFieldChange Changed="@(baseline is not null && draft.Record.Name != baseline.Record.Name)" RawBaseline="@(Editable && baseline is not null ? baseline.Record.Name ?? string.Empty : null)">
+                        <ClayTextBox Options="_nameOptions" Value="@draft.Record.Name" ValueChanged="@(value => ChangeAsync(generation, record => record with { Name = value ?? "" }))" />
+                    </ClayFieldChange>
+                    <ClayFieldChange Changed="@(baseline is not null && draft.Record.AlternateName != baseline.Record.AlternateName)" RawBaseline="@(Editable && baseline is not null ? baseline.Record.AlternateName ?? string.Empty : null)">
+                        <ClayTextBox Options="_alternateNameOptions" Value="@draft.Record.AlternateName" ValueChanged="@(value => ChangeAsync(generation, record => record with { AlternateName = value ?? "" }))" />
+                    </ClayFieldChange>
+                    <ClayFieldChange Changed="@(baseline is not null && draft.Record.Caption != baseline.Record.Caption)" RawBaseline="@(Editable && baseline is not null ? baseline.Record.Caption ?? string.Empty : null)">
+                        <ClayTextBox Options="_captionOptions" Value="@draft.Record.Caption" ValueChanged="@(value => ChangeAsync(generation, record => record with { Caption = value ?? "" }))" />
+                    </ClayFieldChange>
+                    <ClayFieldChange Changed="@(baseline is not null && draft.Record.AlternateCaption != baseline.Record.AlternateCaption)" RawBaseline="@(Editable && baseline is not null ? baseline.Record.AlternateCaption ?? string.Empty : null)">
+                        <ClayTextBox Options="_alternateCaptionOptions" Value="@draft.Record.AlternateCaption" ValueChanged="@(value => ChangeAsync(generation, record => record with { AlternateCaption = value ?? "" }))" />
+                    </ClayFieldChange>
+                    <ClayFieldChange Changed="@(baseline is not null && draft.Record.Abbreviation != baseline.Record.Abbreviation)" RawBaseline="@(Editable && baseline is not null ? baseline.Record.Abbreviation ?? string.Empty : null)">
+                        <ClayTextBox Options="_abbreviationOptions" Value="@draft.Record.Abbreviation" ValueChanged="@(value => ChangeAsync(generation, record => record with { Abbreviation = value ?? "" }))" />
+                    </ClayFieldChange>
+                    <ClayFieldChange Changed="@(baseline is not null && draft.Record.CountryCode != baseline.Record.CountryCode)" RawBaseline="@(Editable && baseline is not null ? baseline.Record.CountryCode ?? string.Empty : null)">
+                        <ClayTextBox Options="_countryOptions" Value="@draft.Record.CountryCode" ValueChanged="@(value => ChangeAsync(generation, record => record with { CountryCode = value ?? "" }))" />
+                    </ClayFieldChange>
+                    <ClayFieldChange Changed="@(baseline is not null && draft.Record.Direction != baseline.Record.Direction)" RawBaseline="@(Editable && baseline is not null ? baseline.Record.Direction ?? string.Empty : null)">
+                        <ClayTextBox Options="_directionOptions" Value="@draft.Record.Direction" ValueChanged="@(value => ChangeAsync(generation, record => record with { Direction = value ?? "" }))" />
+                    </ClayFieldChange>
+                </div>
+            </ClayEditorFocusScope>
             @if (draft.Record.Id > 0)
             {
                 <div class="d-flex align-center flex-wrap gap-2 mt-3">
@@ -93,6 +100,10 @@
         }
     </ChildContent>
     <Footer>
+        @if (TerritoryPresence() is { } presenceTarget)
+        {
+            <ClayPresencePanel Target="presenceTarget" />
+        }
         @if (Clean is { Record.Id: > 0 } saved)
         {
             <ClayChanged ChangedById="@saved.Record.ChangedBy" ChangedByName="@saved.Record.ChangedByName" ChangedAt="@saved.Record.ChangedAt" />

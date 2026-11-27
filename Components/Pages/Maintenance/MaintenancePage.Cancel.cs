@@ -20,10 +20,36 @@ public partial class MaintenancePage
 
     private async Task BeforeMaintenanceNavigationAsync(LocationChangingContext context)
     {
-        if (_disposed || !HasUnsentConfirmation) return;
+        if (_disposed) return;
         using var request = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken, _lifetime.Token);
-        if (!await ResolveUnsentConfirmationAsync(request.Token))
+        if (IsBusy || HasUnsentConfirmation && !await ResolveUnsentConfirmationAsync(request.Token))
+        {
             context.PreventNavigation();
+            return;
+        }
+
+        if (_registration is not { } registration) return;
+        _closingDraft = true;
+        try
+        {
+            await registration.CloseRamAsync(request.Token);
+            if (ReferenceEquals(registration, _registration))
+            {
+                _registration = null;
+                _draftInstance = Guid.NewGuid();
+                _closingDraft = false;
+            }
+        }
+        catch (OperationCanceledException) when (request.IsCancellationRequested)
+        {
+            context.PreventNavigation();
+        }
+        catch (Exception error) when (error is JSException or InvalidOperationException)
+        {
+            context.PreventNavigation();
+            Report("Не удалось удалить временные данные списка. Повторите переход.");
+            if (!_disposed) await InvokeAsync(StateHasChanged);
+        }
     }
 
     private async Task<bool> ResolveUnsentConfirmationAsync(CancellationToken token)

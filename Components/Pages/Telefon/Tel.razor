@@ -3,6 +3,7 @@
 @layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
+@using Clayzor.Lib.Web.Controls.Components.Presence
 @using Clayzor.Lib.Web.Controls.Components.Grid
 @using Clayzor.Lib.Web.Controls.Components.Select
 @using Clayzor.Lib.Web.DBSelect.Phones
@@ -26,7 +27,7 @@
 @inject Microsoft.AspNetCore.Components.Authorization.AuthenticationStateProvider Authentication
 
 <PageTitle>@Title</PageTitle>
-<NavigationLock ConfirmExternalNavigation="@IsModified" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
+<NavigationLock ConfirmExternalNavigation="@(IsModified || _telCloseRevision is not null)" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
 <ClayEntityForm Options="_entityFormOptions">
     <Toolbar>
@@ -38,7 +39,7 @@
                 <ClayToolbarButton Options="_copyOptions" Disabled="@(_loading || _saving)" OnClick="CopyAsync" />
                 <ClayToolbarButton Options="_deleteOptions" Disabled="@(_loading || _saving || !_canEdit || _versionConflict || TelWriteBlocked || HasPendingSync)" OnClick="DeleteAsync" />
             }
-            <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || _deleted || _telEditorTransition)" OnClick="RefreshAsync" />
+            <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving || _deleted || _telEditorTransition || _telCloseRevision is not null)" OnClick="RefreshTelAsync" />
             <ClayToolbarButton Options="_cancelOptions" Disabled="@(_saving || _telEditorTransition)" OnClick="CancelAsync" />
         </ClayToolbar>
     </Toolbar>
@@ -47,6 +48,23 @@
         {
             <section aria-label="Журнал записи и АТС" data-testid="tel-write-journal">
                 <MudAlert Severity="Severity.Warning">@_telJournalNotice</MudAlert>
+                @if (VisibleTelWorkflowSummary is { } summary)
+                {
+                    <div data-testid="tel-workflow-summary">
+                        <MudText>Попытка @summary.AttemptId.ToString("D")</MudText>
+                        <MudText>@(summary.SqlConfirmed ? "Запись SQL подтверждена." : "Подтверждение записи SQL ожидается.")</MudText>
+                        <MudText>Команды АТС до SQL — подтверждено @summary.ConfirmedPreSteps из @(summary.PreStepCount).</MudText>
+                        @if (summary.PostStepCount is { } postCount)
+                        {
+                            <MudText>Команды АТС после SQL — подтверждено @summary.ConfirmedPostSteps из @(postCount).</MudText>
+                        }
+                        else
+                        {
+                            <MudText>План команд АТС после SQL ещё не зафиксирован.</MudText>
+                        }
+                        <MudText>Ответов АТС ожидается — @(summary.DispatchingSteps).</MudText>
+                    </div>
+                }
                 @if (CanRetryAts)
                 {
                     <ClayToolbarButton Options="RetryAtsOptions" Disabled="@IsTelJournalInteractionBlocked"
@@ -73,6 +91,10 @@
         }
         else if (_model is not null)
         {
+            @if (GetPresenceTarget() is { } presenceTarget)
+            {
+                <ClayPresencePanel Target="presenceTarget" />
+            }
             if (!_canEdit)
             {
                 <MudAlert Severity="Severity.Warning" Class="mb-2">Для изменения телефонного номера требуется роль 43.</MudAlert>
@@ -86,36 +108,45 @@
                 <MudAlert Severity="Severity.Warning" Class="mb-2">@_warningMessage</MudAlert>
             }
             <MudForm @ref="_form">
-                <div class="phone-form-fields" data-draft-scope="@TelInputScope" inert="@(_loading || _telRestoringRaw || _telJournalBusy || _telChildOpen || _telEditorTransition)">
+                <ClayEditorFocusScope @key="(Id, CopyId)" Label="Поля телефонного номера" Ready="@TelFocusReady" AdvanceOnEnter="true">
+                <div class="phone-form-fields" data-draft-scope="@TelInputScope" inert="@(_loading || _telRestoringRaw || _telJournalBusy || _telChildOpen || _telEditorTransition || _telCloseRevision is not null)">
                     <div class="phone-form-pair">
                         <label class="phone-form-label" for="phone-number">Номер телефона:</label>
                         <div>
-                            <ClayTextBox Value="@_model.Number" ValueChanged="OnNumberChanged" Options="_numberOptions" />
+                            <ClayFieldChange Changed="@(_canEdit && _model.Number != _originalPhone.Number)" RawBaseline="@(_canEdit ? _originalPhone.Number ?? string.Empty : null)">
+                                <ClayTextBox Value="@_model.Number" ValueChanged="OnNumberChanged" Options="_numberOptions" />
+                            </ClayFieldChange>
                             @if (!string.IsNullOrWhiteSpace(_model.FullNumber))
                             {
                                 <div class="phone-form-meta">Полный номер: @_model.FullNumber</div>
                             }
                         </div>
                         <span class="phone-form-label">Станция:</span>
-                        <ClaySelect TItem="PhoneStationLookup" TValue="int?" DataSource="StationSource"
-                                    ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
-                                    Value="_model.StationId" ValueChanged="OnStationIdChanged"
-                                    SelectedItem="_selectedStation" SelectedItemChanged="OnStationChangedAsync"
-                                    ViewItem="StationViewItem" Options="_stationOptions" />
+                        <ClayFieldChange Changed="@(_canEdit && _model.StationId != _originalPhone.StationId)" WatchLookupRaw="@(_canEdit)">
+                            <ClaySelect TItem="PhoneStationLookup" TValue="int?" DataSource="StationSource"
+                                        ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                        Value="_model.StationId" ValueChanged="OnStationIdChanged"
+                                        SelectedItem="_selectedStation" SelectedItemChanged="OnStationChangedAsync"
+                                        ViewItem="StationViewItem" Options="_stationOptions" />
+                        </ClayFieldChange>
                     </div>
                     <div class="phone-form-pair">
                         <span class="phone-form-label">Тип номера:</span>
-                        <ClaySelect TItem="PhoneTypeLookup" TValue="int?" DataSource="TypeSource"
-                                    ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
-                                    Value="_model.PhoneTypeId" ValueChanged="OnTypeIdChanged"
-                                    SelectedItem="_selectedType" SelectedItemChanged="OnTypeChangedAsync" Options="_typeOptions" />
+                        <ClayFieldChange Changed="@(_canEdit && _model.PhoneTypeId != _originalPhone.PhoneTypeId)" WatchLookupRaw="@(_canEdit)">
+                            <ClaySelect TItem="PhoneTypeLookup" TValue="int?" DataSource="TypeSource"
+                                        ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                        Value="_model.PhoneTypeId" ValueChanged="OnTypeIdChanged"
+                                        SelectedItem="_selectedType" SelectedItemChanged="OnTypeChangedAsync" Options="_typeOptions" />
+                        </ClayFieldChange>
                         @if (_availability.Port.IsVisible)
                         {
                             <span class="phone-form-label">Порт АТС:</span>
                             <div>
-                                <ClayDropDownList TItem="PhoneStringOption" TValue="string" Items="_portOptions"
-                                                  ValueSelector="@(item => item.Value)" TextSelector="@(item => item.Value)"
-                                                  @bind-Value="_model.AtsPort" Options="_portSelectOptions" />
+                                <ClayFieldChange Changed="@(_canEdit && _availability.Port.IsEditable && _model.AtsPort != _originalPhone.AtsPort)">
+                                    <ClayDropDownList TItem="PhoneStringOption" TValue="string" Items="_portOptions"
+                                                      ValueSelector="@(item => item.Value)" TextSelector="@(item => item.Value)"
+                                                      @bind-Value="_model.AtsPort" Options="_portSelectOptions" />
+                                </ClayFieldChange>
                                 @FieldWarning(_availability.Port)
                             </div>
                         }
@@ -126,14 +157,18 @@
                     </div>
                     <div class="phone-form-pair">
                         <span class="phone-form-label">Переадресация:</span>
-                        <ClayTextBox @bind-Value="_model.QuickCall" Options="_quickCallOptions" />
+                        <ClayFieldChange Changed="@(_canEdit && _model.QuickCall != _originalPhone.QuickCall)" RawBaseline="@(_canEdit ? _originalPhone.QuickCall ?? string.Empty : null)">
+                            <ClayTextBox @bind-Value="_model.QuickCall" Options="_quickCallOptions" />
+                        </ClayFieldChange>
                         @if (_availability.PickupGroup.IsVisible)
                         {
                             <span class="phone-form-label">Группа перехвата:</span>
                             <div>
-                                <ClayDropDownList TItem="PhoneStringOption" TValue="string" Items="_pickupOptions"
-                                                  ValueSelector="@(item => item.Value)" TextSelector="@(item => item.Value)"
-                                                  @bind-Value="_model.PickupGroup" Options="_pickupSelectOptions" />
+                                <ClayFieldChange Changed="@(_canEdit && _availability.PickupGroup.IsEditable && _model.PickupGroup != _originalPhone.PickupGroup)">
+                                    <ClayDropDownList TItem="PhoneStringOption" TValue="string" Items="_pickupOptions"
+                                                      ValueSelector="@(item => item.Value)" TextSelector="@(item => item.Value)"
+                                                      @bind-Value="_model.PickupGroup" Options="_pickupSelectOptions" />
+                                </ClayFieldChange>
                                 @FieldWarning(_availability.PickupGroup)
                             </div>
                         }
@@ -147,7 +182,9 @@
                         {
                             <span class="phone-form-label">Номер автонабора:</span>
                             <div>
-                                <ClayTextBox @bind-Value="_model.AutoDialNumber" Options="_autoDialOptions" />
+                                <ClayFieldChange Changed="@(_canEdit && _availability.AutoDial.IsEditable && _model.AutoDialNumber != _originalPhone.AutoDialNumber)" RawBaseline="@(_canEdit ? _originalPhone.AutoDialNumber ?? string.Empty : null)">
+                                    <ClayTextBox @bind-Value="_model.AutoDialNumber" Options="_autoDialOptions" />
+                                </ClayFieldChange>
                                 @FieldWarning(_availability.AutoDial)
                             </div>
                         }
@@ -159,7 +196,7 @@
                     </div>
                     @if (_availability.ParallelCalls.IsVisible)
                     {
-                        <section class="phone-form-section">
+                        <section class="phone-form-section" data-clay-editor-exclude>
                             <span class="phone-form-label">Параллельные вызовы:</span>
                             <div>
                                 <ClayGrid TEntity="PhoneParallelCall" Items="_relations.ParallelCalls" Options="_parallelGridOptions"
@@ -195,20 +232,24 @@
                     }
                     <div class="phone-form-pair">
                         <span class="phone-form-label">Сотрудник:</span>
-                        <ClaySelect TItem="Employee" TValue="int?" DataSource="EmployeeSource"
-                                    ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
-                                    Value="_model.EmployeeId" ValueChanged="OnEmployeeIdChanged"
-                                    SelectedItem="_selectedEmployee" SelectedItemChanged="OnEmployeeChangedAsync"
-                                    ViewItem="EmployeeViewItem" Options="_employeeOptions" />
+                        <ClayFieldChange Changed="@(_canEdit && _model.EmployeeId != _originalPhone.EmployeeId)" WatchLookupRaw="@(_canEdit)">
+                            <ClaySelect TItem="Employee" TValue="int?" DataSource="EmployeeSource"
+                                        ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                        Value="_model.EmployeeId" ValueChanged="OnEmployeeIdChanged"
+                                        SelectedItem="_selectedEmployee" SelectedItemChanged="OnEmployeeChangedAsync"
+                                        ViewItem="EmployeeViewItem" Options="_employeeOptions" />
+                        </ClayFieldChange>
                         @if (_availability.DrivenBy.IsVisible)
                         {
                             <span class="phone-form-label">Ведомый от:</span>
                             <div>
-                                <ClaySelect TItem="PhoneDirectoryItem" TValue="int?" DataSource="DrivenSource"
-                                            ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
-                                            Value="_model.DrivenById" ValueChanged="OnDrivenByIdChanged"
-                                            SelectedItem="_selectedDrivenBy" SelectedItemChanged="OnDrivenByChanged"
-                                            ViewItem="PhoneViewItem" Options="_drivenOptions" />
+                                <ClayFieldChange Changed="@(_canEdit && _availability.DrivenBy.IsEditable && _model.DrivenById != _originalPhone.DrivenById)" WatchLookupRaw="@(_canEdit)">
+                                    <ClaySelect TItem="PhoneDirectoryItem" TValue="int?" DataSource="DrivenSource"
+                                                ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                                Value="_model.DrivenById" ValueChanged="OnDrivenByIdChanged"
+                                                SelectedItem="_selectedDrivenBy" SelectedItemChanged="OnDrivenByChanged"
+                                                ViewItem="PhoneViewItem" Options="_drivenOptions" />
+                                </ClayFieldChange>
                                 @FieldWarning(_availability.DrivenBy)
                             </div>
                         }
@@ -223,11 +264,13 @@
                         {
                             <span class="phone-form-label">Отображаемый от:</span>
                             <div>
-                                <ClaySelect TItem="PhoneDirectoryItem" TValue="int?" DataSource="DisplayedSource"
-                                            ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
-                                            Value="_model.DisplayedFromId" ValueChanged="OnDisplayedFromIdChanged"
-                                            SelectedItem="_selectedDisplayedFrom" SelectedItemChanged="OnDisplayedFromChanged"
-                                            ViewItem="PhoneViewItem" Options="_displayedOptions" />
+                                <ClayFieldChange Changed="@(_canEdit && _availability.DisplayedFrom.IsEditable && _model.DisplayedFromId != _originalPhone.DisplayedFromId)" WatchLookupRaw="@(_canEdit)">
+                                    <ClaySelect TItem="PhoneDirectoryItem" TValue="int?" DataSource="DisplayedSource"
+                                                ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                                Value="_model.DisplayedFromId" ValueChanged="OnDisplayedFromIdChanged"
+                                                SelectedItem="_selectedDisplayedFrom" SelectedItemChanged="OnDisplayedFromChanged"
+                                                ViewItem="PhoneViewItem" Options="_displayedOptions" />
+                                </ClayFieldChange>
                                 @FieldWarning(_availability.DisplayedFrom)
                             </div>
                         }
@@ -238,16 +281,20 @@
                     </div>
                     <div class="phone-form-pair">
                         <span class="phone-form-label">Компания заказчик:</span>
-                        <ClaySelect TItem="PersonLookup" TValue="int?" DataSource="CustomerSource"
-                                    ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
-                                    Value="_model.CustomerId" ValueChanged="OnCustomerChanged" Options="_customerOptions" />
+                        <ClayFieldChange Changed="@(_canEdit && _model.CustomerId != _originalPhone.CustomerId)" WatchLookupRaw="@(_canEdit)">
+                            <ClaySelect TItem="PersonLookup" TValue="int?" DataSource="CustomerSource"
+                                        ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                        Value="_model.CustomerId" ValueChanged="OnCustomerChanged" Options="_customerOptions" />
+                        </ClayFieldChange>
                         @if (_availability.Socket.IsVisible)
                         {
                             <span class="phone-form-label">Розетка:</span>
                             <div>
-                                <ClaySelect @key="_socketSelectVersion" TItem="PhoneSocketLookup" TValue="int?" DataSource="SocketSource"
-                                            ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
-                                            Value="_model.SocketId" ValueChanged="OnSocketChanged" Options="_socketOptions" />
+                                <ClayFieldChange Changed="@(_canEdit && _availability.Socket.IsEditable && _model.SocketId != _originalPhone.SocketId)" WatchLookupRaw="@(_canEdit)">
+                                    <ClaySelect @key="_socketSelectVersion" TItem="PhoneSocketLookup" TValue="int?" DataSource="SocketSource"
+                                                ValueSelector="@(item => (int?)item.Id)" TextSelector="@(item => item.Name)"
+                                                Value="_model.SocketId" ValueChanged="OnSocketChanged" Options="_socketOptions" />
+                                </ClayFieldChange>
                                 @FieldWarning(_availability.Socket)
                             </div>
                         }
@@ -259,12 +306,16 @@
 
                     <div class="phone-form-single">
                         <span class="phone-form-label">Подключено:</span>
-                        <ClayTextBox Value="@_model.Connected" ValueChanged="OnConnectedChanged" Options="_connectedOptions" />
+                        <ClayFieldChange Changed="@(_canEdit && _model.Connected != _originalPhone.Connected)" RawBaseline="@(_canEdit ? _originalPhone.Connected ?? string.Empty : null)">
+                            <ClayTextBox Value="@_model.Connected" ValueChanged="OnConnectedChanged" Options="_connectedOptions" />
+                        </ClayFieldChange>
                     </div>
                     <div class="phone-form-single">
                         <span class="phone-form-label">Описание АТС:</span>
                         <div class="phone-form-with-action">
-                            <ClayTextBox Value="@_model.AtsDescription" ValueChanged="OnAtsDescriptionChanged" Options="_atsDescriptionOptions" />
+                            <ClayFieldChange Changed="@(_canEdit && _model.AtsDescription != _originalPhone.AtsDescription)" RawBaseline="@(_canEdit ? _originalPhone.AtsDescription ?? string.Empty : null)">
+                                <ClayTextBox Value="@_model.AtsDescription" ValueChanged="OnAtsDescriptionChanged" Options="_atsDescriptionOptions" />
+                            </ClayFieldChange>
                             <ClayButton Icon="@Icons.Material.Filled.AutoFixHigh" Text="Заполнить по сотруднику"
                                         Disabled="@(!_canEdit || _model.EmployeeId is null)" OnClick="FillAtsDescriptionAsync" />
                         </div>
@@ -273,7 +324,9 @@
                     <div class="phone-form-single">
                         <span class="phone-form-label">Основной номер сотрудника:</span>
                         <div>
-                            <ClayCheckbox State="_model.IsDefault" StateChanged="OnDefaultChanged" ReadOnly="@(!_availability.DefaultPhone.IsEditable || !_canEdit)" />
+                            <ClayFieldChange Changed="@(_canEdit && _availability.DefaultPhone.IsEditable && _model.IsDefault != _originalPhone.IsDefault)">
+                                <ClayCheckbox State="_model.IsDefault" StateChanged="OnDefaultChanged" ReadOnly="@(!_availability.DefaultPhone.IsEditable || !_canEdit)" />
+                            </ClayFieldChange>
                             @if (_defaultEmployeePhone is not null && _defaultEmployeePhone.Value.Id != _model.Id)
                             {
                                 <a href="@PhoneUrl(_defaultEmployeePhone.Value.Id)" target="_blank" rel="noopener">Текущий основной номер: @_defaultEmployeePhone.Value.Number</a>
@@ -297,7 +350,7 @@
 
                     @if (_availability.GroupMembers.IsVisible)
                     {
-                        <section class="phone-form-section">
+                        <section class="phone-form-section" data-clay-editor-exclude>
                             <span class="phone-form-label">Члены группы:</span>
                             <div>
                                 <ClayGrid TEntity="PhoneGroupMember" Items="_relations.GroupMembers" Options="_groupGridOptions">
@@ -329,7 +382,7 @@
 
                     @if (_availability.Equipment.IsVisible)
                     {
-                        <section class="phone-form-section">
+                        <section class="phone-form-section" data-clay-editor-exclude>
                             <span class="phone-form-label">Оборудование:</span>
                             <div>
                                 <ClayGrid TEntity="PhoneEquipmentLink" Items="_relations.Equipment" Options="_equipmentGridOptions"
@@ -392,27 +445,36 @@
 
                     <div class="phone-form-single">
                         <span class="phone-form-label">Срок возврата:</span>
-                        <div class="phone-form-return-date">
-                            <ClayCheckbox State="_hasReturnDate" StateChanged="OnHasReturnDateChanged" ReadOnly="@(!_canEdit)" />
-                            <ClayDatePicker @bind-Value="_model.ReturnDate" Options="_returnDateOptions" />
-                        </div>
+                        <ClayFieldChange Changed="@(_canEdit && _model.ReturnDate != _originalPhone.ReturnDate)">
+                            <div class="phone-form-return-date">
+                                <ClayCheckbox State="_hasReturnDate" StateChanged="OnHasReturnDateChanged" ReadOnly="@(!_canEdit)" />
+                                <ClayDatePicker @bind-Value="_model.ReturnDate" Options="_returnDateOptions" />
+                            </div>
+                        </ClayFieldChange>
                     </div>
 
                     <div class="phone-form-radios">
                         <fieldset>
                             <legend>Услуги связи</legend>
-                            <ClayRadioGroup TValue="int?" Items="_serviceChoices" Value="_model.ServicesKind" ValueChanged="OnServicesChanged" Options="_servicesRadioOptions" />
+                            <ClayFieldChange Changed="@(_canEdit && !_servicesRadioOptions.Disabled && _model.ServicesKind != _originalPhone.ServicesKind)">
+                                <ClayRadioGroup TValue="int?" Items="_serviceChoices" Value="_model.ServicesKind" ValueChanged="OnServicesChanged" Options="_servicesRadioOptions" />
+                            </ClayFieldChange>
                         </fieldset>
                         <fieldset>
                             <legend>Отображение полного номера в корпоративном справочнике</legend>
-                            <ClayRadioGroup TValue="int?" Items="_directoryChoices" Value="_model.ViewInDirectory" ValueChanged="OnDirectoryChanged" Options="_directoryRadioOptions" />
+                            <ClayFieldChange Changed="@(_canEdit && _model.ViewInDirectory != _originalPhone.ViewInDirectory)">
+                                <ClayRadioGroup TValue="int?" Items="_directoryChoices" Value="_model.ViewInDirectory" ValueChanged="OnDirectoryChanged" Options="_directoryRadioOptions" />
+                            </ClayFieldChange>
                         </fieldset>
                     </div>
                     <div class="phone-form-single phone-form-top">
                         <span class="phone-form-label">Примечания:</span>
-                        <ClayTextArea @bind-Value="_model.Notes" Options="_notesOptions" />
+                        <ClayFieldChange Changed="@(_canEdit && _model.Notes != _originalPhone.Notes)" RawBaseline="@(_canEdit ? _originalPhone.Notes ?? string.Empty : null)">
+                            <ClayTextArea @bind-Value="_model.Notes" Options="_notesOptions" />
+                        </ClayFieldChange>
                     </div>
                 </div>
+                </ClayEditorFocusScope>
             </MudForm>
         }
     </ChildContent>

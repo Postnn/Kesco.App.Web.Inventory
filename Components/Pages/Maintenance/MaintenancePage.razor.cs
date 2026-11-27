@@ -23,10 +23,11 @@ public partial class MaintenancePage : IAsyncDisposable
     private const string DefaultOrder = "ВыполнитьДо ASC, КодРегламентныхРабот ASC";
     private const string ConfirmationScope = "confirmation";
     private const string FilterScope = "InvMaintenanceFilter";
-    private const string CompletionKind = "maintenance.complete";
+    private const string CompletionKind = MaintenanceData.CompletionKind;
     private const string Question = "Подтвердите выполнение";
     private readonly CancellationTokenSource _lifetime = new();
     private readonly string _draftRoot = $"maintenance-{Guid.NewGuid():N}";
+    private Guid _draftInstance = Guid.NewGuid();
     private readonly ClayGridOptions _options = new()
     {
         Title = "Регламентные работы",
@@ -75,13 +76,14 @@ public partial class MaintenancePage : IAsyncDisposable
     private MaintenanceList? _list;
     private IReadOnlyList<MaintenanceWork> _rows => _list?.Rows ?? [];
     private ClayDraftRegistration? _registration;
-    private IReadOnlyList<ClayDraftRecoveryCandidate> _recoverableDrafts = [];
-    private bool _recoveryScanned;
+    private int? _legacyCheckedEmployee;
+    private bool _closingDraft;
     private int? _pendingConfirmation;
     private bool _busy;
     private bool IsBusy => _busy || _readingFilter;
     private bool _canComplete;
-    private bool RecoveryRequired => !_recoveryScanned || _recoverableDrafts.Any(candidate => candidate.HasOperation) || _confirmedOperation is not null || _unknownOperation is not null || _notSentAttemptId is not null;
+    private HashSet<int> _serverPending = [];
+    private bool RecoveryRequired => _confirmedOperation is not null || _unknownOperation is not null || _notSentAttemptId is not null;
     private bool _loadFailed;
     private bool _disposed;
     private TimeZoneInfo? _sourceTimeZone;
@@ -135,8 +137,8 @@ public partial class MaintenancePage : IAsyncDisposable
             {
                 await _registration.DisposeAsync();
                 _registration = null;
-                _recoverableDrafts = [];
-                _recoveryScanned = false;
+                _draftInstance = Guid.NewGuid();
+                _legacyCheckedEmployee = null;
                 _filter = null;
                 _orderBy = DefaultOrder;
                 _pendingQuery = null;
@@ -147,12 +149,43 @@ public partial class MaintenancePage : IAsyncDisposable
                 _list = null;
             }
             _list = await ReadListAsync(ct);
-            _canComplete = await MaintenanceData.CanCompleteAsync(Db, CurrentUser, ct);
+            var actor = CurrentUser;
+            var instance = _draftInstance;
+            var userKey = actor.Id.ToString(CultureInfo.InvariantCulture);
+            var existing = _registration;
+            _canComplete = await MaintenanceData.CanCompleteAsync(Db, actor, ct);
+            ClayDraftRegistration? opened = null;
+            Task<ClayDraftRegistration> OpenRam(CancellationToken token) =>
+                Drafts.RegisterRamHandleAsync("maintenance", "list", userKey, 1, "." + _draftRoot, instance, token);
+            if (_canComplete && _legacyCheckedEmployee != actor.Id)
+            {
+                bool Current() => !_disposed && !ct.IsCancellationRequested && CurrentUser?.Id == actor.Id &&
+                    _draftInstance == instance && _canComplete && ReferenceEquals(existing, _registration);
+                async Task ImportAndReadAsync(IReadOnlyList<ClayLegacyDraftOperationEvidence> evidence, CancellationToken token)
+                {
+                    await ImportLegacyOperationsAsync(actor, evidence, token);
+                    var pending = await MaintenanceData.ReadPendingAsync(Db, token);
+                    if (!Current()) throw new InvalidOperationException("Контекст регламентных работ изменился.");
+                    _serverPending = pending;
+                }
+                if (existing is null)
+                    opened = await Drafts.TransferLegacyAndRegisterRamAsync("maintenance", "list", userKey,
+                        async (evidence, token) =>
+                        {
+                            await ImportAndReadAsync(evidence, token);
+                            return await OpenRam(token);
+                        }, Current, ct);
+                else
+                    await Drafts.TransferLegacyEvidenceAsync("maintenance", "list", userKey, ImportAndReadAsync,
+                        ct, retireSnapshotsAfterImport: true);
+                _legacyCheckedEmployee = actor.Id;
+            }
+            else
+                _serverPending = _canComplete ? await MaintenanceData.ReadPendingAsync(Db, ct) : [];
             if (_registration is null)
             {
-                var registration = await Drafts.RegisterHandleAsync("maintenance", "list",
-                    CurrentUser.Id.ToString(CultureInfo.InvariantCulture), 1, "." + _draftRoot, ct);
-                if (_disposed)
+                var registration = opened ?? await OpenRam(ct);
+                if (_disposed || ct.IsCancellationRequested || CurrentUser?.Id != actor.Id || _draftInstance != instance)
                 {
                     await registration.DisposeAsync();
                     return;
@@ -168,22 +201,13 @@ public partial class MaintenancePage : IAsyncDisposable
 
             if (_registration is { } current)
             {
-                _recoverableDrafts = await current.ListRecoveryCandidatesAsync(ct)
-                    ?? throw new InvalidOperationException("Не удалось прочитать список черновиков.");
-                if (!current.Restore.HasDraft && _pendingConfirmation is null && _filter is null &&
-                    _pendingQuery is null && _recoverableDrafts is [{ CanRecover: true } candidate] &&
-                    await current.RecoverListedDraftAsync(candidate.DraftId, ct))
-                {
-                    await ApplyRestoredDraftAsync(current.Restore, ct);
-                    _recoverableDrafts = await current.ListRecoveryCandidatesAsync(ct)
-                        ?? throw new InvalidOperationException("Не удалось проверить журнал операций.");
-                }
-                _recoveryScanned = true;
                 if (_notSentAttemptId is { } attemptId)
                 {
                     RestoreOperation(await current.RetryStorageAsync(attemptId, ct));
                     _notSentAttemptId = null;
                 }
+                if (_canComplete && _unknownOperation is { } unknown)
+                    await ReconcileReceiptAsync(current, unknown, CurrentUser, ct);
                 if (_confirmedOperation is { } confirmed)
                     await FinishConfirmedAsync(current, confirmed, ct);
             }
@@ -192,6 +216,8 @@ public partial class MaintenancePage : IAsyncDisposable
                 ReportRecovery();
             else if (!_canComplete)
                 Report("Список доступен для просмотра. Подтверждение выполнения недоступно.", Severity.Info);
+            else if (_rows.Any(row => _serverPending.Contains(row.Id)))
+                Report("Для некоторых работ есть незавершённая попытка подтверждения. Повтор для этих работ заблокирован.");
             else
                 _message = null;
         }
@@ -220,6 +246,20 @@ public partial class MaintenancePage : IAsyncDisposable
         if (_restoreFilter) _list = await ReadListAsync(ct);
     }
 
+    private async Task ImportLegacyOperationsAsync(Employee actor, IReadOnlyList<ClayLegacyDraftOperationEvidence> evidence,
+        CancellationToken ct)
+    {
+        var attempts = new List<(int WorkId, Guid AttemptId)>(evidence.Count);
+        foreach (var entry in evidence)
+        {
+            if (entry.Kind != CompletionKind || !Guid.TryParse(entry.AttemptId, out var attemptId) ||
+                !int.TryParse(entry.Data, NumberStyles.None, CultureInfo.InvariantCulture, out var id) || id <= 0)
+                throw new InvalidOperationException("Прежняя попытка требует сверки.");
+            attempts.Add((id, attemptId));
+        }
+        await MaintenanceData.ImportLegacyOperationsAsync(Db, await PrincipalAsync(), actor.Id, attempts, ct);
+    }
+
     private Task<MaintenanceList> ReadListAsync(CancellationToken ct) =>
         ReadListAsync(new ListQuery(_filter, _orderBy), ct);
 
@@ -233,7 +273,7 @@ public partial class MaintenancePage : IAsyncDisposable
 
     private Task OnFilterChangedAsync(ClayDataQuery query)
     {
-        if (_disposed || _applyingFilter || _recoverableDrafts.Any(candidate => candidate.HasOperation)) return Task.CompletedTask;
+        if (_disposed || _closingDraft || _applyingFilter) return Task.CompletedTask;
         _restoreFilter = false;
         _pendingQuery = new ListQuery((ClayFilterGroupNode?)query.CompositeFilter?.Clone(),
             query.BuildOrderBy(DefaultOrder, FilterColumns));
@@ -242,7 +282,7 @@ public partial class MaintenancePage : IAsyncDisposable
 
     private async Task ApplyPendingQueryAsync()
     {
-        if (IsBusy || _disposed || _recoverableDrafts.Any(candidate => candidate.HasOperation) || _pendingQuery is null) return;
+        if (IsBusy || _disposed || _closingDraft || _pendingQuery is null) return;
 
         var ct = _lifetime.Token;
         _readingFilter = true;
@@ -334,17 +374,27 @@ public partial class MaintenancePage : IAsyncDisposable
             ct.ThrowIfCancellationRequested();
             var principal = await PrincipalAsync();
             ct.ThrowIfCancellationRequested();
-            beginAttemptId = Guid.NewGuid().ToString("N");
+            var journalAttemptId = Guid.NewGuid();
+            beginAttemptId = journalAttemptId.ToString("N");
             attempt = await registration.BeginOperationAsync(
                 new ClayDraftOperationIntent(CompletionKind, JsonSerializer.Serialize(id), [ConfirmationScope], beginAttemptId, BlockOtherDraftOperations: true), ct);
-            await MaintenanceData.CompleteAsync(Db, principal, _registrationEmployee, id, ct);
+            await MaintenanceData.CompleteAsync(Db, principal, _registrationEmployee, id, journalAttemptId, ct);
 
             _confirmedOperation = attempt;
             _pendingConfirmation = null;
             await FinishConfirmedAsync(registration, attempt, ct);
         }
-        catch (MaintenanceRejectedException e)
+        catch (InventoryOperationPendingException e)
         {
+            _serverPending.Add(id);
+            if (attempt is not null && !await UpdateMarkerAsync(() => registration.RejectOperationAsync(attempt.Revision, ct)))
+                _unknownOperation = attempt;
+            Report(e.Message, Severity.Warning);
+        }
+        catch (Exception e) when (e is MaintenanceRejectedException or InventoryOperationReservationException)
+        {
+            if (e is InventoryOperationReservationException)
+                _loadFailed = true;
             if (attempt is not null && !await UpdateMarkerAsync(() => registration.RejectOperationAsync(attempt.Revision, ct)))
                 _unknownOperation = attempt;
             Report(_unknownOperation is null ? e.Message : $"{e.Message} Состояние попытки требует проверки.", Severity.Error);
@@ -401,17 +451,30 @@ public partial class MaintenancePage : IAsyncDisposable
         }
     }
 
-    private void RestoreOperation(ClayDraftOperation? operation)
+    private async Task ReconcileReceiptAsync(ClayDraftRegistration registration, ClayDraftOperation unknown,
+        Employee actor, CancellationToken ct)
     {
-        if (operation is { Kind: CompletionKind, Status: ClayDraftOperationStatus.Confirmed })
+        if (unknown.Kind != CompletionKind || !Guid.TryParse(unknown.AttemptId, out var attemptId) ||
+            !int.TryParse(unknown.Data, NumberStyles.None, CultureInfo.InvariantCulture, out var id) ||
+            !_rows.Any(row => row.Id == id))
+            return;
+
+        var receipt = await MaintenanceData.ReadReceiptAsync(Db, actor, id, attemptId, ct);
+        if (receipt is null || receipt.AttemptId != attemptId)
+            return;
+
+        if (receipt.State == InventoryOperationState.Confirmed && receipt.ResultEntityId == id)
         {
-            _confirmedOperation = operation;
             _unknownOperation = null;
+            _confirmedOperation = unknown;
             _pendingConfirmation = null;
         }
-        else
-            _unknownOperation = operation;
+        else if (receipt.State == InventoryOperationState.Rejected &&
+                 await UpdateMarkerAsync(() => registration.RejectOperationAsync(unknown.Revision, ct)))
+            _unknownOperation = null;
     }
+
+    private void RestoreOperation(ClayDraftOperation? operation) => _unknownOperation = operation;
 
     private void ReportRecovery()
     {
@@ -427,8 +490,6 @@ public partial class MaintenancePage : IAsyncDisposable
         }
         else if (_notSentAttemptId is not null)
             Report("Команда не отправлена. Хранилище не подтвердило начало операции.", Severity.Error);
-        else if (_recoverableDrafts.Any(candidate => candidate.HasOperation))
-            Report("Есть незавершённая попытка выполнения. Повтор записи заблокирован.", Severity.Warning);
     }
 
     private async Task ClearPendingAsync(ClayDraftRegistration registration, CancellationToken ct)
@@ -446,8 +507,8 @@ public partial class MaintenancePage : IAsyncDisposable
     }
 
     private bool CanConfirm(MaintenanceWork row) =>
-        !_disposed && !IsBusy && !RecoveryRequired && !_loadFailed && _canComplete && _registration is not null &&
-        row.IsApproved && (_pendingConfirmation is null || _pendingConfirmation == row.Id);
+        !_disposed && !_closingDraft && !IsBusy && !RecoveryRequired && !_loadFailed && _canComplete && _registration is not null &&
+        row.IsApproved && !_serverPending.Contains(row.Id) && (_pendingConfirmation is null || _pendingConfirmation == row.Id);
 
     private async Task<string?> PrincipalAsync()
     {

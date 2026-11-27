@@ -18,8 +18,11 @@ public partial class ModelEquipmentForm
     private readonly string _journalRoot = $"model-write-{Guid.NewGuid():N}";
     private ClayDraftRegistration? _journal;
     private ClayDraftOperation? _writeAttempt;
-    private IReadOnlyList<ClayDraftRecoveryCandidate> _journalCandidates = [];
+    private Guid _draftInstance = Guid.NewGuid();
     private KnownModelWrite? _knownWrite;
+    private KnownModelWrite? _restoredBrowserReceipt;
+    private InventoryOperationReceipt? _serverLatest;
+    private bool _serverPending;
     private string? _notSentAttempt;
     private string? _journalNotice;
     private bool _journalReady;
@@ -27,11 +30,12 @@ public partial class ModelEquipmentForm
     private bool _confirmedRecorded;
     private bool _lateInput;
     private int _journalEmployeeId;
+    private int _journalModelId;
 
     [Inject] private ClayDraftService Drafts { get; set; } = null!;
 
     private bool WriteBlocked => !_journalReady || _journalBusy || InputBlocked || _writeAttempt is not null ||
-        _knownWrite is not null || _notSentAttempt is not null || _journalCandidates.Count > 0;
+        _knownWrite is not null || _restoredBrowserReceipt is not null || _serverPending || _notSentAttempt is not null;
 
     private async Task InitializeJournalAsync(int id, int initialType, int version)
     {
@@ -41,22 +45,44 @@ public partial class ModelEquipmentForm
         ClayDraftRegistration? registration = null;
         try
         {
-            registration = await Drafts.RegisterHandleAsync(JournalForm, entityKey,
-                actor.Id.ToString(CultureInfo.InvariantCulture), 1, $".{_journalRoot}", _pageCts.Token);
-            if (_disposed || _loadVersion != version)
-                return;
+            var modelId = id > 0 ? id : 0;
+            var actorKey = actor.Id.ToString(CultureInfo.InvariantCulture);
+            var token = _pageCts.Token;
+            (InventoryOperationReceipt? Latest, bool HasPending) server = default;
+            bool Current() => !_disposed && !token.IsCancellationRequested &&
+                _loadVersion == version && CurrentUser?.Id == actor.Id;
+            registration = await Drafts.TransferLegacyAndRegisterRamAsync(JournalForm,
+                modelId > 0 ? modelId.ToString(CultureInfo.InvariantCulture) : "new", actorKey, async (evidence, ct) =>
+                {
+                    var attempts = ValidateLegacyModelEvidence(evidence, modelId);
+                    var principal = await ReadPrincipalAsync();
+                    if (!Current()) throw new OperationCanceledException(ct);
+
+                    if (attempts.Count != 0)
+                        await EquipmentModel.ImportLegacySaveOperationsAsync(Db, principal, actor.Id, modelId, attempts, ct);
+                    server = await EquipmentModel.ReadSaveJournalAsync(Db, principal, actor.Id, modelId, ct);
+                    if (!Current()) throw new OperationCanceledException(ct);
+
+                    return await Drafts.RegisterRamHandleAsync(JournalForm, entityKey,
+                        actorKey, 1, $".{_journalRoot}", _draftInstance, ct);
+                }, Current, token);
+            if (!Current()) return;
             _journal = registration;
+            _modelDraftClosed = false;
             var restoredRegistration = registration;
             registration = null;
             _journalEmployeeId = actor.Id;
-            if (!restoredRegistration.Restore.HasDraft && restoredRegistration.Restore.OperationSnapshot is null)
-                await AdoptSingleCandidateAsync(restoredRegistration, version);
+            _journalModelId = modelId;
+            _serverLatest = server.Latest;
+            _serverPending = server.HasPending;
             if (_disposed || version != _loadVersion || !ReferenceEquals(_journal, restoredRegistration))
                 return;
 
             RestoreJournal();
-            await RestoreEditorInputAsync(_journal, version);
-            await ScanJournalAsync(_journal);
+            await RestoreEditorInputAsync(restoredRegistration, version);
+            await ScanJournalAsync(restoredRegistration);
+            await ReconcileServerReceiptAsync(restoredRegistration, version);
+            UpdateJournalNotice();
         }
         catch (Exception ex) when (IsJournalError(ex))
         {
@@ -79,60 +105,105 @@ public partial class ModelEquipmentForm
         _writeAttempt = restored.OperationSnapshot;
         _confirmedRecorded = _writeAttempt?.Status == ClayDraftOperationStatus.Confirmed;
         _knownWrite = null;
-        if ((_writeAttempt is null || _confirmedRecorded) &&
-            restored.TypedScopes?.TryGetValue(JournalReceiptScope, out var json) == true &&
-            JsonSerializer.Deserialize<KnownModelWrite>(json) is { Id: > 0 } receipt &&
-            (_writeAttempt is null || receipt.AttemptId == _writeAttempt.AttemptId))
-            _knownWrite = receipt;
-        else if (_confirmedRecorded && _writeAttempt is { Kind: ModelWriteKind } confirmed)
-        {
-            using var intent = JsonDocument.Parse(confirmed.Data);
-            if (intent.RootElement.TryGetProperty("Id", out var idProperty) && idProperty.TryGetInt32(out var id) && id > 0 &&
-                intent.RootElement.TryGetProperty("Fingerprint", out var fingerprintProperty) &&
-                fingerprintProperty.GetString() is { Length: > 0 } fingerprint)
-                _knownWrite = new KnownModelWrite(confirmed.AttemptId, id, fingerprint);
-        }
+        _restoredBrowserReceipt = restored.TypedScopes?.TryGetValue(JournalReceiptScope, out var json) == true
+            ? JsonSerializer.Deserialize<KnownModelWrite>(json) : null;
     }
 
-    private async Task AdoptSingleCandidateAsync(ClayDraftRegistration registration, int version)
+    private async Task ReconcileServerReceiptAsync(ClayDraftRegistration registration, int version)
     {
-        var token = _pageCts.Token;
-        var candidates = await registration.ListRecoveryCandidatesAsync(token)
-            ?? throw new InvalidOperationException("Не удалось проверить предыдущие попытки сохранения.");
-        if (_disposed || version != _loadVersion || !ReferenceEquals(_journal, registration) ||
-            IsModified || candidates is not [{ CanRecover: true } candidate] ||
-            CurrentUser is not { } previousActor)
+        if (!IsEditorContextCurrent(registration, version) || _knownWrite is not null || CurrentUser is not { } actor)
+            return;
+        var operation = _writeAttempt;
+        var attemptText = operation?.AttemptId ?? _restoredBrowserReceipt?.AttemptId;
+        if (!Guid.TryParse(attemptText, out var attemptId) || attemptId == Guid.Empty ||
+            operation is not null && (operation.Kind != ModelWriteKind || operation.Scopes is not [{ Name: EditorScope }]))
             return;
 
-        var actor = await Employee.GetCurrentWithRolesAsync(Db, await ReadPrincipalAsync(), token);
-        if (!_disposed && version == _loadVersion && ReferenceEquals(_journal, registration) &&
-            !IsModified && actor?.Id == previousActor.Id && actor.HasRole(Роли.Специалист_по_инвентаризации_оборудования))
-            await registration.RecoverListedDraftAsync(candidate.DraftId, token);
+        var token = _pageCts.Token;
+        var modelId = _journalModelId;
+        var receipt = await EquipmentModel.ReadSaveReceiptAsync(Db, await ReadPrincipalAsync(), actor.Id, modelId, attemptId, token);
+        if (!IsEditorContextCurrent(registration, version) || _journalModelId != modelId || CurrentUser?.Id != actor.Id ||
+            !ReferenceEquals(_writeAttempt, operation) || receipt is null || receipt.AttemptId != attemptId)
+            return;
+
+        if (receipt.State == InventoryOperationState.Rejected && operation is { Status: not ClayDraftOperationStatus.Confirmed })
+        {
+            await registration.RejectOperationAsync(operation.Revision, token);
+            if (IsEditorContextCurrent(registration, version) && ReferenceEquals(_writeAttempt, operation))
+            {
+                _writeAttempt = null;
+                _restoredBrowserReceipt = null;
+            }
+            return;
+        }
+        if (receipt is not { State: InventoryOperationState.Confirmed, ResultEntityId: > 0 } ||
+            modelId > 0 && receipt.ResultEntityId != modelId)
+            return;
+
+        var fingerprint = _restoredBrowserReceipt is { } browserReceipt && browserReceipt.AttemptId == attemptText
+            ? browserReceipt.Fingerprint : null;
+        if (operation is not null)
+        {
+            using var intent = JsonDocument.Parse(operation.Data);
+            if (!intent.RootElement.TryGetProperty("Id", out var id) || !id.TryGetInt32(out var submittedId) || submittedId != modelId ||
+                !intent.RootElement.TryGetProperty("Fingerprint", out var value) || value.GetString() is not { Length: > 0 } submitted)
+                return;
+            fingerprint = submitted;
+        }
+        if (string.IsNullOrEmpty(fingerprint))
+            return;
+
+        _knownWrite = new KnownModelWrite(attemptText!, receipt.ResultEntityId.Value, fingerprint);
+        _restoredBrowserReceipt = null;
     }
 
-    private async Task ScanJournalAsync(ClayDraftRegistration registration)
+    private static IReadOnlyCollection<Guid> ValidateLegacyModelEvidence(
+        IReadOnlyList<ClayLegacyDraftOperationEvidence> evidence, int modelId)
+    {
+        var expected = modelId.ToString(CultureInfo.InvariantCulture);
+        var attempts = new HashSet<Guid>();
+        foreach (var item in evidence)
+        {
+            if (item is null || item.Kind != ModelWriteKind || item.Data != expected ||
+                !Guid.TryParseExact(item.AttemptId, "N", out var attemptId) || attemptId == Guid.Empty)
+                throw new InvalidOperationException("Прежняя попытка не соответствует открытой модели оборудования.");
+            attempts.Add(attemptId);
+        }
+        return attempts;
+    }
+
+    private async Task ScanJournalAsync(ClayDraftRegistration registration, bool refreshServer = false)
     {
         _journalReady = false;
-        var candidates = await registration.ListRecoveryCandidatesAsync(_pageCts.Token)
-            ?? throw new InvalidOperationException("Журнал не подтвердил поиск сохранений.");
         var health = await registration.GetHealthAsync(_pageCts.Token);
+        var version = _loadVersion;
+        if (refreshServer)
+        {
+            if (CurrentUser is not { } actor || actor.Id != _journalEmployeeId)
+                throw new UnauthorizedAccessException("Не удалось подтвердить сотрудника для чтения журнала.");
+            var modelId = _journalModelId;
+            var server = await EquipmentModel.ReadSaveJournalAsync(Db, await ReadPrincipalAsync(), actor.Id, modelId, _pageCts.Token);
+            if (!IsEditorContextCurrent(registration, version) || _journalModelId != modelId || CurrentUser?.Id != actor.Id)
+                return;
+            _serverLatest = server.Latest;
+            _serverPending = server.HasPending;
+        }
         if (!ReferenceEquals(_journal, registration))
             return;
-        _journalCandidates = candidates;
         _journalReady = health is { Healthy: true, PendingWrites: 0 } &&
             (!health.HasOperation || _writeAttempt is not null);
         UpdateJournalNotice();
     }
 
     private async Task PrepareJournalAsync(ClayDraftRegistration registration, int id, DateTime? expectedChangedAt,
-        string fingerprint, string input, int employeeId, CancellationToken ct)
+        string fingerprint, string input, int employeeId, Guid serverAttemptId, CancellationToken ct)
     {
         var version = _loadVersion;
         var route = (Id, CodeType, LegacyCodeType);
         bool Current() => IsEditorContextCurrent(registration, version) && route == (Id, CodeType, LegacyCodeType) &&
             CurrentUser?.Id == employeeId;
         await ScanJournalAsync(registration);
-        if (WriteBlocked || !Current() || employeeId != _journalEmployeeId)
+        if (WriteBlocked || !Current() || employeeId != _journalEmployeeId || id != _journalModelId)
             throw new InvalidOperationException("Журнал текущей модели не готов. Запись не отправлена.");
         await registration.EnsureCommandAllowedAsync(ct);
         await EnsureEditorRawReadyAsync(registration, ct);
@@ -140,7 +211,7 @@ public partial class ModelEquipmentForm
         if (!Current() || _model is not { } model || EditableFingerprint(model) != fingerprint)
             throw new InvalidOperationException("Ввод изменился до отправки. Проверьте данные и повторите сохранение.");
         var typedRevision = await SaveEditorScopeAsync(registration, input, ct);
-        var attemptId = Guid.NewGuid().ToString("N");
+        var attemptId = serverAttemptId.ToString("N");
         _notSentAttempt = attemptId;
         var data = JsonSerializer.Serialize(new { Id = id, ExpectedChangedAt = expectedChangedAt, Fingerprint = fingerprint });
         var attempt = await registration.BeginOperationAsync(
@@ -214,9 +285,10 @@ public partial class ModelEquipmentForm
                 _writeAttempt = await registration.RetryStorageAsync(notSent, _pageCts.Token);
                 _notSentAttempt = null;
             }
+            await ReconcileServerReceiptAsync(registration, _loadVersion);
             if (_knownWrite is not null)
                 await FinishKnownJournalAsync(registration);
-            await ScanJournalAsync(registration);
+            await ScanJournalAsync(registration, refreshServer: true);
         }
         catch (Exception ex) when (IsJournalError(ex))
         {
@@ -232,7 +304,8 @@ public partial class ModelEquipmentForm
             _journal is not { } registration || _writeAttempt is not null ||
             !_journalReady)
             return;
-        if (_model is { } model && IsModified && EditableFingerprint(model) != receipt.Fingerprint)
+        if (_model is { } model && (receipt.SubmittedFields is not null || _scheduledInput is not null || IsModified) &&
+            EditableFingerprint(model) != receipt.Fingerprint)
         {
             _lateInput = true;
             UpdateJournalNotice();
@@ -255,7 +328,22 @@ public partial class ModelEquipmentForm
         var version = _loadVersion;
         try
         {
-            var id = _knownWrite?.Id ?? Id;
+            if (_journal is { } registration)
+            {
+                await ReconcileServerReceiptAsync(registration, version);
+                if (!IsEditorContextCurrent(registration, version))
+                    return;
+                await ScanJournalAsync(registration, refreshServer: true);
+                if (_knownWrite is not null)
+                {
+                    await FinishKnownJournalAsync(registration);
+                    UpdateJournalNotice();
+                    return;
+                }
+                if (_writeAttempt is null)
+                    return;
+            }
+            var id = Id;
             var row = id > 0 ? await EquipmentModel.GetForEditAsync(Db, id, _pageCts.Token) : null;
             if (_disposed || version != _loadVersion)
                 return;
@@ -290,7 +378,10 @@ public partial class ModelEquipmentForm
         ResetEditorInput();
         _journalReady = false;
         _journalNotice = null;
-        _journalCandidates = [];
+        _serverLatest = null;
+        _serverPending = false;
+        _journalModelId = 0;
+        _restoredBrowserReceipt = null;
         _writeAttempt = null;
         _knownWrite = null;
         _notSentAttempt = null;
@@ -308,13 +399,9 @@ public partial class ModelEquipmentForm
                 : "Сохранение подтверждено. Нажмите «Обновить» для чтения сохранённой модели."
             : _notSentAttempt is not null
                 ? "Запись не отправлена. Нажмите «Обновить» для проверки состояния записи."
-                : _writeAttempt?.Status == ClayDraftOperationStatus.Confirmed
-                    ? "Сохранение подтверждено, но идентификатор результата не восстановлен. Повтор заблокирован."
-                    : _writeAttempt is not null
+                : _writeAttempt is not null || _restoredBrowserReceipt is not null || _serverPending
                         ? "Результат сохранения модели неизвестен. Повтор заблокирован."
-                        : _journalCandidates.Count > 0
-                            ? "Найдена сохранённая попытка. Новая запись заблокирована."
-                            : !_journalReady ? "Журнал сохранения недоступен. Запись заблокирована." : null;
+                        : !_journalReady ? "Журнал сохранения недоступен. Запись заблокирована." : null;
     }
 
     private static string EditableFingerprint(EquipmentModel model) =>
@@ -326,7 +413,12 @@ public partial class ModelEquipmentForm
         })));
 
     private static bool IsJournalError(Exception ex) =>
-        ex is JSException or JSDisconnectedException or InvalidOperationException or OperationCanceledException or JsonException;
+        ex is JSException or JSDisconnectedException or InvalidOperationException or OperationCanceledException or JsonException or
+            Microsoft.Data.SqlClient.SqlException or UnauthorizedAccessException or TimeoutException;
 
-    private sealed record KnownModelWrite(string AttemptId, int Id, string Fingerprint);
+    private sealed record KnownModelWrite(string AttemptId, int Id, string Fingerprint)
+    {
+        [System.Text.Json.Serialization.JsonIgnore]
+        internal ModelEditorFields? SubmittedFields { get; init; }
+    }
 }

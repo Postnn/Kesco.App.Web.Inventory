@@ -16,43 +16,98 @@ public partial class PhoneTemplateForm
     private readonly string _journalRoot = $"template-write-{Guid.NewGuid():N}";
     private ClayDraftRegistration? _templateJournal;
     private ClayDraftOperation? _templateAttempt;
-    private IReadOnlyList<ClayDraftRecoveryCandidate> _journalCandidates = [];
+    private (int ModelId, int EmployeeId, Guid Instance)? _templateRamOwner;
     private string? _notSentAttempt;
     private string? _journalNotice;
     private string? _submittedTemplate;
     private bool _journalReady;
     private bool _journalBusy;
+    private bool _serverWritePending;
+    private bool _latestOwnTemplateConfirmed;
     private bool _knownWrite;
     private bool _confirmedStored;
     private int _journalEmployeeId;
 
     [Inject] private ClayDraftService Drafts { get; set; } = null!;
 
-    private bool TemplateWriteBlocked => !_journalReady || _journalBusy || _templateAttempt is not null ||
-        _knownWrite || _notSentAttempt is not null || _journalCandidates.Count > 0 || TemplateInputBlocked;
+    private bool TemplateWriteBlocked => !_journalReady || _journalBusy || _serverWritePending || _templateAttempt is not null ||
+        _knownWrite || HasUnprovedTemplateSubmission || _notSentAttempt is not null || _pendingTemplateClose is not null ||
+        _templateConflictNeedsReview || TemplateInputBlocked;
+
+    private bool HasUnprovedTemplateSubmission => !_knownWrite && _protectedSubmission is { Confirmed: true };
 
     private async Task InitializeTemplateJournalAsync(int id, int employeeId, int version)
     {
         ClayDraftRegistration? registration = null;
         try
         {
-            registration = await Drafts.RegisterHandleAsync(TemplateJournalForm, id.ToString(CultureInfo.InvariantCulture),
-                employeeId.ToString(CultureInfo.InvariantCulture), 1, $".{_journalRoot}", MaximumTemplateRestoreBytes, _pageCts.Token);
-            if (_disposed || version != _loadVersion || id != Id)
-                return;
+            var token = _pageCts.Token;
+            var entityKey = id.ToString(CultureInfo.InvariantCulture);
+            var userKey = employeeId.ToString(CultureInfo.InvariantCulture);
+            bool Current() => !_disposed && !token.IsCancellationRequested && version == _loadVersion &&
+                id == Id && CurrentUser?.Id == employeeId;
+
+            registration = await Drafts.TransferLegacyAndRegisterRamAsync(TemplateJournalForm, entityKey, userKey, async (evidence, ct) =>
+            {
+                if (!Current()) throw new InvalidOperationException("Контекст шаблона изменился.");
+                if (evidence.Count != 0)
+                {
+                    var attempts = new List<Guid>(evidence.Count);
+                    foreach (var entry in evidence)
+                    {
+                        if (entry is null || entry.Kind != TemplateWriteKind || entry.Data != entityKey ||
+                            !Guid.TryParse(entry.AttemptId, out var attemptId) || attemptId == Guid.Empty)
+                            throw new InvalidOperationException("Прежняя попытка относится к другому шаблону.");
+                        attempts.Add(attemptId);
+                    }
+
+                    var principal = await ReadPrincipalAsync();
+                    if (!Current()) throw new InvalidOperationException("Контекст шаблона изменился.");
+                    await EquipmentModel.ImportLegacyPhoneTemplateOperationsAsync(Db, principal, employeeId, id, attempts, ct);
+                }
+
+                if (!Current()) throw new InvalidOperationException("Контекст шаблона изменился.");
+                if (_templateRamOwner is not { } owner || owner.ModelId != id || owner.EmployeeId != employeeId)
+                {
+                    owner = (id, employeeId, Guid.NewGuid());
+                    _templateRamOwner = owner;
+                }
+
+                return await Drafts.RegisterRamHandleAsync(TemplateJournalForm, entityKey, userKey,
+                    1, $".{_journalRoot}", owner.Instance, ct, MaximumTemplateRestoreBytes);
+            }, Current, token);
+            if (!Current()) return;
             _templateJournal = registration;
             _journalEmployeeId = employeeId;
             var restoredRegistration = registration;
             registration = null;
-            if (!restoredRegistration.Restore.HasDraft && restoredRegistration.Restore.OperationSnapshot is null)
-                await AdoptSingleTemplateCandidateAsync(restoredRegistration, version);
             if (_disposed || version != _loadVersion || !ReferenceEquals(_templateJournal, restoredRegistration))
                 return;
 
             RestoreTemplateJournal(_templateJournal);
+            if (CurrentUser is { } actor)
+                await VerifyTemplateReceiptAsync(_templateJournal, actor, version, _pageCts.Token);
+            if (_disposed || version != _loadVersion || !ReferenceEquals(_templateJournal, restoredRegistration))
+                return;
             if (_model is { } model)
                 await RestoreTemplateInputAsync(_templateJournal, model, version);
-            await ScanTemplateJournalAsync(_templateJournal);
+            await ScanTemplateJournalAsync(restoredRegistration);
+            if (Current() && _journalReady && ReferenceEquals(_templateJournal, restoredRegistration) && _model is { } loadedModel &&
+                loadedModel.Id == id && CurrentUser is { } ownerActor && _templateAttempt is null &&
+                _protectedSubmission is null && !_serverWritePending)
+            {
+                try
+                {
+                    var receipt = await EquipmentModel.ReadLatestPhoneTemplateReceiptAsync(Db, ownerActor, loadedModel, token);
+                    if (Current() && ReferenceEquals(_templateJournal, restoredRegistration) &&
+                        ReferenceEquals(_model, loadedModel) && _templateAttempt is null && _protectedSubmission is null)
+                        _latestOwnTemplateConfirmed = receipt is { State: InventoryOperationState.Confirmed } && receipt.ResultEntityId == id;
+                }
+                catch (Exception ex) when (IsJournalError(ex))
+                {
+                    // Состояние записи определяется проверкой журнала, а не доступностью истории.
+                }
+            }
         }
         catch (Exception ex) when (IsJournalError(ex))
         {
@@ -81,12 +136,35 @@ public partial class PhoneTemplateForm
                 (_templateAttempt is null ? submission.Confirmed : SubmissionMatches(submission, _templateAttempt)))
                 _protectedSubmission = submission;
         }
-        _knownWrite = _confirmedStored = _templateAttempt is null
-            ? _protectedSubmission?.Confirmed == true
-            : _templateAttempt.Status == ClayDraftOperationStatus.Confirmed && IsExpectedAttempt(_templateAttempt);
-        if (_knownWrite && _protectedSubmission is { } known)
-            _submittedTemplate = known.Text;
+        _knownWrite = _confirmedStored = false;
     }
+
+    private async Task<bool> VerifyTemplateReceiptAsync(ClayDraftRegistration registration, Employee actor, int version,
+        CancellationToken ct)
+    {
+        var id = Id;
+        var marker = _templateAttempt;
+        var submission = _protectedSubmission;
+        var attemptText = marker is null
+            ? submission is { Confirmed: true } ? submission.AttemptId : null
+            : IsExpectedAttempt(marker) ? marker.AttemptId : null;
+        if (!Guid.TryParse(attemptText, out var attemptId) || attemptId == Guid.Empty)
+            return false;
+
+        var receipt = await EquipmentModel.ReadPhoneTemplateReceiptAsync(Db, actor, id, attemptId, ct);
+        if (_disposed || ct.IsCancellationRequested || version != _loadVersion || id != Id ||
+            actor.Id != CurrentUser?.Id || !ReferenceEquals(_templateJournal, registration) ||
+            !ReferenceEquals(marker, _templateAttempt) || !ReferenceEquals(submission, _protectedSubmission))
+            return false;
+        if (receipt is not { State: InventoryOperationState.Confirmed } || receipt.ResultEntityId != id)
+            return false;
+
+        _knownWrite = true;
+        _confirmedStored = marker is null || marker.Status == ClayDraftOperationStatus.Confirmed;
+        _submittedTemplate = submission?.Text;
+        return true;
+    }
+
 
     private static bool SubmissionMatches(TemplateSubmission submission, ClayDraftOperation attempt) =>
         submission.AttemptId == attempt.AttemptId && submission.Revision == attempt.Revision &&
@@ -103,38 +181,27 @@ public partial class PhoneTemplateForm
             id.TryGetInt32(out var modelId) && modelId == Id;
     }
 
-    private async Task AdoptSingleTemplateCandidateAsync(ClayDraftRegistration registration, int version)
-    {
-        var token = _pageCts.Token;
-        var candidates = await registration.ListRecoveryCandidatesAsync(token)
-            ?? throw new InvalidOperationException("Не удалось проверить предыдущие попытки сохранения.");
-        if (_disposed || version != _loadVersion || !ReferenceEquals(_templateJournal, registration) ||
-            IsModified || candidates is not [{ CanRecover: true } candidate] ||
-            CurrentUser is not { } previousActor)
-            return;
-
-        var actor = await Employee.GetCurrentWithRolesAsync(Db, await ReadPrincipalAsync(), token);
-        if (!_disposed && version == _loadVersion && ReferenceEquals(_templateJournal, registration) &&
-            !IsModified && actor?.Id == previousActor.Id && actor.HasRole(Роли.Дежурный_инженер))
-            await registration.RecoverListedDraftAsync(candidate.DraftId, token);
-    }
-
     private async Task ScanTemplateJournalAsync(ClayDraftRegistration registration)
     {
         _journalReady = false;
-        var candidates = await registration.ListRecoveryCandidatesAsync(_pageCts.Token)
-            ?? throw new InvalidOperationException("Журнал не подтвердил поиск сохранений.");
+        var version = _loadVersion;
+        var id = Id;
+        var actor = CurrentUser;
         var health = await registration.GetHealthAsync(_pageCts.Token);
-        if (!ReferenceEquals(_templateJournal, registration))
+        if (actor is null || !ReferenceEquals(_templateJournal, registration) || actor.Id != _journalEmployeeId)
             return;
-        _journalCandidates = candidates;
+        var pending = await EquipmentModel.HasPendingPhoneTemplateWriteAsync(Db, actor, id, _pageCts.Token);
+        if (_disposed || version != _loadVersion || id != Id || CurrentUser?.Id != actor.Id ||
+            !ReferenceEquals(_templateJournal, registration))
+            return;
+        _serverWritePending = pending;
         _journalReady = health is { Healthy: true, PendingWrites: 0 } &&
             (_templateAttempt is null ? !health.HasOperation : IsExpectedAttempt(_templateAttempt));
         ShowTemplateJournalState();
     }
 
     private async Task BeginTemplateWriteAsync(ClayDraftRegistration registration, EquipmentModel model,
-        EquipmentModelWriteBaseline baseline, string submitted, int version, CancellationToken ct)
+        EquipmentModelWriteBaseline baseline, string submitted, Guid serverAttemptId, int version, CancellationToken ct)
     {
         await ScanTemplateJournalAsync(registration);
         if (TemplateWriteBlocked || !IsCurrentSave(model, version) || !ReferenceEquals(_templateJournal, registration) ||
@@ -149,7 +216,7 @@ public partial class PhoneTemplateForm
         var snapshot = SerializeTemplateDraft(baseline, submitted);
         var expectedInputRevision = await SaveProtectedScopeAsync(registration, TemplateInputScope, snapshot, ct);
         _scheduledInput = snapshot;
-        var attemptId = Guid.NewGuid().ToString("N");
+        var attemptId = serverAttemptId.ToString("N");
         await registration.OpenScopeAsync(TemplateSubmissionScope, ct);
         var submission = new TemplateSubmission(model.Id, attemptId, 0, expectedInputRevision, submitted, false);
         await SaveProtectedScopeAsync(registration, TemplateSubmissionScope, JsonSerializer.Serialize(submission), ct);
@@ -165,6 +232,7 @@ public partial class PhoneTemplateForm
         if (!IsCurrentSave(model, version) || !ReferenceEquals(_templateJournal, registration))
             throw new InvalidOperationException("Контекст журнала изменился. Запись не отправлена.");
         _templateAttempt = attempt;
+        _latestOwnTemplateConfirmed = false;
         _notSentAttempt = null;
         submission = submission with { Revision = attempt.Revision };
         if (!SubmissionMatches(submission, attempt) || !IsCurrentSave(model, version) ||
@@ -323,12 +391,24 @@ public partial class PhoneTemplateForm
 
     private async Task ObserveTemplateAsync()
     {
-        if (_loading || _saving || _journalBusy || _disposed || _model is not { } model || _templateAttempt is null)
+        if (_loading || _saving || _journalBusy || _disposed || _model is not { } model || _templateJournal is not { } journal)
             return;
         var version = _loadVersion;
         _journalBusy = true;
         try
         {
+            if (CurrentUser is not { } openedBy) return;
+            var token = _pageCts.Token;
+            var actor = await Employee.GetCurrentWithRolesAsync(Db, await ReadPrincipalAsync(), token);
+            if (!IsCurrentSave(model, version) || actor?.Id != openedBy.Id || !actor.HasRole(Роли.Дежурный_инженер))
+                return;
+            if (await VerifyTemplateReceiptAsync(journal, actor, version, token))
+            {
+                await FinishKnownTemplateWriteAsync(journal);
+                await ReloadKnownTemplateAsync(model, version);
+                await ScanTemplateJournalAsync(journal);
+                return;
+            }
             var observed = await EquipmentModel.GetForEditAsync(Db, model.Id, _pageCts.Token);
             if (IsCurrentSave(model, version))
                 _journalNotice = observed is null
@@ -347,32 +427,34 @@ public partial class PhoneTemplateForm
     {
         _journalNotice = _knownWrite ? "Запись шаблона подтверждена. Повтор записи не требуется. Нажмите «Обновить» для чтения сохранённого шаблона."
             : _notSentAttempt is not null ? "Запись не отправлена. Нажмите «Обновить» для проверки состояния записи."
-            : _templateAttempt is not null ? "Результат предыдущей записи шаблона неизвестен. Повтор записи заблокирован до сверки."
-            : _journalCandidates.Count > 0 ? "Есть сохранённая попытка. Повтор записи заблокирован."
+            : _templateAttempt is not null || HasUnprovedTemplateSubmission ? "Результат предыдущей записи шаблона неизвестен. Повтор записи заблокирован до сверки."
+            : _serverWritePending ? "Сервер обнаружил незавершённую запись модели. Изменение шаблона заблокировано."
             : !_journalReady ? "Журнал сохранения недоступен. Запись не отправлена." : null;
     }
 
     private async ValueTask ReleaseTemplateJournalAsync()
     {
+        CancelTemplateConflictReview();
         var journal = _templateJournal;
         _templateJournal = null;
+        _pendingTemplateClose = null;
         _journalEmployeeId = 0;
         _templateAttempt = null;
-        _journalCandidates = [];
         _notSentAttempt = null;
         _journalNotice = null;
+        _latestOwnTemplateConfirmed = false;
         _submittedTemplate = null;
         _protectedSubmission = null;
         _scheduledInput = null;
         _inputNotice = null;
         _restoreTemplateRawRequested = _rawPending = _inputSaveFailed = _inputMissingOriginal = false;
         _rawRestoreFlight = null;
-        _journalReady = _knownWrite = _confirmedStored = false;
+        _journalReady = _knownWrite = _confirmedStored = _serverWritePending = false;
         if (journal is not null)
             await journal.DisposeAsync();
     }
 
     private static bool IsJournalError(Exception error) => error is JSException or JSDisconnectedException or
         Microsoft.Data.SqlClient.SqlException or InvalidOperationException or UnauthorizedAccessException or
-        JsonException or OperationCanceledException;
+        JsonException or OperationCanceledException or TimeoutException;
 }

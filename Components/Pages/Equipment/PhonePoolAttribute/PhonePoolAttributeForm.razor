@@ -13,10 +13,10 @@
         <ClayToolbar>
             <ClayToolbarButton Options="Ok" Disabled="@(!CanCloseOrSave)" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="ApplyButton" Disabled="@(!CanApply)" OnClick="@(() => SaveAsync(false))" />
-            <ClayToolbarButton Options="ReloadButton" Disabled="@(!(CanRefresh || CanRetryRecovery) || _confirmingDelete || _retryingRecovery)" OnClick="RefreshAttributeAsync" />
+            <ClayToolbarButton Options="ReloadButton" Disabled="@(!(CanRefresh || _writePending) || Loading || Busy || _confirmingDelete || _retryingRecovery)" OnClick="RefreshAttributeAsync" />
             @if (_card?.Attribute is not null && !_deleted)
             {
-                <ClayToolbarButton Options="Delete" Disabled="@(!CanCommit || !CanDeleteAttribute || _confirmingDelete)" OnClick="DeleteAsync" />
+                <ClayToolbarButton Options="Delete" Disabled="@(!CanCommit || !CanDeleteAttribute || _confirmingDelete || _retryingRecovery)" OnClick="DeleteAsync" />
             }
             <ClayToolbarButton Options="CancelButton" Disabled="@(Loading || Busy || _confirmingDelete || _retryingRecovery)" OnClick="CancelAttributeAsync" />
         </ClayToolbar>
@@ -31,62 +31,42 @@
         {
             <MudAlert Severity="Severity.Warning" Class="mb-2">@Message</MudAlert>
         }
+        @if (_writePending)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-2">@PendingWriteMessage</MudAlert>
+        }
         @foreach (var error in Validation)
         {
             <MudAlert Severity="Severity.Error" Class="mb-2">@error</MudAlert>
         }
         @if (_card is { } card && Draft is { } draft)
         {
-            <div @key="EditorGeneration" class="d-flex flex-column gap-2" data-draft-scope="main" inert="@(DraftInputSuppressed || _confirmingDelete)">
-                <ClayTextBox Options="_poolOptions" Value="@card.PoolName" />
-                <ClayTextBox Options="_typeOptions" Value="@card.Key.Type" />
-                <ClayTextArea Options="_descriptionOptions" Value="@card.Description" />
-                <ClayTextBox Options="_valueOptions" Value="@draft.Value" ValueChanged="ChangeValueAsync" />
-            </div>
-        }
-        else if (ShowRecovery && RequestedKey is { } key)
-        {
-            <section aria-label="Восстановление атрибута пула" class="d-flex flex-column gap-2" data-draft-scope="main">
-                @if (_freshReadFailure is { } reason && reason != Message)
-                {
-                    <MudText Typo="Typo.body2">@reason</MudText>
-                }
-                <div>Код пула: @key.PoolId</div>
-                <div>Тип атрибута: @key.Type</div>
-                @if (Draft is { } recovered)
-                {
-                    <div>Значение из черновика: @recovered.Value</div>
-                }
-                <ClayTextBox Options="RecoveryValueOptions" Value="@Draft?.Value" />
-                <div>
+            var baseline = AcceptedDraftBaseline;
+            <ClayEditorFocusScope @key="RouteKey" Label="Поля атрибута пула" Ready="@(Editable && CanCommit && !_writePending && !_confirmingDelete && !_retryingRecovery)" AdvanceOnEnter="true">
+                <div @key="EditorGeneration" class="d-flex flex-column gap-2" data-draft-scope="main" inert="@(DraftInputSuppressed || _confirmingDelete)">
+                    <ClayTextBox Options="_poolOptions" Value="@card.PoolName" />
+                    <ClayTextBox Options="_typeOptions" Value="@card.Key.Type" />
+                    <ClayTextArea Options="_descriptionOptions" Value="@card.Description" />
+                    <ClayFieldChange Changed="@(Editable && !_valueOptions.ReadOnly && !_valueOptions.Disabled && baseline is not null && draft.Value != baseline.Value)">
+                        <ClayTextBox Options="_valueOptions" Value="@draft.Value" ValueChanged="ChangeValueAsync" />
+                    </ClayFieldChange>
                 </div>
-                @if (HasUnknownSubmittedSnapshot)
-                {
-                    <ClayToolbarButton Options="SubmittedSnapshotButton" Disabled="@Busy" OnClick="ShowSubmittedRecoveryAsync" />
-                    @if (_submittedRecovery is { } submitted && _submittedIdentity == SubmittedSnapshotIdentity)
-                    {
-                        <section aria-label="Снимок незавершённой попытки" data-testid="submitted-attempt">
-                            <div>@(submitted). Значение атрибута скрыто.</div>
-                            <MudText>Журнал не подтверждает отправку или выполнение операции.</MudText>
-                        </section>
-                    }
-                    else if (_submittedUnavailable)
-                    {
-                        <MudText>Не удалось подтвердить доступ к снимку этой попытки.</MudText>
-                    }
-                }
-                @if (_freshRecovery is { } fresh)
-                {
-                    @if (fresh.Attribute is { } currentValue)
-                    {
-                        <div>Значение из базы для сверки: @currentValue.Value</div>
-                    }
-                    else
-                    {
-                        <div>Для этой пары значение атрибута в базе отсутствует.</div>
-                    }
-                }
-            </section>
+            </ClayEditorFocusScope>
+        }
+        @if (CanViewSubmittedAttempt)
+        {
+            <ClayToolbarButton Options="SubmittedSnapshotButton" Disabled="@(Busy || _retryingRecovery)" OnClick="ShowSubmittedRecoveryAsync" />
+            @if (_submittedRecovery is { } submitted && _submittedIdentity == SubmittedSnapshotIdentity)
+            {
+                <section aria-label="Снимок незавершённой попытки" data-testid="submitted-attempt">
+                    <div>@(submitted). Значение атрибута скрыто.</div>
+                    <MudText>Журнал не подтверждает отправку или выполнение операции.</MudText>
+                </section>
+            }
+            else if (_submittedUnavailable)
+            {
+                <MudText>Не удалось подтвердить доступ к снимку этой попытки.</MudText>
+            }
         }
     </ChildContent>
     <Footer>

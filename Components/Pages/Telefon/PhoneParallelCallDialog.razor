@@ -1,25 +1,39 @@
 @using Clayzor.Lib.Entities.Inventory
 @using Clayzor.Lib.Web.Controls.Components.Form
+@using Clayzor.Lib.Web.Controls.Components.Presence
 @using Kesco.App.Web.Inventory.Services
 @using Kesco.App.Web.Inventory.Components.Layout
 
 <MudDialog>
     <TitleContent>@(IsEdit ? "Параллельный вызов" : "Новый параллельный вызов")</TitleContent>
     <DialogContent>
-        <div class="equipment-ins-fields @TelDraft?.RootClass" data-draft-scope="@TelDraft?.Scope" inert="@(TelDraft?.Busy == true)">
+        @if (PresenceTarget is { } target)
+        {
+            <ClayPresencePanel Target="target" />
+        }
+        @{ var baseline = Baseline; }
+        <div @key="TelDraft?.InputVersion" class="equipment-ins-fields @TelDraft?.RootClass" data-draft-scope="@TelDraft?.Scope" inert="@(TelDraft?.Busy == true)">
             <div class="equipment-ins-row">
                 <span class="equipment-ins-label">Номер:</span>
-                <ClayTextBox @bind-Value="Value.CallNumber" Options="_numberOptions" />
+                <ClayFieldChange Changed="@(baseline is not null && Value.CallNumber != baseline.CallNumber)" RawBaseline="@(baseline is not null ? baseline.CallNumber ?? string.Empty : null)">
+                    <ClayTextBox @bind-Value="Value.CallNumber" Options="_numberOptions" />
+                </ClayFieldChange>
             </div>
             <div class="equipment-ins-row">
                 <span class="equipment-ins-label">Задержка перед вызовом:</span>
-                <ClayNumber Value="@((decimal?)Value.DelayBeforeCall)" ValueChanged="OnDelayBeforeChanged" Options="_delayBeforeOptions" />
+                <ClayFieldChange Changed="@(baseline is not null && Value.DelayBeforeCall != baseline.DelayBeforeCall)" RawBaseline="@(baseline is not null ? baseline.DelayBeforeCall.ToString(System.Globalization.CultureInfo.CurrentCulture) : null)">
+                    <ClayNumber Value="@((decimal?)Value.DelayBeforeCall)" ValueChanged="OnDelayBeforeChanged" Options="_delayBeforeOptions" />
+                </ClayFieldChange>
             </div>
             <div class="equipment-ins-row">
                 <span class="equipment-ins-label">Задержка быстрого ответа:</span>
-                <ClayNumber Value="@((decimal?)Value.DelayTooQuickResponse)" ValueChanged="OnDelayQuickChanged" Options="_delayQuickOptions" />
+                <ClayFieldChange Changed="@(baseline is not null && Value.DelayTooQuickResponse != baseline.DelayTooQuickResponse)" RawBaseline="@(baseline is not null ? baseline.DelayTooQuickResponse.ToString(System.Globalization.CultureInfo.CurrentCulture) : null)">
+                    <ClayNumber Value="@((decimal?)Value.DelayTooQuickResponse)" ValueChanged="OnDelayQuickChanged" Options="_delayQuickOptions" />
+                </ClayFieldChange>
             </div>
-            <ClayCheckbox State="Value.NotUsed" StateChanged="OnNotUsedChanged" Label="Не использовать" />
+            <ClayFieldChange Changed="@(baseline is not null && Value.NotUsed != baseline.NotUsed)">
+                <ClayCheckbox State="Value.NotUsed" StateChanged="OnNotUsedChanged" Label="Не использовать" />
+            </ClayFieldChange>
         </div>
         @if (!string.IsNullOrWhiteSpace(_errorMessage))
         {
@@ -44,6 +58,7 @@
     private readonly ClayToolbarButtonOptions _cancelButton = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButton = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
     private string? _errorMessage;
+    private PhoneParallelCall? Baseline => TelDraft?.Original;
 
     [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
 
@@ -61,6 +76,9 @@
 
     /// <summary>Область черновика текущего редактора Tel.</summary>
     [Parameter] public TelRelationDraftSession<PhoneParallelCall>? TelDraft { get; set; }
+
+    /// <summary>Подтверждённая цель присутствия родительского телефонного номера.</summary>
+    [Parameter] public ClayPresenceTarget? PresenceTarget { get; set; }
 
     /// <inheritdoc />
     protected override void OnParametersSet()
@@ -89,7 +107,11 @@
 
     private async Task Cancel()
     {
-        if (TelDraft is null || await TelDraft.CancelAsync())
+        if (TelDraft is null || await TelDraft.CancelAsync(Value.Clone, value =>
+            {
+                Value = value.Clone();
+                _errorMessage = null;
+            }, StateHasChanged))
             Dialog.Cancel();
     }
 

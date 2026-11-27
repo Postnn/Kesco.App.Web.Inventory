@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Clayzor.Lib.Entities.Inventory;
@@ -14,21 +14,25 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
 /// <summary>DR-01: долговечный черновик основной формы и открытых дочерних редакторов.</summary>
 public partial class EquipmentForm
 {
+    private const string EquipmentDraftFormKey = "equipment-form";
     private const int DraftSchemaVersion = 2;
     private const string PhoneSyncCheckpointScope = "equipment-phone-progress";
-    private static readonly byte[] IntentProofKey = RandomNumberGenerator.GetBytes(32);
 
     [Inject] private ClayDraftService Drafts { get; set; } = null!;
 
     private readonly string _draftOwner = Guid.NewGuid().ToString("N");
+    private Guid _draftInstance = Guid.NewGuid();
+    private Guid? _draftAttachingInstance;
     private ClayDraftRegistration? _draftRegistration;
     private bool _draftRegistered => _draftRegistration is not null;
     private string DraftRootSelector => $"[data-draft-owner='{_draftOwner}'], .equipment-draft-dialog-{_draftOwner}";
     private bool _draftRestoring;
+    private bool _draftRestoreBlocked;
     private bool _draftPersisting;
     private bool _draftPersistPending;
     private string? _lastPersistedDraft;
     private string? _draftStorageError;
+    private bool _mainServerWriteCheckFailed;
     private bool _draftOperationUnresolved;
     private string? _draftOperationScope;
     private ClayDraftOperation? _draftOperation;
@@ -72,47 +76,84 @@ public partial class EquipmentForm
         ? null
         : $"child:{_activeEditor.Kind}:{_activeEditor.Key ?? "new"}:root";
 
+    private bool EquipmentRecoveryWriteBlocked => !_draftRegistered || _draftRestoreBlocked ||
+        _draftAttachingInstance == _draftInstance || MainCloseInProgress || _mainDraftCancelled;
+
+    private bool IsEquipmentDraftCurrent(ClayDraftRegistration registration, int version, int id, int employeeId) =>
+        OwnsMainDraft(registration, id) && IsCurrent(version, id) && CurrentUser?.Id == employeeId;
+
     private async Task InitializeDraftAsync()
     {
-        if (_draftRegistered || _draftRestoring || CurrentUser is null || _model is null || _loadError is not null)
+        if (_draftRegistered || _draftRestoring || _mainDraftCancelled || _draftAttachingInstance == _draftInstance ||
+            CurrentUser is not { Id: > 0 } actor || _model is not { Id: > 0 } model || _loadError is not null)
             return;
-        var openedId = _model.Id;
-        var actorId = CurrentUser.Id;
+        var openedId = model.Id;
+        var actorId = actor.Id;
         var openedVersion = _operationVersion;
+        var instance = _draftInstance;
+        var entityKey = openedId.ToString(CultureInfo.InvariantCulture);
+        var userKey = actorId.ToString(CultureInfo.InvariantCulture);
+        var ct = _pageCts.Token;
+        var initialState = SerializeDraftState();
+        bool Current() => IsCurrent(openedVersion, openedId) && CurrentUser?.Id == actorId && _draftInstance == instance;
+        ClayDraftRegistration? registration = null;
+        _draftAttachingInstance = instance;
+        StateHasChanged();
         try
         {
-            var registration = await Drafts.RegisterHandleAsync(
-                "equipment-form", openedId.ToString(), $"inventory:{actorId}", DraftSchemaVersion,
-                DraftRootSelector, _pageCts.Token);
-            if (!IsCurrent(openedVersion, openedId) || CurrentUser?.Id != actorId || _draftRegistration is not null)
+            await Drafts.TransferLegacyEvidenceAsync(EquipmentDraftFormKey, entityKey, $"inventory:{userKey}", async (evidence, token) =>
             {
-                await registration.DisposeAsync();
+                await Service.ImportEquipmentLegacyEvidenceAsync(openedId, actorId, evidence, token);
+                if (!Current()) throw new OperationCanceledException();
+                if (_canEdit)
+                    await CheckMainServerWriteAsync(openedId, actorId, openedVersion);
+                if (!Current()) throw new OperationCanceledException();
+                registration = await Drafts.RegisterRamHandleAsync(EquipmentDraftFormKey, entityKey, userKey,
+                    DraftSchemaVersion, DraftRootSelector, instance, token);
+                if (!Current()) throw new OperationCanceledException();
+            }, ct, retireSnapshotsAfterImport: true);
+            if (!Current())
                 return;
-            }
+            if (registration is null)
+                throw new InvalidOperationException("Экземпляр редактора не подтверждён.");
             _draftRegistration = registration;
-            _recoveryPristine = !registration.Restore.HasDraft;
-            // Свежая регистрация остаётся пустой в браузере до первого ввода.
-            if (_recoveryPristine)
-                _lastPersistedDraft = SerializeDraftState();
-            await ScanEquipmentRecoveryAsync(registration, openedVersion, openedId, actorId);
-            if (!OwnsMainDraft(registration, openedId) || !IsCurrent(openedVersion, openedId))
-                return;
+            _draftStorageError = null;
             if (registration.Restore.HasDraft)
                 await ApplyEquipmentDraftAsync(registration, openedId, openedVersion);
             else
-                await TryRestoreSingleEquipmentDraftAsync();
+            {
+                _lastPersistedDraft = HasUnsavedDraft ? null : initialState;
+                await PersistDraftAsync();
+            }
         }
-        catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or OperationCanceledException)
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or
+            OperationCanceledException or System.Data.Common.DbException or UnauthorizedAccessException or TimeoutException or JsonException)
         {
-            if (IsCurrent(openedVersion, openedId))
+            if (Current())
             {
                 _draftRestoring = false;
-                _draftStorageError = "Не удалось открыть защищённый черновик. Сохранение и внешние команды заблокированы до восстановления хранилища.";
+                _draftRestoreBlocked = _draftRegistered;
+                if (!_mainServerWriteCheckFailed)
+                    _draftStorageError = "Не удалось открыть защищённый черновик. Нажмите «Обновить», чтобы повторить проверку.";
             }
+        }
+        finally
+        {
+            if (registration is not null && !ReferenceEquals(registration, _draftRegistration))
+                await registration.DisposeAsync();
+            if (_draftAttachingInstance == instance) _draftAttachingInstance = null;
+            if (Current()) StateHasChanged();
+        }
+
+        if (Current() && registration is { Restore.HasDraft: false } &&
+            ReferenceEquals(_draftRegistration, registration) && _draftStorageError is null)
+        {
+            await ReadPriorMainSaveAsync(registration, openedId, actorId, openedVersion);
+            if (Current()) StateHasChanged();
         }
     }
 
-    private async Task ApplyEquipmentDraftAsync(ClayDraftRegistration registration, int openedId, int openedVersion, Func<bool>? canPublishRecovery = null)
+    private async Task ApplyEquipmentDraftAsync(ClayDraftRegistration registration, int openedId, int openedVersion)
     {
         var restore = registration.Restore;
         _draftRestoring = true;
@@ -127,21 +168,9 @@ public partial class EquipmentForm
         var mainState = restore.TypedState ?? restore.TypedScopes?.GetValueOrDefault("main");
         if (!string.IsNullOrWhiteSpace(mainState))
         {
-            if (canPublishRecovery is not null)
+            if (!await RestoreDraftIfCurrentAsync(mainState,
+                    () => OwnsMainDraft(registration, openedId) && IsCurrent(openedVersion, openedId)))
             {
-                var stored = JsonSerializer.Deserialize<EquipmentDraftState>(mainState);
-                if (stored?.Model is null)
-                    throw new InvalidOperationException("Не удалось прочитать снимок сохранённого черновика.");
-                if (stored.OriginalSnapshot != _originalSnapshot)
-                {
-                    BlockEquipmentRecoveryPublication();
-                    _equipmentRecoveryNotice = "Исходная версия изменилась. Сохранённый черновик оставлен для сверки.";
-                    return;
-                }
-            }
-            if (!await RestoreDraftIfCurrentAsync(mainState, canPublishRecovery))
-            {
-                if (OwnsMainDraft(registration, openedId)) BlockEquipmentRecoveryPublication();
                 return;
             }
         }
@@ -165,7 +194,7 @@ public partial class EquipmentForm
 
     private Task RestoreDraftAsync(string json) => RestoreDraftIfCurrentAsync(json);
 
-    private async Task<bool> RestoreDraftIfCurrentAsync(string json, Func<bool>? canPublishRecovery = null)
+    private async Task<bool> RestoreDraftIfCurrentAsync(string json, Func<bool>? current = null)
     {
         var state = JsonSerializer.Deserialize<EquipmentDraftState>(json) ??
                     throw new InvalidOperationException("Черновик повреждён и не был применён.");
@@ -177,11 +206,18 @@ public partial class EquipmentForm
         if (original.Id != _model.Id)
             throw new InvalidOperationException("Исходная версия черновика принадлежит другому оборудованию.");
         var merge = await MergeMainStateAsync(original, state.Model, _model, state.WriteOffDate, state.WriteOffTime);
-        if (canPublishRecovery?.Invoke() == false) return false;
+        if (current?.Invoke() == false) return false;
         _originalPhones = state.OriginalPhones;
         ApplyMainMergeResult(merge);
         _phones = state.Phones;
-        _pendingPhoneSync = state.PendingPhoneSync;
+        if (PendingConfigure is null && PendingSavedAts is null)
+        {
+            var pending = state.PendingPhoneSync;
+            _pendingPhoneSync = pending?.EquipmentId == _model.Id && pending.Attempt?.Intent.DurableSave != true
+                ? pending : null;
+            _legacyConfigurePending = PendingConfigure is not null;
+            if (_legacyConfigurePending) ShowLegacyConfigurePending();
+        }
         _activeEditor = state.ActiveEditor;
         _restoredEditorState = state.ActiveEditorState;
         if (_activeEditor?.Kind == nameof(EquipmentUpsDialog))
@@ -219,7 +255,7 @@ public partial class EquipmentForm
 
     private async Task PersistDraftAsync()
     {
-        if (!_draftRegistered || _draftRestoring || _recoveringEquipmentDraft || _orphanAdoptionConflicted || _mainDraftCancelled || _model is null)
+        if (!_draftRegistered || _draftRestoring || _draftRestoreBlocked || MainCloseInProgress || _mainDraftCancelled || _model is null)
             return;
         if (_draftPersisting)
         {
@@ -237,7 +273,6 @@ public partial class EquipmentForm
                     continue;
                 try
                 {
-                    _recoveryPristine = false;
                     await _draftRegistration!.SaveTypedAsync(json, _pageCts.Token);
                     _lastPersistedDraft = json;
                     _draftStorageError = null;
@@ -247,7 +282,7 @@ public partial class EquipmentForm
                     _draftStorageError = "Черновик не сохранён. Не закрывайте страницу; бизнес-команды временно заблокированы.";
                     return;
                 }
-            } while (_draftPersistPending && _draftRegistered && !_draftRestoring);
+            } while (_draftPersistPending && _draftRegistered && !_draftRestoring && !MainCloseInProgress);
         }
         finally
         {
@@ -255,9 +290,10 @@ public partial class EquipmentForm
         }
     }
 
-    private string SerializeDraftState()
-    {
-        var state = new EquipmentDraftState
+    private string SerializeDraftState() => JsonSerializer.Serialize(CaptureEquipmentDraftState());
+
+    private EquipmentDraftState CaptureEquipmentDraftState() =>
+        new()
         {
             Model = _model,
             WriteOffDate = _writeOffDate,
@@ -265,7 +301,7 @@ public partial class EquipmentForm
             Phones = _phones,
             OriginalPhones = _originalPhones,
             OriginalSnapshot = _originalSnapshot,
-            PendingPhoneSync = _pendingPhoneSync,
+            PendingPhoneSync = (PendingConfigure is null || _legacyConfigurePending) && PendingSavedAts is null ? _pendingPhoneSync : null,
             ActiveEditor = _activeEditor,
             ActiveEditorState = _activeEditor?.Kind == nameof(EquipmentUpsDialog)
                 ? null
@@ -275,23 +311,72 @@ public partial class EquipmentForm
             ActiveUpsOriginal = _upsDraftOriginal,
             ActiveUpsTest = _upsTestDraft,
         };
-        return JsonSerializer.Serialize(state);
-    }
 
     private static T FreezeChildValue<T>(T value) where T : class =>
         JsonSerializer.SerializeToElement(value).Deserialize<T>()
         ?? throw new InvalidOperationException("Не удалось зафиксировать значения команды.");
 
-    private static string FingerprintProtectedInput<T>(T value)
+    private bool _priorMainSaveConfirmed;
+
+    private async Task ReadPriorMainSaveAsync(ClayDraftRegistration registration, int equipmentId,
+        int employeeId, int version)
     {
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(value);
-        try { return Convert.ToHexString(HMACSHA256.HashData(IntentProofKey, bytes)); }
-        finally { CryptographicOperations.ZeroMemory(bytes); }
+        if (!_canEdit || MainServerWriteBlocked)
+            return;
+
+        bool Current() => IsCurrent(version, equipmentId) && CurrentUser?.Id == employeeId &&
+            ReferenceEquals(_draftRegistration, registration);
+        try
+        {
+            var receipt = await Service.ReadLatestMainWriteReceiptAsync(equipmentId, employeeId, _pageCts.Token);
+            if (Current() && _draftOperation is null)
+                _priorMainSaveConfirmed = receipt is { State: InventoryOperationState.Confirmed } &&
+                    receipt.ResultEntityId == equipmentId;
+        }
+        catch (Exception error) when (error is System.Data.Common.DbException or TimeoutException or
+            InvalidOperationException or UnauthorizedAccessException or OperationCanceledException)
+        {
+            if (Current())
+                _priorMainSaveConfirmed = false;
+        }
     }
 
-    private async Task<long?> BeginDraftOperationAsync(string operationName, object? intent = null)
+    private async Task<bool> CheckMainServerWriteAsync(int equipmentId, int employeeId, int version)
     {
-        if (_mainTransition || _mainDraftCancelled)
+        bool Current() => IsCurrent(version, equipmentId) && CurrentUser?.Id == employeeId;
+        if (!Current()) return false;
+        _mainServerWriteChecked = false;
+        _mainServerWriteCheckFailed = false;
+        try
+        {
+            var pending = await Service.ReadMainWritePendingAsync(equipmentId, employeeId, _pageCts.Token);
+            if (!Current()) return false;
+            _mainServerWritePending = pending;
+            _mainServerWriteChecked = true;
+            if (pending)
+                _warningMessage = "В серверном журнале есть незавершённое сохранение оборудования. Повтор заблокирован.";
+            return !pending;
+        }
+        catch (Exception error) when (error is Microsoft.Data.SqlClient.SqlException or TimeoutException
+            or InvalidOperationException or UnauthorizedAccessException)
+        {
+            if (Current())
+            {
+                _mainServerWriteCheckFailed = true;
+                Logger.LogWarning(error, "Не удалось проверить серверный журнал оборудования {EquipmentId}", equipmentId);
+                _warningMessage = "Сохранение недоступно: сервер не подтвердил состояние предыдущих операций. Нажмите «Обновить», чтобы повторить проверку.";
+                ErrorService.ReportOperationFailure(_warningMessage, error);
+            }
+            return false;
+        }
+    }
+
+    private Task<long?> BeginDraftOperationAsync(string operationName, object? intent = null) =>
+        BeginDraftOperationCoreAsync(operationName, intent, attemptId: null);
+
+    private async Task<long?> BeginDraftOperationCoreAsync(string operationName, object? intent, Guid? attemptId)
+    {
+        if (_mainTransition || MainCloseInProgress || _mainDraftCancelled)
             throw new InvalidOperationException("Сначала завершите отмену или обновление основной формы.");
         var registration = _draftRegistration ??
                            throw new InvalidOperationException(_draftStorageError ??
@@ -299,11 +384,12 @@ public partial class EquipmentForm
         if (_model is not { Id: > 0 } current || CurrentUser is not { } actor)
             throw new InvalidOperationException("Не удалось подтвердить контекст записи оборудования.");
         var version = _operationVersion;
-        await ScanEquipmentRecoveryAsync(registration, version, current.Id, actor.Id);
-        if (!IsEquipmentRecoveryCurrent(registration, version, current.Id, actor.Id) || EquipmentRecoveryWriteBlocked)
-            throw new InvalidOperationException("Сначала проверьте незавершённый черновик оборудования.");
-        await PersistDraftAsync();
         var mainOperation = operationName is "equipment-save" or "equipment-phone-save";
+        if (mainOperation && !await CheckMainServerWriteAsync(current.Id, actor.Id, version))
+            throw new InvalidOperationException("Сначала проверьте серверный журнал оборудования.");
+        if (!IsEquipmentDraftCurrent(registration, version, current.Id, actor.Id) || EquipmentRecoveryWriteBlocked)
+            throw new InvalidOperationException("Не удалось подтвердить состояние редактора оборудования.");
+        await PersistDraftAsync();
         var scope = mainOperation ? "main" : ActiveDraftScope;
         var equipmentId = _model?.Id;
         var editor = _activeEditor?.Kind;
@@ -312,25 +398,27 @@ public partial class EquipmentForm
         try
         {
             await registration.EnsureScopesCanBeAcceptedAsync(acceptedScopes, _pageCts.Token);
-            if (!IsEquipmentRecoveryCurrent(registration, version, current.Id, actor.Id) || EquipmentRecoveryWriteBlocked)
+            if (!IsEquipmentDraftCurrent(registration, version, current.Id, actor.Id) || EquipmentRecoveryWriteBlocked)
                 throw new InvalidOperationException("Контекст операции изменился. Команда не отправлена.");
-            operation = await registration.BeginOperationAsync(new ClayDraftOperationIntent(
-                operationName,
-                JsonSerializer.Serialize(new
+            var data = JsonSerializer.Serialize(new
                 {
                     Kind = operationName,
                     EquipmentId = equipmentId,
                     Editor = editor,
                     Origin = mainOperation ? MainDraftScope : operationName == "configure-phone-equipment" ? "configure" : "child",
                     Intent = intent,
-                }),
-                acceptedScopes,
-                AcceptLegacyTyped: mainOperation, BlockOtherDraftOperations: true), _pageCts.Token);
+                });
+            operation = await registration.BeginOperationAsync(new ClayDraftOperationIntent(operationName, data, acceptedScopes,
+                AttemptId: attemptId?.ToString("N"),
+                AcceptLegacyTyped: mainOperation), _pageCts.Token);
+            if (attemptId is { } stable && (operation.AttemptId != stable.ToString("N") ||
+                operation.Kind != operationName || operation.Data != data || operation.Status != ClayDraftOperationStatus.Running ||
+                !operation.Scopes.Select(scope => scope.Name).SequenceEqual(acceptedScopes, StringComparer.Ordinal)))
+                throw new InvalidOperationException("Журнал не подтвердил исходную попытку. Запись не отправлена.");
         }
         catch (Exception ex) when (equipmentId is int id && OwnsMainDraft(registration, id) &&
             ex is InvalidOperationException or JSException)
         {
-            await ScanEquipmentRecoveryAsync(registration, version, id, actor.Id);
             if (mainOperation) await ObserveMainDraftReadinessAsync(registration, id);
             throw;
         }
@@ -381,7 +469,7 @@ public partial class EquipmentForm
     private async Task RecordConfirmedChildOperationAsync(ClayDraftRegistration registration, ClayDraftOperation operation)
     {
         bool IsCurrentAttempt() => ReferenceEquals(_draftRegistration, registration) &&
-            _draftOperation?.AttemptId == operation.AttemptId;
+            _draftOperation is { } current && current.AttemptId == operation.AttemptId && current.Revision == operation.Revision;
 
         if (!IsCurrentAttempt())
             throw new InvalidOperationException("Контекст подтверждённой команды изменился.");
@@ -402,6 +490,17 @@ public partial class EquipmentForm
         if (!IsCurrentAttempt())
             throw new InvalidOperationException("Контекст подтверждённой команды изменился.");
         _draftOperation = operation with { Status = ClayDraftOperationStatus.Confirmed };
+    }
+
+    private async Task CommitKnownDraftOperationAsync(long? revision)
+    {
+        if (revision is null || !_draftRegistered)
+            return;
+        if (_draftRegistration is not { } registration || _draftOperation is not { } operation || operation.Revision != revision)
+            throw new InvalidOperationException("Ревизия подтверждённой команды изменилась.");
+
+        await RecordConfirmedChildOperationAsync(registration, operation);
+        await CommitDraftOperationAsync(revision);
     }
 
     private async Task CommitDraftOperationAsync(long? revision)
@@ -505,7 +604,67 @@ public partial class EquipmentForm
     {
         if (_draftOperation is not { } operation || _model is null || _draftRegistration is not { } registration)
             return;
-        if (operation.Status == ClayDraftOperationStatus.Confirmed || _locallyConfirmedAttemptId == operation.AttemptId)
+        if (operation.Kind is EquipmentFormService.AddUpsLinkCommand or EquipmentFormService.DeleteUpsLinkCommand or
+            EquipmentFormService.SaveUpsDetailsCommand)
+        {
+            await ReconcileUpsWriteReceiptAsync(registration, operation);
+            StateHasChanged();
+            return;
+        }
+        if (operation.Kind is EquipmentFormService.AddLocationPeriodCommand or EquipmentFormService.UpdateLocationPeriodCommand or
+            EquipmentFormService.IssueResponsiblePeriodCommand or EquipmentFormService.UpdateResponsiblePeriodCommand or
+            EquipmentFormService.WithdrawResponsiblePeriodCommand)
+        {
+            await ReconcilePeriodWriteReceiptAsync(registration, operation);
+            StateHasChanged();
+            return;
+        }
+        if (operation.Kind is EquipmentFormService.InsertComputerCommand or EquipmentFormService.UpdateComputerCommand)
+        {
+            await ReconcileComputerWriteReceiptAsync(registration, operation);
+            StateHasChanged();
+            return;
+        }
+        if (operation.Kind is EquipmentFormService.InsertSimCommand or EquipmentFormService.UpdateSimCommand or
+            EquipmentFormService.DeleteSimCommand or EquipmentFormService.InsertSimServiceCommand or EquipmentFormService.UpdateSimServiceCommand)
+        {
+            await ReconcileSimWriteReceiptAsync(registration, operation);
+            StateHasChanged();
+            return;
+        }
+        if (operation.Kind is EquipmentFormService.InsertAccountCommand or EquipmentFormService.UpdateAccountCommand or
+            EquipmentFormService.DeleteAccountCommand)
+        {
+            await ReconcileAccountWriteReceiptAsync(registration, operation);
+            StateHasChanged();
+            return;
+        }
+        if (operation.Kind is EquipmentFormService.InsertLicenseCommand or EquipmentFormService.UpdateLicenseCommand)
+        {
+            await ReconcileLicenseWriteReceiptAsync(registration, operation);
+            StateHasChanged();
+            return;
+        }
+        if (operation.Kind is EquipmentFormService.InsertAccountingCommand or EquipmentFormService.UpdateAccountingCommand or
+            EquipmentFormService.DeleteAccountingCommand)
+        {
+            await ReconcileAccountingWriteReceiptAsync(registration, operation);
+            StateHasChanged();
+            return;
+        }
+        if (operation.Kind is EquipmentFormService.InsertSoftwareCommand or EquipmentFormService.UpdateSoftwareCommand)
+        {
+            await ReconcileSoftwareWriteReceiptAsync(registration, operation);
+            StateHasChanged();
+            return;
+        }
+        if (operation.Kind is EquipmentFormService.AttachNetworkCommand or EquipmentFormService.DetachNetworkCommand)
+        {
+            await ReconcileNetworkWriteReceiptAsync(registration, operation);
+            StateHasChanged();
+            return;
+        }
+        if (_locallyConfirmedAttemptId == operation.AttemptId)
         {
             try
             {
@@ -518,6 +677,12 @@ public partial class EquipmentForm
             {
                 _warningMessage = "Запись подтверждена, завершение журнала пока недоступно.";
             }
+            StateHasChanged();
+            return;
+        }
+
+        if (await ReconcileMainSqlReceiptAsync(registration, operation))
+        {
             StateHasChanged();
             return;
         }
@@ -569,6 +734,107 @@ public partial class EquipmentForm
         StateHasChanged();
     }
 
+    private async Task ReconcileNetworkWriteReceiptAsync(ClayDraftRegistration registration, ClayDraftOperation operation)
+    {
+        _warningMessage = "Серверный исход подключения не подтверждён. Повторная команда заблокирована.";
+        if (operation.Scopes.Count != 0 || !Guid.TryParseExact(operation.AttemptId, "N", out var attemptId) ||
+            attemptId == Guid.Empty || _model is not { } model || CurrentUser is not { } actor)
+            return;
+
+        var version = _operationVersion;
+        bool Current() => IsCurrentSave(model, version) && CurrentUser?.Id == actor.Id &&
+            ReferenceEquals(_draftRegistration, registration) && _draftOperation?.AttemptId == operation.AttemptId;
+        try
+        {
+            var receipt = await Service.ReadNetworkWriteReceiptAsync(model.Id, actor.Id, attemptId,
+                operation.Kind == EquipmentFormService.AttachNetworkCommand, _pageCts.Token);
+            if (!Current() || receipt?.AttemptId != attemptId) return;
+            if (receipt.State == InventoryOperationState.Rejected)
+            {
+                await RejectDraftOperationAsync(operation.Revision);
+                _warningMessage = "Сервер подтвердил отказ изменения подключения. Обновите карточку.";
+                return;
+            }
+            if (receipt.State != InventoryOperationState.Confirmed || receipt.ResultEntityId != model.Id) return;
+
+            var count = await Service.GetNetworkAttachmentCountAsync(model.Id);
+            if (!Current()) return;
+            await RecordConfirmedChildOperationAsync(registration, operation);
+            if (!Current()) return;
+            await CommitDraftOperationAsync(operation.Revision);
+            if (IsCurrentSave(model, version) && CurrentUser?.Id == actor.Id)
+            {
+                _networkAttachmentCount = count;
+                _warningMessage = null;
+                ShowStatus("Сервер подтвердил изменение подключения. Повторная команда не отправлялась.");
+            }
+        }
+        catch (Exception error) when (error is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or
+            JSException or TimeoutException or OperationCanceledException)
+        {
+            if (Current()) _warningMessage = "Не удалось проверить серверный исход подключения. Повторная команда заблокирована.";
+        }
+    }
+
+    private async Task<bool> ReconcileMainSqlReceiptAsync(ClayDraftRegistration registration, ClayDraftOperation operation)
+    {
+        if (operation.Kind is not ("equipment-save" or "equipment-phone-save") ||
+            operation.Scopes is not [{ Name: MainDraftScope }] ||
+            !Guid.TryParseExact(operation.AttemptId, "N", out var attemptId) || attemptId == Guid.Empty ||
+            _model is not { } model || CurrentUser is not { } actor)
+            return false;
+
+        var version = _operationVersion;
+        bool Current() => IsCurrentSave(model, version) && CurrentUser?.Id == actor.Id &&
+            ReferenceEquals(_draftRegistration, registration) && _draftOperation?.AttemptId == operation.AttemptId;
+        try
+        {
+            var includesPhones = operation.Kind == "equipment-phone-save";
+            var receipt = await Service.ReadMainWriteReceiptAsync(model.Id, actor.Id, attemptId, includesPhones, _pageCts.Token);
+            if (!Current()) return true;
+            if (receipt is null || receipt.AttemptId != attemptId)
+                return false;
+            if (receipt.State == InventoryOperationState.Rejected)
+            {
+                await RejectDraftOperationAsync(operation.Revision);
+                _warningMessage = "Сервер подтвердил отказ сохранения. Введённые данные оставлены на форме.";
+                return true;
+            }
+            if (receipt.State != InventoryOperationState.Confirmed || receipt.ResultEntityId != model.Id)
+                return false;
+            PhoneSyncAttempt? savedAts = null;
+            if (includesPhones)
+            {
+                savedAts = await ReadSavedAtsAsync(model.Id, actor.Id, attemptId);
+                if (!Current()) return true;
+                if (savedAts is null)
+                {
+                    _warningMessage = "Сервер подтвердил запись оборудования и связей в SQL. Исход АТС требует отдельной сверки. Повторная запись не отправлялась.";
+                    return true;
+                }
+            }
+
+            await RecordConfirmedChildOperationAsync(registration, operation);
+            if (!Current()) return true;
+            await CommitDraftOperationAsync(operation.Revision);
+            if (IsCurrentSave(model, version) && CurrentUser?.Id == actor.Id)
+            {
+                _mainConflictMessage = "Сервер подтвердил сохранение. Обновите данные перед следующей записью.";
+                _warningMessage = null;
+                if (savedAts is not null) PresentSavedAtsResult(savedAts);
+                ShowStatus("Повторная запись не отправлялась.");
+            }
+            return true;
+        }
+        catch (Exception error) when (error is Microsoft.Data.SqlClient.SqlException or InvalidOperationException
+            or UnauthorizedAccessException or JSException or TimeoutException)
+        {
+            if (Current())
+                _warningMessage = "Не удалось проверить или принять серверное подтверждение. Повторная запись заблокирована.";
+            return true;
+        }
+    }
+
     private async Task OpenDraftScopeAsync(string? scope)
     {
         if (_draftRegistered && scope is not null)
@@ -593,8 +859,9 @@ public partial class EquipmentForm
         _draftOperation = null;
         _draftOperationScope = null;
         _draftOperationUnresolved = false;
+        _priorMainSaveConfirmed = false;
         _draftRegistration = null;
-        ResetEquipmentRecovery();
+        _draftRestoreBlocked = false;
         _draftRestoring = false;
         _restoringMainRaw = false;
         _mainRawRestorePending = false;
@@ -723,6 +990,66 @@ public partial class EquipmentForm
         var readiness = await registration.GetRestoreReadinessAsync(_pageCts.Token);
         return IsCurrent(opening) && ReferenceEquals(_draftRegistration, registration) && readiness is not null &&
             !readiness.PendingScopes.Contains(scope) && !readiness.FailedScopes.Contains(scope);
+    }
+
+    private EquipmentUpsTestCancellation CreateUpsTestCancellation(EquipmentEditorOpening opening,
+        string parentScope, int upsId, int testId, UpsTest openingOriginal)
+    {
+        var registration = _draftRegistration;
+        var employeeId = CurrentUser?.Id;
+        var scope = UpsTestScope(parentScope, testId);
+        bool Current() => IsCurrent(opening) && employeeId is > 0 && CurrentUser?.Id == employeeId &&
+            registration is not null && ReferenceEquals(_draftRegistration, registration) &&
+            ActiveDraftScope == parentScope && _activeEditor?.NestedTestId == testId &&
+            _upsTestDraft is { Original: var original } && original.Id == testId && original.UpsEquipmentId == upsId;
+
+        return new(
+            async () => Current() ? await registration!.ReadEditorScopeAsync(scope, _pageCts.Token) : null,
+            async () =>
+            {
+                if (!Current()) return null;
+                var fresh = await Service.ReadUpsEditorResetAsync(upsId, opening.EquipmentId, employeeId!.Value, _pageCts.Token);
+                if (!Current() || fresh is null) return null;
+                if (testId == 0)
+                    return new(openingOriginal, openingOriginal.TestedAt.Date, openingOriginal.TestedAt.TimeOfDay,
+                        openingOriginal.BatteryTime, openingOriginal.Servers, openingOriginal.Issues);
+
+                var row = fresh.Tests.SingleOrDefault(test => test.Id == testId && test.UpsEquipmentId == upsId);
+                if (row is null) return null;
+                var local = await ConvertUtcToLocalAsync(row.TestedAt);
+                return Current() ? new(row, local.Date, local.TimeOfDay, row.BatteryTime, row.Servers, row.Issues) : null;
+            },
+            async (revision, replacement, childCurrent) =>
+            {
+                if (!Current() || !childCurrent()) return false;
+                var editor = _activeEditor!;
+                var parent = CaptureEquipmentDraftState();
+                parent.ActiveEditor = replacement is null ? editor with { NestedTestId = null } : editor;
+                parent.ActiveUpsTest = replacement;
+                var state = JsonSerializer.Serialize(parent);
+                if (!await registration!.ReplaceNestedEditorScopeAsync(scope, revision, state,
+                        replacement is null, _pageCts.Token) || !Current())
+                    return false;
+                if (!childCurrent())
+                {
+                    if (replacement is null) await registration.OpenScopeAsync(scope, _pageCts.Token);
+                    _lastPersistedDraft = null;
+                    await PersistDraftAsync();
+                    return false;
+                }
+                _activeEditor = parent.ActiveEditor;
+                _upsTestDraft = replacement;
+                _lastPersistedDraft = state;
+                if (replacement is null)
+                {
+                    try { await registration.OpenScopeAsync(parentScope, _pageCts.Token); }
+                    catch (Exception error) when (error is JSException or OperationCanceledException)
+                    {
+                        // Замена уже принята. Следующее открытие восстановит область родителя.
+                    }
+                }
+                return true;
+            });
     }
 
     private async Task<bool> FinishUpsTestDraftAsync(EquipmentEditorOpening opening, string parentScope,

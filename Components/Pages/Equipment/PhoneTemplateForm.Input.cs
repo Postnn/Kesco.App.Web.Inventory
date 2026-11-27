@@ -36,7 +36,7 @@ public partial class PhoneTemplateForm
 
     private bool TemplateInputBlocked =>
         _restoreTemplateRawRequested || _restoringTemplateRaw || _rawPending || _inputSaveFailed || _inputMissingOriginal ||
-        _editorWatchGeneration is null || _templateInputDiscarded || _releaseTransitionAfterRender is not null;
+        _editorWatchGeneration is null || _templateInputDiscarded || _pendingTemplateClose is not null || _releaseTransitionAfterRender is not null;
 
     private async Task RestoreTemplateInputAsync(ClayDraftRegistration journal, EquipmentModel model, int version)
     {
@@ -170,7 +170,7 @@ public partial class PhoneTemplateForm
 
     private async Task EnsureTemplateEditorWatcherAsync()
     {
-        if (!_canEdit || _loading || _disposed || _model is not { } model ||
+        if (!_canEdit || _loading || _disposed || _templateInputDiscarded || _pendingTemplateClose is not null || _model is not { } model ||
             _editorWatchGeneration is not null || _editorWatchStarting || _editorWatchFailed)
             return;
         var version = _loadVersion;
@@ -239,12 +239,12 @@ public partial class PhoneTemplateForm
     [JSInvokable]
     public async Task OnTemplateEditorChangedAsync(string generation, long revision)
     {
-        if (_disposed || !_canEdit || _templateTransitionApplying || _releaseTransitionAfterRender is not null || _templateInputDiscarded ||
+        if (_disposed || !_canEdit || _templateTransitionApplying || _releaseTransitionAfterRender is not null || _templateInputDiscarded || _pendingTemplateClose is not null ||
             generation != _editorWatchGeneration || _model is not { } model)
             return;
         var epoch = _templateInputEpoch;
         bool Current() => !_disposed && _model?.Id == Id && ReferenceEquals(model, _model) &&
-            generation == _editorWatchGeneration && epoch == _templateInputEpoch;
+            generation == _editorWatchGeneration && epoch == _templateInputEpoch && _pendingTemplateClose is null;
         try
         {
             var snapshot = await TryReadTemplateSnapshotAsync(generation, _pageCts.Token);
@@ -299,23 +299,6 @@ public partial class PhoneTemplateForm
     private async Task<string> ReadLiveTemplateAsync(CancellationToken token) =>
         (await ReadCurrentTemplateAsync(token)).Text;
 
-    private async Task CloseAtEditorRevisionAsync(long revision)
-    {
-        if (_editorWatchGeneration is not { } generation || _templateTextModule is not { } module)
-            return;
-        _allowNavigation = true;
-        try
-        {
-            if (!await module.InvokeAsync<bool>("closeTemplateIfCurrent", _pageCts.Token, _editorRoot, generation, revision))
-                _allowNavigation = false;
-        }
-        catch
-        {
-            _allowNavigation = false;
-            throw;
-        }
-    }
-
     internal sealed record TemplateTextWire(
         [property: JsonPropertyName("revision")] long Revision,
         [property: JsonPropertyName("payload")] IJSStreamReference Payload);
@@ -327,7 +310,7 @@ public partial class PhoneTemplateForm
 
     private async Task OnTemplateInputAsync(string? text)
     {
-        if (_model is not { } model || !_canEdit || _disposed)
+        if (_model is not { } model || !_canEdit || _disposed || _pendingTemplateClose is not null || _templateInputDiscarded)
             return;
         _allowNavigation = false;
         ++_templateInputEpoch;

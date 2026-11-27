@@ -10,10 +10,12 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Net;
 public partial class Net
 {
     private bool _cancellingInput;
+    private bool _netDraftClosed;
+    private NetCloseRequest? _pendingNetClose;
 
     private bool ConfirmNetExternalExit => IsModified || _saving || _poeRunning ||
         _operationContext is { } context &&
-        (context.Attempt is not null || context.NotSentId is not null || HasUnacceptedNetInput(context));
+        (context.Attempt is not null || context.NotSentId is not null || _pendingNetClose is not null || HasUnacceptedNetInput(context));
 
     private bool HasUnacceptedNetInput(NetOperationContext context) =>
         IsModified || !context.InputReady || context.InputConflict || context.InputFailed || RequiresReconciliation;
@@ -43,16 +45,11 @@ public partial class Net
         if (_disposed || _loading || _saving || _poeRunning || _inspectingOperation || token.IsCancellationRequested)
             return false;
 
-        if (_readOnlyRecovery is not null) return true;
+        if (_netDraftClosed) return true;
+        if (_pendingNetClose is { } pending)
+            return await CloseNetDraftAsync(pending.Context, pending.Revision, token);
         if (_operationContext is not { } context || !IsCurrentInput(context))
             return !IsModified;
-        if (context.Attempt?.Status == ClayDraftOperationStatus.Confirmed && !context.ReceiptRecorded)
-        {
-            _operationNotice = "Сначала завершите обработку подтверждённой операции. Журнал сохранён.";
-            return false;
-        }
-        if (context.Attempt is not null || context.NotSentId is not null)
-            return true;
 
         var registration = context.Registration;
         var id = context.PortId;
@@ -70,8 +67,8 @@ public partial class Net
             try { scope = await registration.ReadEditorScopeAsync(NetInputScope, token); }
             finally { context.InputGate.Release(); }
             if (!Current()) return false;
-            if (scope.HasOperation) return true;
-            if (!HasUnacceptedNetInput(context) && !scope.HasRaw) return true;
+            if (!HasUnacceptedNetInput(context) && !scope.HasRaw)
+                return await CloseNetDraftAsync(context, scope.Revision, token);
 
             var dialog = await DialogService.ShowAsync<ClayEditorCancelDialog>("Отмена изменений",
                 new DialogParameters(), new DialogOptions
@@ -90,6 +87,11 @@ public partial class Net
 
             if (choice == ClayEditorCancelChoice.ResetAndStay)
             {
+                if (scope.HasOperation || context.Attempt is not null || context.NotSentId is not null)
+                {
+                    _validationMessage = "Сначала проверьте исход предыдущей операции.";
+                    return false;
+                }
                 var accepted = false;
                 await LoadDataAsync(id, version, null, null, acceptReset: async (port, actor, fresh) =>
                 {
@@ -118,16 +120,12 @@ public partial class Net
                 return false;
             }
 
-            if (!SameInput() || !await registration.ReplaceEditorScopeAsync(NetInputScope, scope.Revision, null, token))
+            if (!SameInput())
             {
                 if (Current()) _validationMessage = "Ввод изменился. Подтвердите отмену ещё раз.";
                 return false;
             }
-            if (!Current()) return false;
-            InvalidateNetInputView();
-            CurrentUser = null;
-            _validationMessage = "Локальный ввод отменён. Если окно осталось открытым, закройте его или обновите страницу.";
-            return true;
+            return await CloseNetDraftAsync(context, scope.Revision, token);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return false; }
         catch (Exception error) when (IsJournalError(error) || error is SqlException or TimeoutException)
@@ -140,6 +138,59 @@ public partial class Net
             _saving = _cancellingInput = false;
             if (!_disposed) await InvokeAsync(StateHasChanged);
         }
+    }
+
+    private async Task<bool> CloseNetDraftAsync(NetOperationContext context, long revision, CancellationToken token)
+    {
+        if (!IsCurrentInput(context) || token.IsCancellationRequested || _pendingNetClose is { InProgress: true })
+            return false;
+        var request = _pendingNetClose ??= new NetCloseRequest(context, revision, _loadVersion);
+        if (!ReferenceEquals(request.Context, context))
+            return false;
+        bool Current() => ReferenceEquals(_pendingNetClose, request) && IsCurrent(request.Version, context.PortId) &&
+            IsCurrentInput(context);
+
+        request.InProgress = true;
+        var locked = false;
+        try
+        {
+            await context.InputGate.WaitAsync(token);
+            locked = true;
+            if (!Current()) return false;
+            if (!await context.Registration.CloseRamIfRevisionAsync(request.Revision, token))
+            {
+                if (Current())
+                {
+                    _pendingNetClose = null;
+                    _validationMessage = "Ввод изменился перед закрытием. Проверьте данные и подтвердите закрытие ещё раз.";
+                }
+                return false;
+            }
+            if (!Current()) return false;
+            _operationContext = null;
+            _pendingNetClose = null;
+            _netDraftClosed = true;
+            _netDraftInstance = Guid.NewGuid();
+            CurrentUser = null;
+            InvalidateNetInputView();
+            return true;
+        }
+        catch (Exception error) when (IsJournalError(error))
+        {
+            if (Current())
+                _validationMessage = "Не удалось подтвердить удаление черновика. Нажмите «Отмена», чтобы повторить закрытие.";
+            return false;
+        }
+        finally
+        {
+            if (locked) context.InputGate.Release();
+            request.InProgress = false;
+        }
+    }
+
+    private sealed record NetCloseRequest(NetOperationContext Context, long Revision, int Version)
+    {
+        internal bool InProgress { get; set; }
     }
 
     private void InvalidateNetInputView()

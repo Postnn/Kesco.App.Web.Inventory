@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Clayzor.Lib.Entities.Inventory;
+using Clayzor.Lib.Web.Controls.Services;
 using Clayzor.Lib.Web.Controls.Components.Form;
 using Clayzor.Lib.Web.DBSelect.Inventory;
 using Microsoft.AspNetCore.Components.Routing;
@@ -18,13 +19,15 @@ public partial class DutyEditor
         Text = "Отмена", Icon = Icons.Material.Filled.Close,
     };
     private bool _inputClosed;
+    private bool _closingDraft;
+    private bool _saveCloseNeedsConfirmation;
     private bool _keepPlannedEditorDuringExit;
     private int _inputViewRevision;
 
     private bool ConfirmDutyExternalExit => _busy || DutyExitHasInput || _confirmedRevision is not null ||
-        _notSentAttemptId is not null;
+        _notSentAttemptId is not null || _closingDraft;
 
-    private bool DutyExitHasInput => Dirty || _restoreRaw || _retryRaw || _rawRecoveryPending;
+    private bool DutyExitHasInput => _saveCloseNeedsConfirmation || Dirty || _restoreRaw || _retryRaw || _rawRecoveryPending;
 
     private async Task CancelAsync()
     {
@@ -59,15 +62,10 @@ public partial class DutyEditor
         if (_disposed || _busy || _applyingRaw || token.IsCancellationRequested)
             return false;
         if (_loading) return _registration is null && !Dirty;
-        if (_confirmedRevision is not null)
-        {
-            _message = "Сначала завершите обработку подтверждённого сохранения. Журнал сохранён.";
-            return false;
-        }
-        if (_unknown || _notSentAttemptId is not null || _completed || _inputClosed || !HasWriteAccess)
-            return true;
         if (_registration is not { } registration)
-            return !DutyExitHasInput;
+            return _inputClosed || !DutyExitHasInput;
+        if (_closingDraft || _unknown || _notSentAttemptId is not null || !HasWriteAccess && !_saveCloseNeedsConfirmation)
+            return await CloseDutyDraftAsync(registration, token);
         if (CurrentUser is not { } owner)
             return false;
 
@@ -85,8 +83,8 @@ public partial class DutyEditor
         {
             var scope = await registration.ReadEditorScopeAsync(Scope, token);
             if (!Current()) return false;
-            if (scope.HasOperation) return true;
-            if (!DutyExitHasInput && !scope.HasRaw) return true;
+            if (scope.HasOperation && !_saveCloseNeedsConfirmation) return await CloseDutyDraftAsync(registration, token);
+            if (!DutyExitHasInput && !scope.HasRaw) return await CloseDutyDraftAsync(registration, token);
 
             var parameters = new DialogParameters<ClayEditorCancelDialog>();
             if (date is null)
@@ -104,19 +102,23 @@ public partial class DutyEditor
                 choice == ClayEditorCancelChoice.Continue)
                 return false;
 
-            DutyInputReset? fresh = null;
-            if (choice == ClayEditorCancelChoice.ResetAndStay)
+            if (choice == ClayEditorCancelChoice.CloseWithoutSaving)
+                return await CloseDutyDraftAsync(registration, token);
+            if (_completed || scope.HasOperation)
             {
-                fresh = await ReadDutyInputResetAsync(date, owner.Id, token);
-                if (!Current()) return false;
-                if (fresh is null)
-                {
-                    _message = "Не удалось прочитать доступное для изменения дежурство. Черновик сохранён.";
-                    return false;
-                }
+                _message = "Сохранение уже завершено. Для выхода закройте окно.";
+                return false;
             }
 
-            var replacement = fresh is null ? null : JsonSerializer.Serialize(new DutySnapshot(fresh.Row, fresh.Draft));
+            var fresh = await ReadDutyInputResetAsync(date, owner.Id, token);
+            if (!Current()) return false;
+            if (fresh is null)
+            {
+                _message = "Не удалось прочитать доступное для изменения дежурство. Черновик сохранён.";
+                return false;
+            }
+
+            var replacement = JsonSerializer.Serialize(new DutySnapshot(fresh.Row, fresh.Draft));
             if (!await registration.ReplaceEditorScopeAsync(Scope, scope.Revision, replacement, token))
             {
                 if (Current()) _message = "Ввод изменился. Подтвердите отмену ещё раз.";
@@ -131,16 +133,8 @@ public partial class DutyEditor
             _stalePlanDay = null;
             _stalePlanReview = null;
             _focusTarget = FocusTarget.None;
-            if (fresh is not null)
-            {
-                ApplyDutyInputReset(fresh);
-                return false;
-            }
-
-            _inputClosed = true;
-            _draft = _baseline;
-            _message = "Ввод отменён. Если окно осталось открытым, закройте его или обновите страницу.";
-            return true;
+            ApplyDutyInputReset(fresh);
+            return false;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return false; }
         catch (Exception error) when (error is JSException or SqlException or InvalidOperationException or TimeoutException)
@@ -156,6 +150,38 @@ public partial class DutyEditor
             if (!_disposed) await InvokeAsync(StateHasChanged);
         }
     }
+
+    private async Task<bool> CloseDutyDraftAsync(ClayDraftRegistration registration, CancellationToken token)
+    {
+        var wasBusy = _busy;
+        _closingDraft = _busy = true;
+        try
+        {
+            await registration.CloseRamAsync(token);
+            FinishDutyDraftClose(registration);
+            return true;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return false; }
+        catch (Exception error) when (error is JSException or InvalidOperationException)
+        {
+            _message = "Не удалось удалить временные данные. Повторите закрытие.";
+            return false;
+        }
+        finally
+        {
+            _busy = wasBusy;
+            if (!_disposed) await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void FinishDutyDraftClose(ClayDraftRegistration registration)
+    {
+        if (!ReferenceEquals(registration, _registration)) return;
+        _registration = null;
+        _closingDraft = _saveCloseNeedsConfirmation = false;
+        _inputClosed = true;
+    }
+
 
     private async Task<DutyInputReset?> ReadDutyInputResetAsync(DateOnly? date, int employeeId, CancellationToken token)
     {

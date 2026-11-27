@@ -14,82 +14,104 @@
     <TitleContent>Бухгалтерский учёт</TitleContent>
     <DialogContent>
         <ClayFormActions Form="InventoryFormHelp.EquipmentAccounting" />
-        @RawRestoreNotice
-        @if (!string.IsNullOrWhiteSpace(_error))
-        {
-            <MudAlert Severity="Severity.Error">@_error</MudAlert>
-        }
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Владелец:</span>
-            <ClaySelect TItem="PersonLookup" TValue="int?"
-                        DataSource="OwnerSource"
-                        ValueSelector="@(item => (int?)item.Id)"
-                        TextSelector="@(item => item.Name)"
-                        @bind-Value="Value.OwnerId"
-                        SelectedItemChanged="OnOwnerChanged"
-                        Options="_ownerOptions" />
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Тип:</span>
-            <ClayCheckbox State="Value.IsMaterial" StateChanged="OnMaterialChanged" Label="Материал (иначе — основное средство)" />
-        </div>
-        @if (!Value.IsMaterial)
-        {
+        @EditorPresence
+        @{ var baseline = OpeningFieldValue<EquipmentAccounting>(nameof(Value)); }
+        <ClayEditorFocusScope @key="ScopedInputVersion" Label="Бухгалтерский учёт" Ready="@(IsEditorCurrent() && !_saving && !_saveBlocked && !RawRestoreBlocked)" Inert="@CancelPending" AdvanceOnEnter="true">
+            @RawRestoreNotice
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error">@_error</MudAlert>
+            }
             <div class="equipment-ins-row">
-                <span class="equipment-ins-label">Арендатор:</span>
-                <ClaySelect TItem="PersonLookup" TValue="int?"
-                            DataSource="TenantSource"
-                            ValueSelector="@(item => (int?)item.Id)"
-                            TextSelector="@(item => item.Name)"
-                            @bind-Value="Value.TenantId"
-                            Options="_tenantOptions" />
+                <span class="equipment-ins-label">Владелец:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.OwnerId != baseline.OwnerId)" WatchLookupRaw="true">
+                    <ClaySelect TItem="PersonLookup" TValue="int?"
+                                DataSource="OwnerSource"
+                                ValueSelector="@(item => (int?)item.Id)"
+                                TextSelector="@(item => item.Name)"
+                                @bind-Value="Value.OwnerId"
+                                SelectedItemChanged="OnOwnerChanged"
+                                Options="_ownerOptions" />
+                </ClayFieldChange>
             </div>
             <div class="equipment-ins-row">
-                <span class="equipment-ins-label">Инв. номер:</span>
-                <ClayTextBox @bind-Value="Value.InventoryNumber" Options="_inventoryOptions" />
+                <span class="equipment-ins-label">Тип:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.IsMaterial != baseline.IsMaterial)">
+                    <ClayCheckbox State="Value.IsMaterial" StateChanged="OnMaterialChanged" Label="Материал (иначе — основное средство)" />
+                </ClayFieldChange>
             </div>
-        }
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Поступление:</span>
-            <div class="equipment-accounting-date-document">
-                <ClayDatePicker @bind-Value="Value.DateFrom" Options="_fromOptions" />
-                <ClaySelect TItem="DocumentLookup" TValue="int?"
-                            DataSource="ReceiptSource"
-                            ValueSelector="@(item => (int?)item.Id)"
-                            TextSelector="@(item => item.Name)"
-                            @bind-Value="Value.ReceiptDocumentId"
-                            Options="_documentOptions" />
+            @if (!Value.IsMaterial)
+            {
+                <div class="equipment-ins-row">
+                    <span class="equipment-ins-label">Арендатор:</span>
+                    <ClayFieldChange Changed="@(baseline is not null && Value.TenantId != baseline.TenantId)" WatchLookupRaw="true">
+                        <ClaySelect TItem="PersonLookup" TValue="int?"
+                                    DataSource="TenantSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.Name)"
+                                    @bind-Value="Value.TenantId"
+                                    Options="_tenantOptions" />
+                    </ClayFieldChange>
+                </div>
+                <div class="equipment-ins-row">
+                    <span class="equipment-ins-label">Инв. номер:</span>
+                    <ClayFieldChange Changed="@(baseline is not null && Value.InventoryNumber != baseline.InventoryNumber)" RawBaseline="@(baseline is null ? null : baseline.InventoryNumber ?? string.Empty)">
+                        <ClayTextBox @bind-Value="Value.InventoryNumber" Options="_inventoryOptions" />
+                    </ClayFieldChange>
+                </div>
+            }
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Поступление:</span>
+                <div class="equipment-accounting-date-document">
+                    <ClayFieldChange Changed="@(baseline is not null && Value.DateFrom?.Date != baseline.DateFrom?.Date)" RawBaseline="@(baseline is null ? null : ((DateTime?)baseline.DateFrom)?.ToString(_fromOptions.DateFormat) ?? string.Empty)">
+                        <ClayDatePicker @bind-Value="Value.DateFrom" Options="_fromOptions" />
+                    </ClayFieldChange>
+                    <ClayFieldChange Changed="@(baseline is not null && Value.ReceiptDocumentId != baseline.ReceiptDocumentId)" WatchLookupRaw="true">
+                        <ClaySelect TItem="DocumentLookup" TValue="int?"
+                                    DataSource="ReceiptSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.Name)"
+                                    @bind-Value="Value.ReceiptDocumentId"
+                                    Options="_documentOptions" />
+                    </ClayFieldChange>
+                </div>
             </div>
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Списание:</span>
-            <div class="equipment-accounting-date-document">
-                <ClayDatePicker @bind-Value="Value.DateTo" />
-                <ClaySelect TItem="DocumentLookup" TValue="int?"
-                            DataSource="WriteOffSource"
-                            ValueSelector="@(item => (int?)item.Id)"
-                            TextSelector="@(item => item.Name)"
-                            @bind-Value="Value.WriteOffDocumentId"
-                            Options="_documentOptions" />
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Списание:</span>
+                <div class="equipment-accounting-date-document">
+                    <ClayFieldChange Changed="@(baseline is not null && Value.DateTo?.Date != baseline.DateTo?.Date)" RawBaseline="@(baseline is null ? null : ((DateTime?)baseline.DateTo)?.ToString(new ClayDatePickerOptions().DateFormat) ?? string.Empty)">
+                        <ClayDatePicker @bind-Value="Value.DateTo" />
+                    </ClayFieldChange>
+                    <ClayFieldChange Changed="@(baseline is not null && Value.WriteOffDocumentId != baseline.WriteOffDocumentId)" WatchLookupRaw="true">
+                        <ClaySelect TItem="DocumentLookup" TValue="int?"
+                                    DataSource="WriteOffSource"
+                                    ValueSelector="@(item => (int?)item.Id)"
+                                    TextSelector="@(item => item.Name)"
+                                    @bind-Value="Value.WriteOffDocumentId"
+                                    Options="_documentOptions" />
+                    </ClayFieldChange>
+                </div>
             </div>
-        </div>
-        <div class="equipment-ins-row">
-            <span class="equipment-ins-label">Примечания:</span>
-            <ClayTextArea @bind-Value="Value.Notes" Options="_notesOptions" />
-        </div>
+            <div class="equipment-ins-row">
+                <span class="equipment-ins-label">Примечания:</span>
+                <ClayFieldChange Changed="@(baseline is not null && Value.Notes != baseline.Notes)" RawBaseline="@(baseline is null ? null : baseline.Notes ?? string.Empty)">
+                    <ClayTextArea @bind-Value="Value.Notes" Options="_notesOptions" />
+                </ClayFieldChange>
+            </div>
+        </ClayEditorFocusScope>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" Disabled="@_saving" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || _saveBlocked || RawRestoreBlocked)" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelScopedAsync" Disabled="@(_saving || CancelPending)" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(_saving || CancelPending || _saveBlocked || RawRestoreBlocked)" />
     </DialogActions>
 </MudDialog>
 
 @code {
     private readonly ClayToolbarButtonOptions _cancelButtonOptions = new() { Text = "Отмена" };
     private readonly ClayToolbarButtonOptions _okButtonOptions = new() { Text = "OK", Color = Color.Primary, Variant = Variant.Filled };
-    private readonly ClaySelectOptions _ownerOptions = new() { Required = true, AutoSelectSingle = true, Placeholder = "Выберите владельца", DraftKey = "accounting.owner" };
-    private readonly ClaySelectOptions _tenantOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите арендатора", DraftKey = "accounting.tenant" };
-    private readonly ClaySelectOptions _documentOptions = new() { AutoSelectSingle = true, Placeholder = "Выберите документ", DraftKey = "accounting.document" };
+    private readonly ClaySelectOptions _ownerOptions = new() { AdvanceFocusOnSelection = true, Required = true, AutoSelectSingle = true, Placeholder = "Выберите владельца", DraftKey = "accounting.owner" };
+    private readonly ClaySelectOptions _tenantOptions = new() { AdvanceFocusOnSelection = true, AutoSelectSingle = true, Placeholder = "Выберите арендатора", DraftKey = "accounting.tenant" };
+    private readonly ClaySelectOptions _documentOptions = new() { AdvanceFocusOnSelection = true, AutoSelectSingle = true, Placeholder = "Выберите документ", DraftKey = "accounting.document" };
     private readonly ClayTextBoxOptions _inventoryOptions = new() { Required = true, MaxLength = 50, DraftKey = "accounting.inventory-number" };
     private readonly ClayDatePickerOptions _fromOptions = new() { Required = true, DraftKey = "accounting.from" };
     private readonly ClayTextAreaOptions _notesOptions = new() { MaxLength = 255, Lines = 2, DraftKey = "accounting.notes" };
@@ -103,6 +125,9 @@
 
     /// <inheritdoc />
     protected override void OnParametersSet() => ReceiptSource.PersonId = WriteOffSource.PersonId = Value.OwnerId;
+
+    /// <inheritdoc />
+    protected override void OnDraftStateRestored() => OnParametersSet();
 
     /// <inheritdoc />
     protected override void OnAfterRender(bool firstRender) => _ready |= firstRender;

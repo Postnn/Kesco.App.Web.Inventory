@@ -9,7 +9,7 @@
         <ClayToolbar>
             <ClayToolbarButton Options="StartButton" Disabled="@(!CanStart)" OnClick="StartAsync" />
             <ClayToolbarButton Options="StopButton" Disabled="@(_run is null || _stopping)" OnClick="StopAsync" />
-            <ClayToolbarButton Options="CloseButton" Disabled="@_closing" OnClick="CloseAsync" />
+            <ClayToolbarButton Options="CloseButton" Disabled="@(_closing || _initializing)" OnClick="CloseAsync" />
         </ClayToolbar>
     </Toolbar>
     <ChildContent>

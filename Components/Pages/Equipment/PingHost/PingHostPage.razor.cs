@@ -47,6 +47,7 @@ public partial class PingHostPage : IAsyncDisposable
     private bool _initializing;
     private bool _stopping;
     private bool _closing;
+    private bool _draftClosePending;
     private bool _disposed;
     private bool _hasError;
     private bool _scrollPending;
@@ -56,12 +57,12 @@ public partial class PingHostPage : IAsyncDisposable
 
     private bool RetryingCurrentJournal => _journalRetryRevision == _hostRevision;
     private bool CanStart => _interactive && !_initializing && !_stopping && !_closing && !_disposed &&
-        !RetryingCurrentJournal && _run is null && CurrentUser is not null;
+        !_draftClosePending && !RetryingCurrentJournal && _run is null && CurrentUser is not null;
     private bool CanRetryJournal => _journalSaveFailed && CanStart && _registration is not null;
 
     /// <inheritdoc />
     protected override Task OnParametersSetAsync() =>
-        _interactive && _boundHost != Host ? SelectHostAsync(Host) : Task.CompletedTask;
+        _interactive && !_closing && _boundHost != Host ? SelectHostAsync(Host) : Task.CompletedTask;
 
     /// <inheritdoc />
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -106,9 +107,7 @@ public partial class PingHostPage : IAsyncDisposable
             await StopAsync();
             if (_disposed || revision != _hostRevision) return;
 
-            var old = _registration;
-            _registration = null;
-            if (old is not null) await old.DisposeAsync();
+            await CloseJournalAsync(ct);
             if (_disposed || revision != _hostRevision) return;
 
             _lines.Clear();
@@ -132,11 +131,27 @@ public partial class PingHostPage : IAsyncDisposable
             {
                 var key = string.IsNullOrWhiteSpace(host) ? "empty" : host.Trim();
                 if (key.Length > 253) key = "invalid";
-                var registration = await Drafts.RegisterHandleAsync("ping-host", key,
-                    actor.Id.ToString(CultureInfo.InvariantCulture), 1, "." + _formOptions.Class, ct);
-                if (_disposed || revision != _hostRevision)
+                var userKey = actor.Id.ToString(CultureInfo.InvariantCulture);
+                var instance = Guid.NewGuid();
+                bool Current() => !_disposed && revision == _hostRevision && CurrentUser?.Id == actor.Id && !ct.IsCancellationRequested;
+                Task<ClayDraftRegistration> OpenRam(CancellationToken token) => Drafts.RegisterRamHandleAsync(
+                    "ping-host", key, userKey, 1, "." + _formOptions.Class, instance, token);
+                var registration = key.Contains('|') || key.Any(char.IsControl)
+                    ? await OpenRam(ct)
+                    : await Drafts.TransferLegacyAndRegisterRamAsync("ping-host", key, userKey, (evidence, token) =>
+                    {
+                        if (evidence.Count != 0)
+                            throw new InvalidOperationException("В прежнем журнале диагностики найдено неизвестное действие.");
+                        return OpenRam(token);
+                    }, Current, ct);
+                if (_disposed)
                 {
                     await registration.DisposeAsync();
+                    return;
+                }
+                if (revision != _hostRevision)
+                {
+                    await registration.CloseRamAsync(ct);
                     return;
                 }
                 _registration = registration;
@@ -163,7 +178,9 @@ public partial class PingHostPage : IAsyncDisposable
         {
             if (!_disposed && revision == _hostRevision)
             {
-                _status = "Не удалось подготовить диагностику.";
+                _status = _draftClosePending
+                    ? "Не удалось удалить временные данные прежней проверки. Повторите закрытие."
+                    : "Не удалось подготовить диагностику.";
                 _hasError = true;
             }
         }
@@ -272,15 +289,36 @@ public partial class PingHostPage : IAsyncDisposable
 
     private async Task CloseAsync()
     {
-        if (_closing || _disposed) return;
+        if (_closing || _initializing || _disposed) return;
         _closing = true;
         try
         {
             await StopAsync();
+            await CloseJournalAsync(_lifetime.Token);
             await JS.InvokeVoidAsync("clayModelEquipmentForm.close", _lifetime.Token);
         }
-        catch (JSException) { }
+        catch (Exception e) when (e is JSException or InvalidOperationException)
+        {
+            if (_draftClosePending)
+            {
+                _status = "Не удалось удалить временные данные проверки. Повторите закрытие.";
+                _hasError = true;
+            }
+        }
         finally { _closing = false; }
+    }
+
+    private async Task CloseJournalAsync(CancellationToken ct)
+    {
+        if (_registration is not { } registration) return;
+
+        _draftClosePending = true;
+        await registration.CloseRamAsync(ct);
+        if (ReferenceEquals(_registration, registration))
+        {
+            _registration = null;
+            _draftClosePending = false;
+        }
     }
 
     private async Task<Employee?> ReadEmployeeAsync(CancellationToken ct)

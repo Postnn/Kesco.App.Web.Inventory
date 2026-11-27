@@ -4,11 +4,20 @@
 @using Kesco.App.Web.Inventory.Components.Layout
 @using Kesco.App.Web.Inventory.Rules
 
+@using Clayzor.Lib.Web.Controls.Components.Presence
+@inject IDialogService CancellationDialogs
+
 <MudDialog>
     <TitleContent>Тестирование UPS</TitleContent>
     <DialogContent>
         <ClayFormActions Form="InventoryFormHelp.EquipmentUps" />
-        <div class="@DraftOwnerClass" data-draft-scope="@DraftScope">
+        @if ((OwnerCurrent?.Invoke() ?? true) && PresenceTarget is not null)
+        {
+            <ClayPresencePanel Target="PresenceTarget" />
+        }
+        <ClayEditorFocusScope @key="_inputVersion" Label="Тестирование UPS" Ready="@(_selectionInitialized && !RawNotReady && (OwnerCurrent?.Invoke() ?? true))" AdvanceOnEnter="true">
+        @{ var baseline = _openingState; }
+        <div class="@DraftOwnerClass" data-draft-scope="@DraftScope" inert="@_cancelPending">
         @if (!string.IsNullOrWhiteSpace(_error))
         {
             <MudAlert Severity="Severity.Error">@_error</MudAlert>
@@ -16,13 +25,19 @@
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Дата и время:</span>
             <div class="equipment-ins-date">
-                <ClayDatePicker @bind-Value="Date" Options="_dateOptions" />
-                <ClayTime @bind-Value="Time" Options="_timeOptions" />
+                <ClayFieldChange Changed="@(baseline is not null && Date?.Date != baseline.Date?.Date)" RawBaseline="@(baseline is null ? null : (baseline.Date?.ToString(_dateOptions.DateFormat) ?? string.Empty))">
+                    <ClayDatePicker @bind-Value="Date" Options="_dateOptions" />
+                </ClayFieldChange>
+                <ClayFieldChange Changed="@(baseline is not null && Time != baseline.Time)" RawBaseline="@(baseline is null ? null : (baseline.Time is { } time ? DateTime.Today.Add(time).ToString(_timeOptions.TimeFormat) : string.Empty))">
+                    <ClayTime @bind-Value="Time" Options="_timeOptions" />
+                </ClayFieldChange>
             </div>
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Время батарей:</span>
-            <ClayNumber Value="@((decimal?)Value.BatteryTime)" ValueChanged="value => Value.BatteryTime = (int)(value ?? 0)" Options="_batteryOptions" />
+            <ClayFieldChange Changed="@(baseline is not null && Value.BatteryTime != baseline.BatteryTime)" RawBaseline="@(baseline is null ? null : (baseline.BatteryTime.ToString(System.Globalization.CultureInfo.CurrentCulture)))">
+                <ClayNumber Value="@((decimal?)Value.BatteryTime)" ValueChanged="value => Value.BatteryTime = (int)(value ?? 0)" Options="_batteryOptions" />
+            </ClayFieldChange>
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Серверы:</span>
@@ -39,20 +54,25 @@
                         <ClayColumn TEntity="UpsTestServerSelectionItem" ColumnId="1" TextSelector="@(item => item.Name)" />
                     </Columns>
                     <RowActions Context="item">
-                        <ClayCheckbox State="item.IsChecked" ReadOnly="@(!item.IsRecognized)" OnToggle="() => ToggleServer(item)" Label="Получил уведомление" />
+                        <ClayFieldChange Changed="@(item.IsRecognized && IsServerSelectionChanged(item))">
+                            <ClayCheckbox State="item.IsChecked" ReadOnly="@(!item.IsRecognized)" OnToggle="() => ToggleServer(item)" Label="Получил уведомление" />
+                        </ClayFieldChange>
                     </RowActions>
                 </ClayGrid>
             </div>
         </div>
         <div class="equipment-ins-row">
             <span class="equipment-ins-label">Ошибки:</span>
-            <ClayTextArea @bind-Value="Value.Issues" Options="_issuesOptions" />
+            <ClayFieldChange Changed="@(baseline is not null && (Value.Issues ?? string.Empty) != (baseline.Issues ?? string.Empty))" RawBaseline="@(baseline is null ? null : (baseline.Issues ?? string.Empty))">
+                <ClayTextArea @bind-Value="Value.Issues" Options="_issuesOptions" />
+            </ClayFieldChange>
         </div>
         </div>
+        </ClayEditorFocusScope>
     </DialogContent>
     <DialogActions>
-        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="Cancel" />
-        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@RawNotReady" />
+        <ClayToolbarButton Options="_cancelButtonOptions" OnClick="CancelAsync" Disabled="@_cancelPending" />
+        <ClayToolbarButton Options="_okButtonOptions" OnClick="Apply" Disabled="@(RawNotReady || _cancelPending)" />
     </DialogActions>
 </MudDialog>
 
@@ -87,6 +107,9 @@
     /// <summary>Стабильная raw-область вложенного теста.</summary>
     [Parameter] public string? DraftScope { get; set; }
 
+    /// <summary>Серверная проверка присутствия для сохранённого теста ИБП.</summary>
+    [Parameter] public ClayPresenceTarget? PresenceTarget { get; set; }
+
     /// <summary>Класс зарегистрированного DOM-владельца.</summary>
     [Parameter] public string? DraftOwnerClass { get; set; }
 
@@ -98,6 +121,9 @@
 
     /// <summary>Восстанавливает raw ввод после готовности DOM.</summary>
     [Parameter] public Func<Task<bool>>? RestoreRaw { get; set; }
+
+    /// <summary>Проверяет актуальность открывшего этот тест редактора UPS.</summary>
+    [Parameter] public Func<bool>? OwnerCurrent { get; set; }
 
     /// <summary>Проверяет готовность ввода перед принятием.</summary>
     [Parameter] public Func<Task<bool>>? CanAcceptDraft { get; set; }
@@ -132,12 +158,106 @@
         _selectedServers.AddRange(UpsTestServerSelection.ParseSelected(
             Value.Servers, UpsTestServerSelection.AvailableNames(AvailableServers)));
         _selectionInitialized = true;
+        if (Original is { } original)
+            _openingState = new(original, original.TestedAt.Date, original.TestedAt.TimeOfDay,
+                original.BatteryTime, original.Servers, original.Issues);
+    }
+
+    private bool IsServerSelectionChanged(UpsTestServerSelectionItem row)
+    {
+        if (_openingState is not { } baseline)
+            return false;
+        var selected = UpsTestServerSelection.ParseSelected(baseline.Servers, UpsTestServerSelection.AvailableNames(AvailableServers));
+        var original = UpsTestServerSelection.BuildRows(selected, AvailableServers);
+        return original.Any(item => item.EquipmentId == row.EquipmentId && item.IsChecked) != row.IsChecked;
     }
 
     private void ToggleServer(UpsTestServerSelectionItem item) =>
         UpsTestServerSelection.Toggle(_selectedServers, item);
 
-    private void Cancel() => Dialog.Cancel();
+    /// <summary>Контекст безопасной отмены текущего теста.</summary>
+    [Parameter] public EquipmentUpsTestCancellation? ScopedCancellation { get; set; }
+    internal static object ScopedCloseResult { get; } = new();
+    private bool _cancelPending;
+    private int _inputVersion;
+    private EquipmentUpsTestDraft? _openingState;
+
+    private EquipmentUpsTestDraft CaptureDraft() => new(Original!, Date, Time, Value.BatteryTime,
+        UpsTestServerSelection.Format(_selectedServers), Value.Issues);
+
+    private async Task CancelAsync()
+    {
+        if (_cancelPending || _restoringRaw || OwnerCurrent?.Invoke() == false)
+            return;
+        if (ScopedCancellation is not { } cancellation || Original is null)
+        {
+            Dialog.Cancel();
+            return;
+        }
+
+        _cancelPending = true;
+        try
+        {
+            var visible = CaptureDraft();
+            bool Current() => OwnerCurrent?.Invoke() != false && visible == CaptureDraft();
+            var scope = await cancellation.ReadScope();
+            if (!Current() || scope is null || scope.HasOperation)
+                return;
+
+            var choice = ClayEditorCancelChoice.CloseWithoutSaving;
+            if (scope.HasRaw || visible != _openingState)
+            {
+                var parameters = new DialogParameters<ClayEditorCancelDialog>();
+                if (Original.Id == 0)
+                    parameters.Add(dialog => dialog.ResetText, "Отменить мои изменения и начать заново");
+                var question = await CancellationDialogs.ShowAsync<ClayEditorCancelDialog>("Отмена изменений", parameters);
+                var result = await question.Result;
+                if (!Current() || result is not { Canceled: false, Data: ClayEditorCancelChoice selected } ||
+                    selected == ClayEditorCancelChoice.Continue)
+                    return;
+                choice = selected;
+            }
+
+            var replacement = choice == ClayEditorCancelChoice.ResetAndStay ? await cancellation.ReadFresh() : null;
+            if (choice == ClayEditorCancelChoice.ResetAndStay && replacement is null)
+            {
+                if (Current()) _error = "Не удалось прочитать актуальный тест UPS. Ввод сохранён.";
+                return;
+            }
+            if (!Current() || !await cancellation.Replace(scope.Revision, replacement, Current))
+            {
+                if (OwnerCurrent?.Invoke() != false) _error = "Ввод теста изменился. Повторите действие.";
+                return;
+            }
+            if (OwnerCurrent?.Invoke() == false) return;
+            if (replacement is null)
+            {
+                Dialog.Close(DialogResult.Ok(ScopedCloseResult));
+                return;
+            }
+
+            Original = replacement.Original;
+            Date = replacement.Date;
+            Time = replacement.Time;
+            Value.BatteryTime = replacement.BatteryTime;
+            Value.Servers = replacement.Servers;
+            Value.Issues = replacement.Issues;
+            _selectedServers.Clear();
+            _selectedServers.AddRange(UpsTestServerSelection.ParseSelected(
+                Value.Servers, UpsTestServerSelection.AvailableNames(AvailableServers)));
+            _openingState = _lastPublishedDraft = CaptureDraft();
+            _restoreAttempted = true;
+            _restorePending = false;
+            _inputVersion++;
+            _error = null;
+        }
+        catch (Exception error) when (error is InvalidOperationException or Microsoft.JSInterop.JSException or
+            OperationCanceledException or System.Data.Common.DbException or UnauthorizedAccessException or TimeoutException)
+        {
+            if (OwnerCurrent?.Invoke() != false) _error = "Не удалось завершить отмену. Ввод сохранён.";
+        }
+        finally { _cancelPending = false; }
+    }
 
     /// <inheritdoc />
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -148,7 +268,7 @@
             if (_restorePending)
                 await RetryRawAsync();
         }
-        if (PublishDraft is null || Original is null)
+        if (_cancelPending || PublishDraft is null || Original is null)
             return;
 
         var state = new EquipmentUpsTestDraft(Original, Date, Time, Value.BatteryTime,

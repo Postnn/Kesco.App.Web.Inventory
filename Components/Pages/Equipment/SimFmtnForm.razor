@@ -1,3 +1,4 @@
+@using Clayzor.Lib.Web.Controls.Components.Presence
 @page "/Equipment/SIM_FMTN"
 @page "/Equipment/SIM_FMTN.aspx"
 @layout Kesco.App.Web.Inventory.Components.Layout.EntityFormLayout
@@ -11,7 +12,7 @@
 <ClayEntityForm Options="@(new ClayEntityFormOptions { Class = DraftRootClass })">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="OkButton" Disabled="@(ChangingIdentity || StorageBlocked || Busy || Loading || Draft is null || (Dirty && !CanCommit))" OnClick="SaveAsync" />
+            <ClayToolbarButton Options="OkButton" Disabled="@(ChangingIdentity || StorageBlocked || _serverPending || Busy || Loading || Draft is null || (Dirty && !CanCommit))" OnClick="SaveAsync" />
             <ClayToolbarButton Options="ReloadButton" Disabled="@(!CanRefresh)" OnClick="RefreshAsync" />
             <ClayToolbarButton Options="CancelButton" Disabled="@Busy" OnClick="CancelAsync" />
             @if (CanDelete)
@@ -32,14 +33,30 @@
         }
         @if (Draft is { } draft)
         {
-            <div @ref="_fields" class="d-flex flex-column gap-2" data-draft-scope="main" inert="@(DraftInputSuppressed || ChangingIdentity || StorageBlocked)">
-                <ClayTextBox Options="_prefix" Value="@draft.Prefix" ValueChanged="@(value => UpdateDraftAsync(Draft! with { Prefix = value ?? "" }))" />
-                <ClayTextBox Options="_shortNumber" Value="@draft.ShortNumber" ValueChanged="@(value => UpdateDraftAsync(Draft! with { ShortNumber = value ?? "" }))" />
-                <ClayTextBox Options="_description" Value="@draft.Description" ValueChanged="@(value => UpdateDraftAsync(Draft! with { Description = value ?? "" }))" />
-            </div>
+            var baseline = AcceptedDraftBaseline;
+            <ClayEditorFocusScope @key="RouteKey" Label="Поля FMTN" Ready="@(Editable && CanCommit && !ChangingIdentity && !_serverPending)" AdvanceOnEnter="true">
+                <div class="d-flex flex-column gap-2" data-draft-scope="main" inert="@(DraftInputSuppressed || ChangingIdentity || StorageBlocked)">
+                    <ClayFieldChange Changed="@(Editable && !_prefix.ReadOnly && !_prefix.Disabled && baseline is not null && draft.Prefix != baseline.Prefix)"
+                                     RawBaseline="@(Editable && baseline is not null ? baseline.Prefix ?? string.Empty : null)">
+                        <ClayTextBox Options="_prefix" Value="@draft.Prefix" ValueChanged="@(value => UpdateDraftAsync(Draft! with { Prefix = value ?? "" }))" />
+                    </ClayFieldChange>
+                    <ClayFieldChange Changed="@(Editable && !_shortNumber.ReadOnly && !_shortNumber.Disabled && baseline is not null && draft.ShortNumber != baseline.ShortNumber)"
+                                     RawBaseline="@(Editable && baseline is not null ? baseline.ShortNumber ?? string.Empty : null)">
+                        <ClayTextBox Options="_shortNumber" Value="@draft.ShortNumber" ValueChanged="@(value => UpdateDraftAsync(Draft! with { ShortNumber = value ?? "" }))" />
+                    </ClayFieldChange>
+                    <ClayFieldChange Changed="@(Editable && !_description.ReadOnly && !_description.Disabled && baseline is not null && draft.Description != baseline.Description)"
+                                     RawBaseline="@(Editable && baseline is not null ? baseline.Description ?? string.Empty : null)">
+                        <ClayTextBox Options="_description" Value="@draft.Description" ValueChanged="@(value => UpdateDraftAsync(Draft! with { Description = value ?? "" }))" />
+                    </ClayFieldChange>
+                </div>
+            </ClayEditorFocusScope>
         }
     </ChildContent>
     <Footer>
+        @if (GetPresenceTarget() is { } presenceTarget)
+        {
+            <ClayPresencePanel Target="presenceTarget" />
+        }
         @if (_original is { } original)
         {
             <ClayChanged ChangedById="@original.ChangedBy" ChangedByName="@original.ChangedByName" ChangedAt="@original.ChangedAt" />

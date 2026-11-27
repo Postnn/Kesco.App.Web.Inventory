@@ -2,6 +2,7 @@ using Clayzor.Lib.DALC;
 using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Web.Controls.Components;
 using Clayzor.Lib.Web.Controls.Components.Form;
+using Clayzor.Lib.Web.Controls.Components.Presence;
 using Clayzor.Lib.Web.Controls.Components.Select;
 using Clayzor.Lib.Web.Controls.Services;
 using Microsoft.AspNetCore.Components;
@@ -16,14 +17,15 @@ public partial class Net : IAsyncDisposable
 {
     private readonly CancellationTokenSource _pageCts = new();
     private readonly ClayEntityFormOptions _entityFormOptions = new() { Class = "net-form", MaxWidth = "100%" };
-    private readonly ClaySelectOptions _socketOptions = new() { AutoSelectSingle = true, DraftKey = "net.socket" };
-    private readonly ClaySelectOptions _employeeOptions = new() { AutoSelectSingle = true, DraftKey = "net.employee" };
+    private readonly ClaySelectOptions _socketOptions = new() { AutoSelectSingle = true, DraftKey = "net.socket", AdvanceFocusOnSelection = true };
+    private readonly ClaySelectOptions _employeeOptions = new() { AutoSelectSingle = true, DraftKey = "net.employee", AdvanceFocusOnSelection = true };
     private readonly ClaySelectOptions _customerOptions = new()
     {
         AutoSelectSingle = true,
         Required = true,
         RequiredError = "Не выбран заказчик.",
         DraftKey = "net.customer",
+        AdvanceFocusOnSelection = true,
     };
     private readonly ClayTextAreaOptions _connectedOptions = new() { Lines = 4, DraftKey = "net.connected" };
     private readonly ClayTextAreaOptions _descriptionOptions = new() { Lines = 4, DraftKey = "net.description" };
@@ -109,6 +111,44 @@ public partial class Net : IAsyncDisposable
     private string PortCaption => $"{_equipmentNetworkName}_{_model?.Port}";
     private string? _equipmentNetworkName;
     private bool IsModified => _loaded && _model is not null && _originalSnapshot != Snapshot(_model);
+    private (int PortId, int EmployeeId, ClayPresenceTarget Target)? _netPresence;
+
+    private ClayPresenceTarget? GetPresenceTarget()
+    {
+        if (!_loaded || _model is not { Id: > 0 } port || port.Id != Id ||
+            CurrentUser is not { Id: > 0 } employee || _disposed || _netDraftClosed)
+            return null;
+
+        var id = port.Id;
+        var employeeId = employee.Id;
+        if (_netPresence is { } previous && previous.PortId == id && previous.EmployeeId == employeeId)
+            return previous.Target;
+
+        var connectionString = Db.ConnectionString;
+        var target = new ClayPresenceTarget(ClayPresenceKey.Create("inventory", "network-port", id), async (principal, ct) =>
+        {
+            var version = _loadVersion;
+            bool Current() => IsCurrent(version, id) && _loaded && _model?.Id == id &&
+                CurrentUser?.Id == employeeId && !_netDraftClosed;
+            if (!Current() || principal.Identity is not { IsAuthenticated: true, Name: { Length: > 0 } login })
+                return null;
+
+            using var db = new DbManager(connectionString);
+            var actor = await Employee.GetCurrentAsync(db, login, ct);
+            if (!Current() || actor?.Id != employeeId)
+                return null;
+            if ((await LocalNetworkPort.GetAsync(db, id, ct))?.Id != id || !Current())
+                return null;
+
+            return new(actor.Id, actor.Name, NetFocusReady ? ClayPresenceActivity.Editing : ClayPresenceActivity.Viewing);
+        });
+        _netPresence = (id, employeeId, target);
+        return target;
+    }
+
+    private bool NetFocusReady => _loaded && _model?.Id == Id && CurrentUser is not null && !_loading && !_saving && !_poeRunning &&
+        !_cancellingInput && !_netDraftClosed && !RequiresReconciliation && !OperationBlocked && !InputBlocked;
+
     private bool CanSave => IsModified && CurrentUser is not null && !_loading && !_saving && !_poeRunning && !RequiresReconciliation && !OperationBlocked && !InputBlocked;
     private bool ShowSwitch => _exchangeWithId is not > 0;
     private bool ShowExchange => _switchToId is not > 0;
@@ -131,8 +171,6 @@ public partial class Net : IAsyncDisposable
             await LoadCurrentAsync(Id);
             return;
         }
-        if (_readOnlyRecovery is { RestoreRaw: true } recovery)
-            await RestoreReadOnlyNetRawAsync(recovery);
         await TrackNetInputAsync();
     }
 
@@ -145,6 +183,8 @@ public partial class Net : IAsyncDisposable
         if (submitted is null)
         {
             retired = _operationContext;
+            _pendingNetClose = null;
+            _netDraftClosed = false;
             _operationContext = null;
             _operationNotice = null;
             _observedOutcome = null;
@@ -171,7 +211,6 @@ public partial class Net : IAsyncDisposable
         try
         {
             await RetireOperationContextAsync(retired);
-            if (submitted is null && IsCurrent(version, id)) await ResetReadOnlyRecoveryAsync();
             await LoadDataAsync(id, version, submitted, resolution);
         }
         catch (OperationCanceledException) when (_disposed || version != _loadVersion)
@@ -235,10 +274,7 @@ public partial class Net : IAsyncDisposable
         catch (Microsoft.Data.SqlClient.SqlException error) when (error.Number == 229 && acceptReset is null && submitted is null && currentUser is not null)
         {
             if (IsCurrent(version, id))
-            {
                 _loadError = "Нет доступа к записи порта локальной сети.";
-                await LoadReadOnlyRecoveryAsync(id, version, currentUser);
-            }
             return;
         }
         if (!IsCurrent(version, id))
@@ -249,8 +285,6 @@ public partial class Net : IAsyncDisposable
             if (submitted is null)
             {
                 _notFound = true;
-                if (currentUser is not null)
-                    await LoadReadOnlyRecoveryAsync(id, version, currentUser);
             }
             else
             {
@@ -302,7 +336,7 @@ public partial class Net : IAsyncDisposable
 
         if (acceptReset is null && submitted is null && currentUser is not null)
         {
-            await InitializeOperationContextAsync(port, currentUser, version);
+            await InitializeOperationContextAsync(port, currentUser, principal, version);
             if (!IsCurrent(version, id))
                 return;
         }
@@ -482,9 +516,9 @@ public partial class Net : IAsyncDisposable
 
             if (!await DispatchOperationAsync(model, version, currentUser, SaveOperationKind,
                     DescribeSaveIntent(model, expectedChangedAt, submitted),
-                    () => LocalNetworkPort.SaveAsync(Db, command, expectedChangedAt,
+                    attemptId => LocalNetworkPort.SaveAsync(Db, _windowsPrincipal, currentUser.Id, command, expectedChangedAt, attemptId,
                         submitted.SwitchToId is > 0 ? submitted.SwitchToId : null,
-                        submitted.ExchangeWithId is > 0 ? submitted.ExchangeWithId : null), submitted) ||
+                        submitted.ExchangeWithId is > 0 ? submitted.ExchangeWithId : null, _pageCts.Token), submitted) ||
                 !IsCurrentSave(model, version))
                 return;
 
@@ -505,13 +539,23 @@ public partial class Net : IAsyncDisposable
 
             if (!closeAfterSave || !IsCurrentSave(model, version))
                 return;
-            if (!OperationBlocked && _operationContext is { } context && !await HasLateRawAsync(context) &&
-                IsCurrentSave(model, version) && Snapshot(model) == submitted)
+            if (!OperationBlocked && _operationContext is { } context)
             {
-                AcceptWithoutReload(submitted, null);
-                await CloseAsync();
+                var scope = await ReadNetCloseScopeAsync(context);
+                if (scope is { HasRaw: false, HasOperation: false } &&
+                    IsCurrentSave(model, version) && Snapshot(model) == submitted)
+                {
+                    if (await CloseNetDraftAsync(context, scope.Revision, _pageCts.Token))
+                    {
+                        AcceptWithoutReload(submitted, null);
+                        await CloseAsync();
+                        return;
+                    }
+                    if (_pendingNetClose is not null)
+                        return;
+                }
             }
-            else if (IsCurrentSave(model, version))
+            if (IsCurrentSave(model, version))
             {
                 await LoadAsync(model.Id, version, submitted);
             }
@@ -565,7 +609,8 @@ public partial class Net : IAsyncDisposable
                 throw new UnauthorizedAccessException("Не удалось подтвердить текущего пользователя. Перезапуск PoE запрещён.");
             await DispatchOperationAsync(model, version, currentUser, PoeOperationKind,
                 model.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                () => LocalNetworkPort.ResetPoeAsync(Db, model.Id));
+                attemptId => LocalNetworkPort.ResetPoeJournaledAsync(Db, _windowsPrincipal, currentUser.Id,
+                    model.Id, attemptId, _pageCts.Token));
         }
         catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or UnauthorizedAccessException)
         {
@@ -738,7 +783,6 @@ public partial class Net : IAsyncDisposable
         _employeeVersion++;
         _socketVersion++;
         _pageCts.Cancel();
-        await ResetReadOnlyRecoveryAsync();
         _pageCts.Dispose();
         var context = _operationContext;
         _operationContext = null;

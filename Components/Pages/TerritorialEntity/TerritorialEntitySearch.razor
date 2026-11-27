@@ -4,6 +4,7 @@
 @using Kesco.App.Web.Inventory.Components.Layout
 
 <PageTitle>Территории и телефонные коды</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@(_moving || _moveClosing)" OnBeforeInternalNavigation="BeforeMoveNavigationAsync" />
 
 <div class="territorial-search-page">
 <span hidden data-territory-move-owner="@_registrationId"></span>
@@ -32,13 +33,21 @@
 }
 else if (_pendingMove is not null)
 {
-    <MudAlert Severity="Severity.Warning">Результат переноса не подтверждён. <MudButton Disabled="@_moving" OnClick="CompareMoveAsync">Сверить родителя</MudButton>
+    <MudAlert Severity="Severity.Warning">Результат переноса не подтверждён. <MudButton Disabled="@(_moving || _moveClosing || _moveCloseRevision is not null)" OnClick="CompareMoveAsync">Сверить родителя</MudButton>
         @if (_moveComparison is not null) { <div>@_moveComparison</div> }
     </MudAlert>
 }
 else if (_moveJournalEnabled && !_moveJournalReady && !_legacyMoveBlocked)
 {
     <MudAlert Severity="Severity.Warning">Перенос пока недоступен.</MudAlert>
+}
+@if (_latestOwnMove is { } outcome && _pendingMove is null)
+{
+    <MudAlert Severity="Severity.Info" Class="mb-2" data-testid="latest-move-outcome">@DescribeMoveOutcome(outcome)</MudAlert>
+}
+else if (_moveOutcomeReadFailed)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-2">Не удалось прочитать результат переноса. Обновите дерево для повторной проверки.</MudAlert>
 }
 @if (_treeOptions is not null && _source is not null)
 {

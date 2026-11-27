@@ -79,6 +79,7 @@ public partial class PhoneTemplateForm : IDisposable, IAsyncDisposable
             return;
         }
         _loadedId = Id;
+        CancelTemplateConflictReview();
         await ReleaseTemplateEditorWatcherAsync();
         await ReleaseTemplateJournalAsync();
         await LoadCurrentAsync();
@@ -93,6 +94,7 @@ public partial class PhoneTemplateForm : IDisposable, IAsyncDisposable
         CurrentUser = null;
         _errorMessage = null;
         _templateInputDiscarded = false;
+        _templateConflictNeedsReview = false;
         ClearTemplateAttribute();
         _templateAttributeTypes = [];
         _model = null;
@@ -185,8 +187,9 @@ public partial class PhoneTemplateForm : IDisposable, IAsyncDisposable
             if (!IsCurrentSave(model, version))
                 return;
             var command = new EquipmentModel { Id = model.Id, PhoneTemplate = submitted };
+            var attemptId = Guid.NewGuid();
             var boundary = new EquipmentModelWriteBoundary(
-                ct => BeginTemplateWriteAsync(journal, model, baseline, submitted, version, ct),
+                ct => BeginTemplateWriteAsync(journal, model, baseline, submitted, attemptId, version, ct),
                 () =>
                 {
                     if (!IsCurrentSave(model, version) || model.PhoneTemplate != submitted ||
@@ -194,10 +197,11 @@ public partial class PhoneTemplateForm : IDisposable, IAsyncDisposable
                         throw new InvalidOperationException("Ввод или контекст изменился. Запись не отправлена.");
                     dispatched = true;
                 }, () => noEffect = true);
-            await command.SavePhoneTemplateAsync(Db, principal, actor.Id, baseline, _pageCts.Token, boundary);
+            await command.SaveJournaledPhoneTemplateAsync(Db, principal, actor.Id, baseline, attemptId, boundary, _pageCts.Token);
             if (!IsCurrentSave(model, version))
                 return;
 
+            _templateConflictNeedsReview = false;
             _knownWrite = true;
             _confirmedStored = false;
             _submittedTemplate = submitted;
@@ -213,9 +217,17 @@ public partial class PhoneTemplateForm : IDisposable, IAsyncDisposable
         {
             if (!IsCurrentSave(model, version))
                 return;
+            if (ex is InventoryOperationPendingException) _serverWritePending = true;
             if (!_knownWrite)
                 await RecordTemplateFailureAsync(journal, dispatched, noEffect);
+            if (!IsCurrentSave(model, version) || !ReferenceEquals(_templateJournal, journal))
+                return;
             ShowTemplateJournalState();
+            if (dispatched && noEffect && ex is EquipmentModel.PhoneTemplateWriteRejectedException { BaselineConflict: true })
+            {
+                _templateConflictNeedsReview = true;
+                _inputNotice = "Сверьте исходную версию через «Обновить». Ваш текст оставлен в редакторе.";
+            }
             if (noEffect || ex is UnauthorizedAccessException)
                 _errorMessage = ex.Message;
             else if (!_knownWrite && !dispatched && _notSentAttempt is null)
