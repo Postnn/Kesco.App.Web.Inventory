@@ -659,6 +659,7 @@
     flex-direction: column;
     min-height: 0;
     overflow: hidden;
+    padding: 0 5px 5px !important;
 }
 
 .mud-main-content:has(.inventory-list-page) > .inventory-main-menu {
