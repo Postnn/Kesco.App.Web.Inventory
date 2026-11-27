@@ -24,8 +24,7 @@ public partial class DutyEditor
     private bool _keepPlannedEditorDuringExit;
     private int _inputViewRevision;
 
-    private bool ConfirmDutyExternalExit => _busy || DutyExitHasInput || _confirmedRevision is not null ||
-        _notSentAttemptId is not null || _closingDraft;
+    private bool ConfirmDutyExternalExit => _busy || DutyExitHasInput || _closingDraft;
 
     private bool DutyExitHasInput => _saveCloseNeedsConfirmation || Dirty || _restoreRaw || _retryRaw || _rawRecoveryPending;
 
@@ -64,7 +63,7 @@ public partial class DutyEditor
         if (_loading) return _registration is null && !Dirty;
         if (_registration is not { } registration)
             return _inputClosed || !DutyExitHasInput;
-        if (_closingDraft || _unknown || _notSentAttemptId is not null || !HasWriteAccess && !_saveCloseNeedsConfirmation)
+        if (_closingDraft || !HasWriteAccess && !_saveCloseNeedsConfirmation)
             return await CloseDutyDraftAsync(registration, token);
         if (CurrentUser is not { } owner)
             return false;
@@ -83,7 +82,6 @@ public partial class DutyEditor
         {
             var scope = await registration.ReadEditorScopeAsync(Scope, token);
             if (!Current()) return false;
-            if (scope.HasOperation && !_saveCloseNeedsConfirmation) return await CloseDutyDraftAsync(registration, token);
             if (!DutyExitHasInput && !scope.HasRaw) return await CloseDutyDraftAsync(registration, token);
 
             var parameters = new DialogParameters<ClayEditorCancelDialog>();
@@ -104,7 +102,7 @@ public partial class DutyEditor
 
             if (choice == ClayEditorCancelChoice.CloseWithoutSaving)
                 return await CloseDutyDraftAsync(registration, token);
-            if (_completed || scope.HasOperation)
+            if (_completed)
             {
                 _message = "Сохранение уже завершено. Для выхода закройте окно.";
                 return false;

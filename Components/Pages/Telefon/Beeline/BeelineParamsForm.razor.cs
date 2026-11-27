@@ -69,26 +69,6 @@ public partial class BeelineParamsForm
 
     private bool CanRetryRecovery => ShowRecovery && !Busy && !_retryingRecovery && !ConfirmedCleanupPending;
 
-    private InventoryOperationReceipt? _serverReceipt;
-    private bool _serverJournalUnavailable;
-    private bool _serverHasPending;
-    private bool _checkingServerJournal;
-
-    private bool ServerJournalBlocked => _serverJournalUnavailable || _checkingServerJournal || _serverHasPending ||
-        _serverReceipt is { State: InventoryOperationState.Reserved or InventoryOperationState.Dispatching or InventoryOperationState.Unknown };
-
-    private string? ServerJournalMessage => _serverJournalUnavailable
-        ? "Не удалось прочитать журнал операций. Сохранение недоступно."
-        : _serverHasPending ? "Исход предыдущей операции не подтверждён. Повторная запись заблокирована."
-        : _serverReceipt?.State switch
-        {
-            InventoryOperationState.Reserved or InventoryOperationState.Dispatching or InventoryOperationState.Unknown =>
-                "Исход предыдущей операции не подтверждён. Повторная запись заблокирована.",
-            InventoryOperationState.Confirmed => $"Сервер подтвердил запись параметров договора. Попытка {_serverReceipt.AttemptId:N}.",
-            InventoryOperationState.Rejected => $"Сервер подтвердил отказ в записи. Попытка {_serverReceipt.AttemptId:N}.",
-            _ => null,
-        };
-
     private (string Route, string Number, int EmployeeId, ClayPresenceTarget Target)? _presence;
 
     private ClayPresenceTarget? GetPresenceTarget()
@@ -126,7 +106,7 @@ public partial class BeelineParamsForm
                         return null;
 
                     return new(actor.Id, actor.Name,
-                        fresh.CanUpdate && Editable && !ServerJournalBlocked
+                        fresh.CanUpdate && Editable
                             ? ClayPresenceActivity.Editing
                             : ClayPresenceActivity.Viewing);
                 }
@@ -139,7 +119,7 @@ public partial class BeelineParamsForm
         return target;
     }
 
-    private bool CanSave => !_openingSim && !ServerJournalBlocked && CanCommit && Editable && Dirty;
+    private bool CanSave => !_openingSim && CanCommit && Editable && Dirty;
     private IEnumerable<string> ZoneChoices => Draft?.TimeZone is { Length: > 0 } zone && !_zones.Contains(zone, StringComparer.Ordinal)
         ? _zones.Append(zone) : _zones;
 
@@ -215,10 +195,6 @@ public partial class BeelineParamsForm
     protected override async Task<BeelineDraft?> LoadCardAsync(CancellationToken routeToken)
     {
         _contract = null;
-        _serverReceipt = null;
-        _serverHasPending = false;
-        _serverJournalUnavailable = false;
-        _checkingServerJournal = false;
         _freshReadFailure = null;
         _freshRecovery = null;
         _submittedRecovery = null;
@@ -248,7 +224,6 @@ public partial class BeelineParamsForm
             _contract = contract;
             _canUpdate = result.CanUpdate;
             UpdateOptions();
-            await ReadServerReceiptAsync(contract.Number, CurrentUser!.Id, routeToken);
             routeToken.ThrowIfCancellationRequested();
             if (!_canUpdate)
                 Message = "Договор открыт для просмотра. Изменение параметров недоступно.";
@@ -272,40 +247,6 @@ public partial class BeelineParamsForm
         return new(result.Contract is { } contract ? DraftFrom(contract) : null);
     }
 
-    /// <inheritdoc />
-    protected override async Task<InventoryOperationReceipt?> ReadVerifiedReceiptAsync(
-        string kind, Guid attemptId, BeelineDraft? original, BeelineDraft proposed, Employee actor, CancellationToken token)
-    {
-        var number = _contract?.Number ?? Id;
-        if (kind != "beeline.update" || !BeelineRules.ValidNumber(number))
-            return null;
-
-        return await BeelineData.ReadVerifiedReceiptAsync(Db, await ReadPrincipalAsync(), actor.Id, number!, attemptId, token);
-    }
-
-    /// <inheritdoc />
-    protected override async Task ImportLegacyEvidenceAsync(Employee actor, string entityKey,
-        IReadOnlyList<ClayLegacyDraftOperationEvidence> evidence, CancellationToken token)
-    {
-        if (evidence.Count == 0)
-            return;
-        if (_contract?.Number != entityKey)
-            throw new InvalidOperationException("Не удалось подтвердить договор для сверки прежней операции.");
-
-        var attempts = new List<Guid>(evidence.Count);
-        foreach (var item in evidence)
-        {
-            if (item.Kind != "beeline.update" || item.Data != entityKey ||
-                !Guid.TryParseExact(item.AttemptId, "N", out var attemptId) || attemptId == Guid.Empty)
-                throw new InvalidOperationException("Прежняя операция не соответствует текущему договору.");
-            attempts.Add(attemptId);
-        }
-
-        await BeelineData.ImportLegacyAsync(Db, await ReadPrincipalAsync(), actor.Id, entityKey, attempts, token);
-        token.ThrowIfCancellationRequested();
-        await ReadServerReceiptAsync(entityKey, actor.Id, token);
-    }
-
     private string[] ReadConfiguredZones() => Config.GetSection("BeelineTimeZones").GetChildren()
         .Select(entry => entry.Value).OfType<string>().Where(zone => !string.IsNullOrWhiteSpace(zone))
         .Distinct(StringComparer.Ordinal).OrderByDescending(zone => zone, StringComparer.Ordinal).ToArray();
@@ -313,65 +254,12 @@ public partial class BeelineParamsForm
     private Task CancelBeelineAsync() => Busy || Loading || _openingSim || _retryingRecovery
         ? Task.CompletedTask
         : CancelAsync();
-    private async Task ShowSubmittedRecoveryAsync()
-    {
-        if (!ShowRecovery || Busy) return;
-        var generation = EditorGeneration;
-        var key = RouteKey;
-        var identity = SubmittedSnapshotIdentity;
-        _submittedRecovery = null;
-        _submittedUnavailable = false;
-        var snapshot = await ReadOwnSubmittedSnapshotAsync<BeelineDraft>((kind, value) =>
-            kind == "beeline.update" && BeelineRules.Validate(value, ReadConfiguredZones()).Count == 0 ? new BeelineDraft(value.TimeZone, value.EmailManager) : null);
-        if (generation != EditorGeneration || RouteKey != key || !ShowRecovery) return;
-        _submittedIdentity = identity;
-        _submittedRecovery = snapshot;
-        _submittedUnavailable = snapshot is null;
-    }
-
     private async Task RefreshBeelineAsync()
     {
-        if (Busy || Loading || _checkingServerJournal)
-            return;
-        if (_contract is { } contract && CurrentUser is { } actor)
-        {
-            var generation = EditorGeneration;
-            await ReadServerReceiptAsync(contract.Number, actor.Id, Lifetime);
-            if (generation != EditorGeneration || ServerJournalBlocked && SubmittedSnapshotIdentity is null)
-                return;
-        }
-
         if (CanRefresh)
             await RefreshAsync();
         else
             await RetryRecoveryReadAsync();
-    }
-
-    private async Task ReadServerReceiptAsync(string number, int employeeId, CancellationToken token)
-    {
-        var generation = EditorGeneration;
-        _checkingServerJournal = true;
-        try
-        {
-            var principal = await ReadPrincipalAsync();
-            var result = await BeelineData.ReadReceiptAsync(Db, principal, employeeId, number, token);
-            if (generation != EditorGeneration || token.IsCancellationRequested)
-                return;
-            _serverReceipt = result.Receipt;
-            _serverHasPending = result.HasPending;
-            _serverJournalUnavailable = false;
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception e) when (e is SqlException or TimeoutException or UnauthorizedAccessException or InvalidOperationException)
-        {
-            if (generation == EditorGeneration && !token.IsCancellationRequested)
-                _serverJournalUnavailable = true;
-        }
-        finally
-        {
-            if (generation == EditorGeneration)
-                _checkingServerJournal = false;
-        }
     }
 
     private async Task RetryRecoveryReadAsync()
@@ -452,33 +340,13 @@ public partial class BeelineParamsForm
         }
 
         var employeeId = CurrentUser!.Id;
-        var generation = EditorGeneration;
-        var attemptId = Guid.NewGuid();
         BeelineContract? saved = null;
-        var reservationNeedsCheck = false;
         if (!await ExecuteWriteAsync("beeline.update", async principal =>
-            {
-                try
-                {
-                    saved = await BeelineData.SaveAsync(Db, principal, employeeId, original, draft, _zones, attemptId, Lifetime);
-                }
-                catch (InventoryOperationReservationException e)
-                {
-                    reservationNeedsCheck = true;
-                    throw new BeelineRejectedException("Не удалось зарезервировать попытку. Запись не начата.", e);
-                }
-            }, serverAttemptId: attemptId))
-        {
-            if (generation == EditorGeneration && (StorageBlocked || reservationNeedsCheck))
-                await ReadServerReceiptAsync(original.Number, employeeId, Lifetime);
+            saved = await BeelineData.SaveAsync(Db, principal, employeeId, original, draft, _zones, Lifetime)))
             return;
-        }
-
-        _serverReceipt = new InventoryOperationReceipt(attemptId, InventoryOperationState.Confirmed, null);
 
         if (saved is null)
         {
-            _serverJournalUnavailable = true;
             Message = "Запись подтверждена. Не удалось перечитать договор. Нажмите «Обновить».";
             return;
         }

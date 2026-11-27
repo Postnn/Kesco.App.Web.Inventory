@@ -18,7 +18,7 @@
             <ClayToolbarButton Options="CancelButton" Disabled="@Busy" OnClick="CancelAsync" />
             @if (CanDelete)
             {
-                <ClayToolbarButton Options="DeleteButton" Disabled="@(!CanCommit || ServerWriteBlocked)" OnClick="DeleteAsync" />
+                <ClayToolbarButton Options="DeleteButton" Disabled="@(!CanCommit)" OnClick="DeleteAsync" />
             }
         </ClayToolbar>
     </Toolbar>
@@ -26,10 +26,6 @@
         <MudText Typo="Typo.h6" HtmlTag="h1" Class="mb-2">@CardTitle</MudText>
         @if (Loading) { <MudProgressLinear Indeterminate="true" /> }
         @if (Message is not null) { <MudAlert Severity="Severity.Warning" Class="mb-2">@Message</MudAlert> }
-        @if (!Loading && _serverWriteNotice is not null)
-        {
-            <MudAlert Severity="Severity.Warning" Class="mb-2">@_serverWriteNotice</MudAlert>
-        }
         @if (Validation.Count > 0)
         {
             <MudAlert Severity="Severity.Error" Class="mb-2"><ul>@foreach (var error in Validation) { <li>@error</li> }</ul></MudAlert>
@@ -40,7 +36,7 @@
             var accepted = Editable ? AcceptedDraftBaseline?.Data : null;
             var baseline = accepted?.Header;
             <div data-draft-scope="main" inert="@DraftInputSuppressed" class="d-flex flex-column gap-3">
-                <ClayEditorFocusScope @key="RouteKey" Label="Поля номера ТфОП" Ready="@(Editable && CanCommit && !ServerWriteBlocked)" AdvanceOnEnter="true">
+                <ClayEditorFocusScope @key="RouteKey" Label="Поля номера ТфОП" Ready="@(Editable && CanCommit)" AdvanceOnEnter="true">
                     <div class="numpool-header d-flex flex-column gap-2">
                         <ClayFieldChange Changed="@(baseline is not null && header.Number != baseline.Number)" RawBaseline="@baseline?.Number">
                             <ClayTextBox Options="_number" Value="@header.Number" ValueChanged="@(value => ChangeHeaderAsync(Draft!.Data.Header with { Number = value ?? "" }))" />

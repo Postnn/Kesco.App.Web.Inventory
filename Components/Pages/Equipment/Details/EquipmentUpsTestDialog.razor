@@ -201,7 +201,7 @@
             var visible = CaptureDraft();
             bool Current() => OwnerCurrent?.Invoke() != false && visible == CaptureDraft();
             var scope = await cancellation.ReadScope();
-            if (!Current() || scope is null || scope.HasOperation)
+            if (!Current() || scope is null)
                 return;
 
             var choice = ClayEditorCancelChoice.CloseWithoutSaving;

@@ -51,17 +51,19 @@ public partial class EquipmentForm
         }
     }
 
-    private async Task ObserveMainDraftReadinessAsync(ClayDraftRegistration registration, int equipmentId)
+    private async Task<bool> VerifyMainDraftReadyAsync(ClayDraftRegistration registration, int equipmentId)
     {
         try
         {
             var readiness = await registration.GetRestoreReadinessAsync(_pageCts.Token);
-            if (OwnsMainDraft(registration, equipmentId) && HasUnrestoredMainRaw(readiness))
-                _mainRawRestorePending = true;
+            if (!OwnsMainDraft(registration, equipmentId)) return false;
+            _mainRawRestorePending = HasUnrestoredMainRaw(readiness);
+            return !_mainRawRestorePending;
         }
         catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or OperationCanceledException)
         {
-            // The command gate has already rejected the write and reports its original error.
+            if (OwnsMainDraft(registration, equipmentId)) _mainRawRestorePending = true;
+            return false;
         }
     }
 

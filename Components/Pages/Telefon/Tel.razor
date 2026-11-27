@@ -48,23 +48,6 @@
         {
             <section aria-label="Журнал записи и АТС" data-testid="tel-write-journal">
                 <MudAlert Severity="Severity.Warning">@_telJournalNotice</MudAlert>
-                @if (VisibleTelWorkflowSummary is { } summary)
-                {
-                    <div data-testid="tel-workflow-summary">
-                        <MudText>Попытка @summary.AttemptId.ToString("D")</MudText>
-                        <MudText>@(summary.SqlConfirmed ? "Запись SQL подтверждена." : "Подтверждение записи SQL ожидается.")</MudText>
-                        <MudText>Команды АТС до SQL — подтверждено @summary.ConfirmedPreSteps из @(summary.PreStepCount).</MudText>
-                        @if (summary.PostStepCount is { } postCount)
-                        {
-                            <MudText>Команды АТС после SQL — подтверждено @summary.ConfirmedPostSteps из @(postCount).</MudText>
-                        }
-                        else
-                        {
-                            <MudText>План команд АТС после SQL ещё не зафиксирован.</MudText>
-                        }
-                        <MudText>Ответов АТС ожидается — @(summary.DispatchingSteps).</MudText>
-                    </div>
-                }
                 @if (CanRetryAts)
                 {
                     <ClayToolbarButton Options="RetryAtsOptions" Disabled="@IsTelJournalInteractionBlocked"

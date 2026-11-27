@@ -61,7 +61,7 @@ public partial class PhoneTemplateForm
             model.PhoneTemplate = draft.Current;
             _scheduledInput = json;
         }
-        else if (raw.HasRaw && !_knownWrite)
+        else if (raw.HasRaw)
         {
             _inputMissingOriginal = true;
             _inputNotice = "Ввод восстановлен без исходной версии. Перед записью требуется сверка.";
@@ -367,16 +367,10 @@ public partial class PhoneTemplateForm
             ++_templateInputEpoch;
             if (!MatchesBrowserTemplateText(model.PhoneTemplate, snapshot.Text))
                 model.PhoneTemplate = snapshot.Text;
-            var attempt = await journal.RetryStorageAsync(_notSentAttempt, _pageCts.Token);
-            if (!IsCurrentSave(model, version) || !ReferenceEquals(_templateJournal, journal))
-                return;
-            _templateAttempt = attempt;
-            _notSentAttempt = null;
             _inputSaveFailed = false;
             _scheduledInput = null;
             _inputNotice = null;
             await PersistTemplateInputAsync();
-            await ScanTemplateJournalAsync(journal);
         }
         catch (Exception ex) when (IsJournalError(ex))
         {
@@ -402,7 +396,7 @@ public partial class PhoneTemplateForm
             if (!IsCurrentSave(model, version) || model.PhoneTemplate != previous || !ReferenceEquals(_templateJournal, journal))
                 return;
             var snapshot = SerializeTemplateDraft(baseline, text);
-            if (state.HasOperation || !await journal.ReplaceEditorScopeAsync(
+            if (!await journal.ReplaceEditorScopeAsync(
                 TemplateInputScope, state.Revision, snapshot, _pageCts.Token))
                 throw new InvalidOperationException("Старый защищённый ввод не был заменён.");
             if (IsCurrentSave(model, version) && model.PhoneTemplate == previous && ReferenceEquals(_templateJournal, journal))

@@ -46,17 +46,6 @@
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
-        @if (!_loading && _creationResult is null && _creationAttempt is null && !_creationUncertain &&
-             _creationServerChecked && !_creationServerPending && _priorCreatedEquipmentId is { } priorId)
-        {
-            <MudAlert Severity="Severity.Info">
-                @($"Предыдущее создание оборудования №{priorId} подтверждено сервером.")
-            </MudAlert>
-        }
-        @if (!_loading && _creationResult is null && !string.IsNullOrWhiteSpace(_creationServerNotice))
-        {
-            <MudAlert Severity="Severity.Warning">@_creationServerNotice</MudAlert>
-        }
         @if (_notFound)
         {
             <MudAlert Severity="Severity.Warning">Исходное оборудование для копирования не найдено.</MudAlert>

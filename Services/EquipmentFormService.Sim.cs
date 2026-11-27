@@ -1,7 +1,5 @@
 using System.Data;
 using System.Data.Common;
-using System.Data.SqlTypes;
-using System.Globalization;
 using Clayzor.Lib.Entities;
 using Clayzor.Lib.Entities.Inventory;
 using Dapper;
@@ -10,15 +8,9 @@ namespace Kesco.App.Web.Inventory.Services;
 
 public partial class EquipmentFormService
 {
-    internal const string InsertSimCommand = "equipment-sim.insert";
-    internal const string UpdateSimCommand = "equipment-sim.update";
-    internal const string DeleteSimCommand = "equipment-sim.delete";
-    internal const string InsertSimServiceCommand = "equipment-sim-service.insert";
-    internal const string UpdateSimServiceCommand = "equipment-sim-service.update";
-
     /// <summary>Сохраняет SIM и подтверждённое списание дубликата в защищённой транзакции.</summary>
     public virtual Task SaveSimAsync(EquipmentSimCard sim, EquipmentSimWriteMode mode, string? expectedVersion,
-        int? duplicateEquipmentId, int employeeId, Guid attemptId, CancellationToken ct)
+        int? duplicateEquipmentId, int employeeId, CancellationToken ct)
     {
         var submitted = new EquipmentSimCard
         {
@@ -33,9 +25,7 @@ public partial class EquipmentFormService
         if (duplicateEquipmentId is <= 0 || duplicateEquipmentId == submitted.EquipmentId)
             validation = "Контекст дубликата SIM изменился.";
 
-        return RunSimJournalWriteAsync(submitted.EquipmentId, submitted.EquipmentId,
-            mode == EquipmentSimWriteMode.Add ? InsertSimCommand : UpdateSimCommand,
-            DuplicateScopes(duplicateEquipmentId), employeeId, attemptId, validation,
+        return RunSimWriteAsync(submitted.EquipmentId, submitted.EquipmentId, employeeId, validation,
             async (connection, transaction, token) =>
             {
                 var duplicates = (await connection.QueryAsync<int>(new CommandDefinition(SQLQueries.SELECT_АктивныеДубликатыSIM,
@@ -53,16 +43,16 @@ public partial class EquipmentFormService
             }, ct);
     }
 
-    /// <summary>Удаляет проверенную исходную SIM и подтверждает отсутствие её строки.</summary>
-    public virtual Task DeleteSimAsync(int equipmentId, string? expectedVersion, int employeeId, Guid attemptId, CancellationToken ct) =>
-        RunSimJournalWriteAsync(equipmentId, equipmentId, DeleteSimCommand, [], employeeId, attemptId,
+    /// <summary>Удаляет проверенную исходную SIM.</summary>
+    public virtual Task DeleteSimAsync(int equipmentId, string? expectedVersion, int employeeId, CancellationToken ct) =>
+        RunSimWriteAsync(equipmentId, equipmentId, employeeId,
             string.IsNullOrWhiteSpace(expectedVersion) ? "Исходное состояние SIM не подтверждено." : null,
             (connection, transaction, token) => EquipmentSimCard.DeleteEnlistedAsync(
                 connection, transaction, equipmentId, expectedVersion, token), ct);
 
-    /// <summary>Фиксирует запись дополнительной услуги и точный ключ в серверном журнале.</summary>
+    /// <summary>Сохраняет дополнительную услугу SIM.</summary>
     public virtual Task SaveSimServiceAsync(EquipmentSimService service, DateTime? businessToday, int employeeId,
-        Guid attemptId, CancellationToken ct)
+        CancellationToken ct)
     {
         var submitted = new EquipmentSimService
         {
@@ -72,92 +62,29 @@ public partial class EquipmentFormService
         };
         var validation = submitted.Id < 0 ? "Контекст дополнительной услуги SIM изменился." : businessToday is { } day
             ? submitted.Validate(day) : "Календарная дата клиента не задана. Сохранение дополнительной услуги SIM отменено.";
-        return RunSimJournalWriteAsync(submitted.EquipmentId, submitted.Id == 0 ? null : submitted.Id,
-            submitted.Id == 0 ? InsertSimServiceCommand : UpdateSimServiceCommand, SimServiceScopes(submitted.Id),
-            employeeId, attemptId, validation, submitted.SaveEnlistedAsync, ct);
+        return RunSimWriteAsync(submitted.EquipmentId, submitted.Id == 0 ? null : submitted.Id,
+            employeeId, validation, submitted.SaveEnlistedAsync, ct);
     }
 
-    /// <summary>Сверяет исход точной попытки изменения SIM без чтения PIN или PUK.</summary>
-    public virtual Task<InventoryOperationReceipt?> ReadSimWriteReceiptAsync(int equipmentId, int? duplicateEquipmentId,
-        string commandKind, int employeeId, Guid attemptId, CancellationToken ct)
+    private async Task RunSimWriteAsync(int equipmentId, int? resultId, int employeeId, string? validation,
+        Func<DbConnection, DbTransaction, CancellationToken, Task<int>> write, CancellationToken ct)
     {
-        if (commandKind is not (InsertSimCommand or UpdateSimCommand or DeleteSimCommand) ||
-            duplicateEquipmentId is <= 0 || duplicateEquipmentId == equipmentId ||
-            commandKind == DeleteSimCommand && duplicateEquipmentId is not null)
-            throw new UnauthorizedAccessException("Контекст SIM недоступен для сверки.");
-        return ReadSimJournalReceiptAsync(equipmentId, commandKind, DuplicateScopes(duplicateEquipmentId), employeeId, attemptId, ct);
-    }
-
-    /// <summary>Читает результат собственной попытки изменения дополнительной услуги SIM.</summary>
-    public virtual Task<InventoryOperationReceipt?> ReadSimServiceWriteReceiptAsync(int equipmentId, int serviceId,
-        int employeeId, Guid attemptId, CancellationToken ct)
-    {
-        if (serviceId < 0) throw new UnauthorizedAccessException("Контекст дополнительной услуги SIM недоступен для сверки.");
-        return ReadSimJournalReceiptAsync(equipmentId, serviceId == 0 ? InsertSimServiceCommand : UpdateSimServiceCommand,
-            SimServiceScopes(serviceId), employeeId, attemptId, ct);
-    }
-
-    private async Task RunSimJournalWriteAsync(int equipmentId, int? resultId, string commandKind, IReadOnlyCollection<string> scopes,
-        int employeeId, Guid attemptId, string? validation, Func<DbConnection, DbTransaction, CancellationToken, Task<int>> write,
-        CancellationToken ct)
-    {
-        var submitting = false;
-        try
-        {
-            if (equipmentId <= 0 || attemptId == Guid.Empty)
-                throw new EquipmentSimWriteRejectedException("Контекст SIM изменился.");
-            if (validation is not null) throw new EquipmentSimWriteRejectedException(validation);
-            var principal = await GetWindowsPrincipalAsync();
-            var actor = await _db.RunDbAsync(connection => RequireSimJournalAccessAsync(connection, null, principal, employeeId, equipmentId, ct));
-            var attempt = SimJournalAttempt(actor, equipmentId, commandKind, scopes, attemptId);
-            submitting = true;
-            var receipt = await InventoryOperationJournal.RunProtectedSqlAsync<EquipmentSimWriteRejectedException>(_db, attempt,
-                async (connection, transaction, token) => await write(connection, transaction, token),
-                static () => new EquipmentSimStorageException(true, true), ct,
-                prepare: (connection, transaction, token) =>
-                    RequireSimJournalAccessAsync(connection, transaction, principal, employeeId, equipmentId, token));
-            if (receipt.State == InventoryOperationState.Rejected)
-                throw new EquipmentSimWriteRejectedException("Предыдущая попытка изменения SIM отклонена.");
-            if (receipt.State != InventoryOperationState.Confirmed || receipt.ResultEntityId is not > 0 ||
-                resultId is int expected && receipt.ResultEntityId != expected)
-                throw new InventoryOperationPendingException();
-        }
-        catch (EquipmentSimWriteRejectedException error)
-        {
-            throw new EquipmentOperationException(EquipmentWritePhase.Rejected, error.Message, error);
-        }
-        catch (Exception error) when (error is InventoryOperationPreparationException or
-            InventoryOperationPendingException { BlockedBeforeReservation: true })
-        {
-            throw new EquipmentOperationException(EquipmentWritePhase.NotSent, error.Message, error);
-        }
-        catch (Exception error) when (error is DbException or TimeoutException or InvalidOperationException or
-            OperationCanceledException or ArgumentException or SqlTypeException)
-        {
-            var safe = new EquipmentSimStorageException(submitting, submitting);
-            throw new EquipmentOperationException(submitting ? EquipmentWritePhase.Unknown : EquipmentWritePhase.NotSent, safe.Message, safe);
-        }
-    }
-
-    private async Task<InventoryOperationReceipt?> ReadSimJournalReceiptAsync(int equipmentId, string commandKind,
-        IReadOnlyCollection<string> scopes, int employeeId, Guid attemptId, CancellationToken ct)
-    {
-        if (equipmentId <= 0 || attemptId == Guid.Empty)
-            throw new UnauthorizedAccessException("Контекст SIM недоступен для сверки.");
+        if (equipmentId <= 0)
+            throw new EquipmentSimWriteRejectedException("Контекст SIM изменился.");
+        if (validation is not null) throw new EquipmentSimWriteRejectedException(validation);
         var principal = await GetWindowsPrincipalAsync();
-        return await _db.RunDbAsync(async connection =>
+        await _db.RunDbAsync(connection => RequireSimAccessAsync(connection, null, principal, employeeId, equipmentId, ct));
+        await _db.RunDbAsync(async connection =>
         {
             await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct);
-            var actor = await RequireSimJournalAccessAsync(connection, transaction, principal, employeeId, equipmentId, ct);
-            var receipt = await InventoryOperationJournal.ReadAttemptInTransactionAsync(connection, transaction,
-                SimJournalAttempt(actor, equipmentId, commandKind, scopes, attemptId), ct);
+            await RequireSimAccessAsync(connection, transaction, principal, employeeId, equipmentId, ct);
+            var actualId = await write(connection, transaction, ct);
+            if (actualId <= 0 || resultId is int expected && actualId != expected)
+                throw new InvalidOperationException("База не подтвердила результат изменения SIM.");
             await transaction.CommitAsync(CancellationToken.None);
-            return receipt;
+            return true;
         });
     }
-
-    private static string[] DuplicateScopes(int? duplicateId) => duplicateId is int id ? [MainEquipmentScope(id)] : [];
-    private static string[] SimServiceScopes(int id) => id > 0 ? ["equipment/sim-service/" + id.ToString(CultureInfo.InvariantCulture)] : [];
 
     /// <summary>Перечитывает услугу в рамках исходной привязки SIM к оборудованию.</summary>
     public virtual async Task<EquipmentSimService?> ReadSimServiceEditorResetAsync(int equipmentId, int serviceId,
@@ -166,7 +93,7 @@ public partial class EquipmentFormService
         var principal = await GetWindowsPrincipalAsync();
         return await _db.RunDbAsync(async connection =>
         {
-            await RequireSimJournalAccessAsync(connection, null, principal, employeeId, equipmentId, ct);
+            await RequireSimAccessAsync(connection, null, principal, employeeId, equipmentId, ct);
             var phone = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
                 SQLQueries.SELECT_SimPhoneForServiceReset, new { EquipmentId = equipmentId }, cancellationToken: ct));
             if (string.IsNullOrEmpty(phone) || !string.Equals(phone, openingPhone, StringComparison.Ordinal))
@@ -184,9 +111,6 @@ public partial class EquipmentFormService
         });
     }
 
-    private static InventoryOperationJournal.Attempt SimJournalAttempt(Employee actor, int equipmentId, string kind,
-        IReadOnlyCollection<string> scopes, Guid id) => InventoryOperationJournal.ForEmployee(actor, id, MainEquipmentScope(equipmentId), kind, scopes);
-
     /// <summary>Перечитывает сохранённую SIM и условия договора после свежей проверки права записи.</summary>
     public virtual async Task<(EquipmentSimCard Snapshot, int CustomerType)?> ReadSimEditorResetAsync(
         int equipmentId, bool expectedExisting, int employeeId, CancellationToken ct)
@@ -198,8 +122,7 @@ public partial class EquipmentFormService
             {
                 try
                 {
-                    await RequireSimJournalAccessAsync(connection, null, principal, employeeId, equipmentId, ct);
-
+                    await RequireSimAccessAsync(connection, null, principal, employeeId, equipmentId, ct);
                     if (!expectedExisting)
                     {
                         var occupied = await HasChildPresenceRowAsync(connection,
@@ -224,17 +147,17 @@ public partial class EquipmentFormService
                 }
                 catch (DbException)
                 {
-                    throw new EquipmentSimStorageException(false, false);
+                    throw new EquipmentSimStorageException(false);
                 }
             });
         }
         catch (DbException)
         {
-            throw new EquipmentSimStorageException(false, false);
+            throw new EquipmentSimStorageException(false);
         }
     }
 
-    private static async Task<Employee> RequireSimJournalAccessAsync(DbConnection connection, DbTransaction? transaction,
+    private static async Task<Employee> RequireSimAccessAsync(DbConnection connection, DbTransaction? transaction,
         string? principal, int employeeId, int equipmentId, CancellationToken ct)
     {
         var actor = await Employee.GetCurrentWithRolesAsync(connection, transaction, principal, ct);

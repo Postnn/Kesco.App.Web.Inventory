@@ -203,11 +203,6 @@ public partial class Tel
             return;
         try
         {
-            var status = await registration.RetryStorageAsync(_notSentAttemptId, _pageCts.Token);
-            if (_disposed || !ReferenceEquals(registration, _telJournal))
-                return;
-            _telMarker = status;
-            _notSentAttemptId = null;
             _telInputSaveFailed = false;
             _scheduledTelInput = null;
             if (!_telInputConflict)

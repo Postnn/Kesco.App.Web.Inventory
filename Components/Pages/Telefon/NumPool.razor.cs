@@ -30,9 +30,6 @@ public partial class NumPool
     private NumPoolSnapshot? _saved;
     private NumPoolAccess _access = new(false, false, false, false);
     private bool _deleted;
-    private bool _serverWriteChecked;
-    private bool _serverWritePending;
-    private string? _serverWriteNotice;
 
     [SupplyParameterFromQuery(Name = "id")] public string? Id { get; set; }
     [Inject] private ClayFormWindowService Windows { get; set; } = null!;
@@ -68,48 +65,6 @@ public partial class NumPool
     protected override bool UsesRamDraft => true;
     protected override bool SupportsEditorCancellation => CanRegisterDraft;
 
-    protected override async Task ImportLegacyEvidenceAsync(Employee actor, string entityKey,
-        IReadOnlyList<ClayLegacyDraftOperationEvidence> evidence, CancellationToken token)
-    {
-        if (evidence.Count == 0) return;
-        var generation = EditorGeneration;
-        var route = Id;
-        bool Current() => !token.IsCancellationRequested && generation == EditorGeneration &&
-            entityKey == EntityKey && CurrentUser?.Id == actor.Id;
-        try
-        {
-            if (!Current() || entityKey != (route is null ? "new" : "id:" + route))
-                throw new InvalidOperationException("Ключ карточки прежней попытки изменился.");
-
-            var attempts = new List<(Guid AttemptId, string Kind, string Number, IReadOnlyCollection<int> PhoneIds)>(evidence.Count);
-            foreach (var item in evidence)
-            {
-                if (item.Kind is not ("numpool.save" or "numpool.delete") ||
-                    !Guid.TryParseExact(item.AttemptId, "N", out var id) || id == Guid.Empty ||
-                    JsonSerializer.Deserialize<LegacyNumPoolEvidence>(item.Data) is not { PhoneIds: not null } proof ||
-                    !NumPoolData.ValidNumber(proof.Number))
-                    throw new InvalidOperationException("Не удалось подтвердить сведения прежней операции.");
-                attempts.Add((id, item.Kind, proof.Number, proof.PhoneIds));
-            }
-            var principal = await ReadPrincipalAsync();
-            if (!Current()) throw new InvalidOperationException("Ключ карточки прежней попытки изменился.");
-            await NumPoolData.ImportLegacyOperationsAsync(Db, principal, actor.Id, route, attempts, token);
-            if (!Current()) throw new InvalidOperationException("Ключ карточки прежней попытки изменился.");
-            await ProbeServerWriteAsync(actor, token);
-        }
-        catch (Exception error) when (error is JsonException or InvalidOperationException or UnauthorizedAccessException
-            or Microsoft.Data.SqlClient.SqlException or TimeoutException)
-        {
-            if (Current())
-            {
-                _serverWriteChecked = false;
-                _serverWriteNotice = "Не удалось подтвердить прежнюю операцию и её телефонные связи. Сохранение приостановлено до сверки.";
-            }
-            throw;
-        }
-    }
-
-    private sealed record LegacyNumPoolEvidence(string Number, int[] PhoneIds);
     protected override IReadOnlyList<DraftMergeField> MergeFields =>
     [
         .. (Id is null ? new DraftMergeField[]
@@ -128,7 +83,6 @@ public partial class NumPool
         new("EmployeePrivate", "Признак личного номера при добавлении сотрудника"),
     ];
     protected override bool CanReadMissingDraft => _access.CanRead && NumPoolData.ValidNumber(Id);
-    protected override bool RequiresVerifiedWriteReceipt => true;
 
     protected override DraftRowVersion? ReadDraftRowVersion() => Version(_saved);
 
@@ -173,22 +127,9 @@ public partial class NumPool
 
     protected override bool SameComparisonValues(FormState actual, FormState proposed) =>
         NumPoolData.SameValues(actual.Data, proposed.Data);
-    protected override async Task<InventoryOperationReceipt?> ReadVerifiedReceiptAsync(string kind, Guid attemptId,
-        FormState? original, FormState proposed, Employee actor, CancellationToken token)
-    {
-        if (CurrentUser?.Id != actor.Id || kind is not ("numpool.save" or "numpool.delete"))
-            return null;
-        var deleting = kind == "numpool.delete";
-        var number = deleting ? original?.Data.Header.Number : proposed.Data.Header.Number;
-        var currentKey = _saved?.Header.Number ?? Id;
-        if (!NumPoolData.ValidNumber(number) || currentKey is not null && currentKey != number)
-            return null;
-        return await NumPoolData.ReadWriteReceiptAsync(Db, await ReadPrincipalAsync(), actor.Id, number!, deleting, attemptId, token);
-    }
 
-    private bool ServerWriteBlocked => !_serverWriteChecked || _serverWritePending;
     private bool CanDelete => !_deleted && _saved is not null && _access.CanDelete;
-    private bool CanSave => Editable && CanCommit && !ServerWriteBlocked && Draft is { } draft && Clean is { } clean &&
+    private bool CanSave => Editable && CanCommit && Draft is { } draft && Clean is { } clean &&
         !NumPoolData.SameValues(draft.Data, clean.Data);
     private string CardTitle => $"Номер ТфОП: {_saved?.Header.Number ?? Id}";
 
@@ -207,11 +148,7 @@ public partial class NumPool
     {
         _saved = null;
         _deleted = false;
-        _serverWriteChecked = _serverWritePending = false;
-        _serverWriteNotice = null;
         if (!_access.CanRead) { Message = "Нет доступа к справочнику номеров ТфОП."; return null; }
-        if (CurrentUser is { } actor && (_access.CanInsert || _access.CanUpdate || _access.CanDelete))
-            await ProbeServerWriteAsync(actor, routeToken);
         routeToken.ThrowIfCancellationRequested();
         if (Id is { } number)
         {
@@ -260,17 +197,15 @@ public partial class NumPool
 
     private async Task SaveAsync(bool close)
     {
-        if (!CanSave || Draft is not { } draft || CurrentUser is not { } actor) return;
+        if (!CanSave || Draft is not { } draft || CurrentUser is null) return;
         Validation = NumPoolData.Validate(draft.Data.Header);
         if (Validation.Count != 0) return;
-        if (!await ProbeServerWriteAsync(actor, Lifetime) || !ReferenceEquals(Draft, draft)) return;
         var generation = EditorGeneration;
-        var attemptId = Guid.NewGuid();
         var original = _saved;
         NumPoolSnapshot? saved = null;
         if (!await ExecuteWriteAsync("numpool.save", async principal =>
-            saved = await NumPoolData.SaveJournaledAsync(Db, principal, actor.Id, original, draft.Data, attemptId, Lifetime),
-            serverAttemptId: attemptId) || generation != EditorGeneration || saved is null) return;
+            saved = await NumPoolData.SaveAsync(Db, principal, original, draft.Data, Lifetime)) ||
+            generation != EditorGeneration || saved is null) return;
 
         _saved = saved;
         var accepted = new FormState(saved, false);
@@ -291,17 +226,13 @@ public partial class NumPool
 
     private async Task DeleteAsync()
     {
-        if (!CanCommit || !CanDelete || ServerWriteBlocked || _saved is not { } original ||
-            Draft is not { } submitted || CurrentUser is not { } actor ||
+        if (!CanCommit || !CanDelete || _saved is not { } original ||
+            Draft is not { } submitted ||
             !await ConfirmAsync("Удаление", $"Удалить номер ТфОП: {original.Header.Number}?")) return;
-        if (!ReferenceEquals(Draft, submitted) || !ReferenceEquals(_saved, original) ||
-            !await ProbeServerWriteAsync(actor, Lifetime) ||
-            !ReferenceEquals(Draft, submitted) || !ReferenceEquals(_saved, original)) return;
+        if (!ReferenceEquals(Draft, submitted) || !ReferenceEquals(_saved, original)) return;
         var generation = EditorGeneration;
-        var attemptId = Guid.NewGuid();
         if (!await ExecuteWriteAsync("numpool.delete", principal =>
-            NumPoolData.DeleteJournaledAsync(Db, principal, actor.Id, original, attemptId, Lifetime),
-            serverAttemptId: attemptId) || generation != EditorGeneration) return;
+            NumPoolData.DeleteAsync(Db, principal, original, Lifetime)) || generation != EditorGeneration) return;
         _deleted = true;
         _saved = null;
         var accepted = new FormState(NumPoolSnapshot.Empty, false);
@@ -318,39 +249,7 @@ public partial class NumPool
         });
     }
 
-    private async Task<bool> ProbeServerWriteAsync(Employee actor, CancellationToken token)
-    {
-        var generation = EditorGeneration;
-        var route = RouteKey;
-        bool Current() => !token.IsCancellationRequested && generation == EditorGeneration && route == RouteKey &&
-            CurrentUser?.Id == actor.Id;
-        if (!Current()) return false;
-        _serverWriteChecked = false;
-        try
-        {
-            var principal = await ReadPrincipalAsync();
-            if (!Current()) return false;
-            var pending = await NumPoolData.ReadWritePendingAsync(Db, principal, actor.Id, token);
-            if (!Current()) return false;
-            _serverWritePending = pending;
-            _serverWriteChecked = true;
-            _serverWriteNotice = pending ? "В серверном журнале есть незавершённая запись номеров ТфОП. Повтор заблокирован." : null;
-            return !pending;
-        }
-        catch (Exception error) when (error is InvalidOperationException or Microsoft.Data.SqlClient.SqlException
-            or UnauthorizedAccessException or TimeoutException)
-        {
-            if (Current()) _serverWriteNotice = "Не удалось проверить серверный журнал номеров ТфОП.";
-            return false;
-        }
-    }
-
-    private async Task RefreshNumPoolAsync()
-    {
-        if (ServerWriteBlocked && CurrentUser is { } actor && (_access.CanInsert || _access.CanUpdate || _access.CanDelete))
-            await ProbeServerWriteAsync(actor, Lifetime);
-        await RefreshAsync();
-    }
+    private Task RefreshNumPoolAsync() => RefreshAsync();
 
     private async Task<bool> HasLaterNumPoolInputAsync(FormState accepted)
     {
@@ -362,7 +261,7 @@ public partial class NumPool
                 ? await registration.ReadEditorScopeAsync("main", Lifetime) : null;
             if (generation != EditorGeneration || !ReferenceEquals(registration, EditorDraftRegistration))
                 return true;
-            if (scope is { HasRaw: false, HasOperation: false } && StatesEqual(Draft, accepted))
+            if (scope is { HasRaw: false } && StatesEqual(Draft, accepted))
                 return false;
         }
         catch (Exception error) when (error is JSException or InvalidOperationException or OperationCanceledException) { }

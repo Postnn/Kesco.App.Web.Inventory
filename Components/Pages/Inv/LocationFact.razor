@@ -101,7 +101,7 @@
                 <ClayPresencePanel Target="presenceTarget" />
             }
             @if ((_blocked && !_storageRetryRequired && _confirmedCleanup is null) || _conflict ||
-                (_pending is not null && (!_serverWriteChecked || _serverWritePending)))
+                (_pending is not null && !_serverWriteChecked))
             {
                 <MudButton Disabled="@_busy" OnClick="CompareAsync">Сверить с базой</MudButton>
                 @if (_comparison is { } fresh)
@@ -121,14 +121,6 @@
                 <MudAlert Severity="Severity.Warning">Ввод восстановлен частично. Сохранение приостановлено.</MudAlert>
             }
             @if (_dialogError is not null) { <MudAlert Severity="Severity.Warning" Class="mb-2">@_dialogError</MudAlert> }
-            @if (_serverWritePending)
-            {
-                <MudAlert Severity="Severity.Warning">По оборудованию есть незавершённая операция. Повтор записи заблокирован.</MudAlert>
-            }
-            else if (_serverLastConfirmed is { } lastConfirmed)
-            {
-                <MudAlert Severity="Severity.Info">Сервер подтвердил предыдущую проверку <ClayLocalTime Value="@lastConfirmed" /></MudAlert>
-            }
             @if (_pending is { } pending)
             {
             var editorVersion = _dialogVersion;

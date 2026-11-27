@@ -1,12 +1,9 @@
-using Kesco.App.Web.Inventory.Services;
-using Clayzor.Lib.Web.Controls.Components.Presence;
-using System.Text.Json;
 using Clayzor.Lib.Entities.Inventory;
 using Clayzor.Lib.Web.Controls.Components.Form;
-using Clayzor.Lib.Web.Controls.Services;
+using Clayzor.Lib.Web.Controls.Components.Presence;
 using Kesco.App.Web.Inventory.Components.Pages.TerritorialEntity;
+using Kesco.App.Web.Inventory.Services;
 using Microsoft.AspNetCore.Components;
-using Microsoft.JSInterop;
 
 namespace Kesco.App.Web.Inventory.Components.Pages.Equipment;
 
@@ -19,7 +16,6 @@ public partial class SimFmtnForm
     private SimFmtn? _original;
     private SimFmtnAccess _access = new();
     private bool _deleted;
-    private bool _serverPending;
     private string? _savedKeyForNavigation;
     private bool ChangingIdentity => _savedKeyForNavigation is { } key && Id != key;
 
@@ -57,9 +53,8 @@ public partial class SimFmtnForm
     protected override string EntityKey => Id ?? "new";
     protected override string RouteKey => EntityKey;
     protected override bool Editable => !_deleted && (Id is null ? _access.CanInsert : _original is not null && _access.CanUpdate);
-    private bool CanDelete => !_serverPending && _original?.Fields.FitsWritePolicy == true && _access.CanDelete;
+    private bool CanDelete => _original?.Fields.FitsWritePolicy == true && _access.CanDelete;
     protected override bool CanRegisterDraft => Editable || CanDelete;
-    protected override bool RequiresVerifiedWriteReceipt => true;
     protected override bool UsesRamDraft => true;
     protected override bool SupportsEditorCancellation => true;
     protected override DraftRowVersion? ReadDraftRowVersion() => _original is { } row
@@ -89,53 +84,16 @@ public partial class SimFmtnForm
     }
     protected override bool IsDomainRejection(Exception exception) => exception is SimFmtnConflict;
 
-    /// <inheritdoc />
-    protected override async Task<InventoryOperationReceipt?> ReadVerifiedReceiptAsync(string kind, Guid attemptId,
-        SimFmtnFields? original, SimFmtnFields proposed, Employee actor, CancellationToken token)
-    {
-        if (kind is not ("save" or "delete") || kind == "delete" && Id is null) return null;
-        var prefix = kind == "delete" ? Id! : proposed.Prefix;
-        return await SimFmtnData.ReadReceiptAsync(Db, await ReadPrincipalAsync(), actor.Id, Id, prefix,
-            kind == "delete", attemptId, token);
-    }
-
     protected override async Task LoadAccessAsync(Employee user, CancellationToken routeToken)
     {
-        var (access, pending) = await SimFmtnData.ReadJournaledAccessAsync(Db, user, Id, routeToken);
+        _access = await SimFmtnData.ReadAccessAsync(Db, user, routeToken);
         routeToken.ThrowIfCancellationRequested();
-        _access = access;
-        _serverPending = pending;
     }
 
-    /// <inheritdoc />
-    protected override async Task ImportLegacyEvidenceAsync(Employee actor, string entityKey,
-        IReadOnlyList<ClayLegacyDraftOperationEvidence> evidence, CancellationToken token)
-    {
-        if (evidence.Count == 0) return;
-        var source = entityKey == "new" ? null : entityKey;
-        var attempts = new List<(Guid AttemptId, string? Source, string Target, bool Deleting)>(evidence.Count);
-        foreach (var entry in evidence)
-        {
-            if (entry.Kind is not ("save" or "delete") ||
-                !Guid.TryParseExact(entry.AttemptId, "N", out var id) || id == Guid.Empty ||
-                JsonSerializer.Deserialize<LegacyFmtnEvidence>(entry.Data) is not { } metadata ||
-                metadata.Source != source)
-                throw new InvalidOperationException("Прежняя операция FMTN требует сверки.");
-            attempts.Add((id, metadata.Source, metadata.Target, entry.Kind == "delete"));
-        }
-
-        await SimFmtnData.ImportLegacyOperationsAsync(Db, await ReadPrincipalAsync(), actor.Id, attempts, token);
-        await LoadAccessAsync(actor, token);
-        if (_serverPending) Message = "В серверном журнале есть незавершённая запись FMTN. Повтор заблокирован.";
-    }
-
-    private sealed record LegacyFmtnEvidence(string? Source, string Target);
-
-    /// <inheritdoc />
     protected override async Task<FreshEditorState?> ReadFreshEditorAsync(Employee actor, CancellationToken token)
     {
         var key = Id;
-        var (access, pending) = await SimFmtnData.ReadJournaledAccessAsync(Db, actor, key, token);
+        var access = await SimFmtnData.ReadAccessAsync(Db, actor, token);
         if (!access.CanRead || key is null && !access.CanInsert) return null;
         var original = key is null ? null : await SimFmtnData.ReadAsync(Db, key, token);
         if (key is not null && original is null) return null;
@@ -147,7 +105,6 @@ public partial class SimFmtnForm
         {
             _original = original;
             _access = access;
-            _serverPending = pending;
             _prefix.ReadOnly = _shortNumber.ReadOnly = _description.ReadOnly = !Editable;
         });
     }
@@ -161,7 +118,6 @@ public partial class SimFmtnForm
         {
             _savedKeyForNavigation = null;
             if (_original?.Prefix == target && !StorageBlocked && !Dirty) await CloseAsync();
-            return;
         }
     }
 
@@ -188,25 +144,23 @@ public partial class SimFmtnForm
             }
         }
         _prefix.ReadOnly = _shortNumber.ReadOnly = _description.ReadOnly = !Editable;
-        if (_serverPending) Message = "В серверном журнале есть незавершённая запись FMTN. Повтор заблокирован.";
         return _original?.Fields ?? new("", "", "");
     }
 
     private async Task SaveAsync()
     {
-        if (Busy || Loading || StorageBlocked || _serverPending || ChangingIdentity || _deleted ||
-            Draft is not { } fields || CurrentUser is not { } actor) return;
+        if (Busy || Loading || StorageBlocked || ChangingIdentity || _deleted ||
+            Draft is not { } fields || CurrentUser is null) return;
         Validation = fields.Validate();
         if (Validation.Count > 0) return;
         if (!Dirty) { await CloseAsync(); return; }
         if (!Editable) return;
 
-        var attemptId = Guid.NewGuid();
         if (!await ExecuteWriteAsync("save", async principal =>
         {
-            _original = await SimFmtnData.SaveJournaledAsync(Db, principal, actor.Id, _original, fields, attemptId, Lifetime);
+            _original = await SimFmtnData.SaveAsync(Db, principal, _original, fields, Lifetime);
             AcceptCommitted(fields, _original.Fields);
-        }, serverAttemptId: attemptId)) return;
+        })) return;
 
         await AfterDraftCleanupAsync(CompleteSaveAsync);
     }
@@ -230,15 +184,14 @@ public partial class SimFmtnForm
 
     private async Task DeleteAsync()
     {
-        if (ChangingIdentity || !CanCommit || !CanDelete || _original is not { } original || CurrentUser is not { } actor ||
+        if (ChangingIdentity || !CanCommit || !CanDelete || _original is not { } original ||
             !await ConfirmAsync("Удаление", "Вы уверены, что хотите удалить информацию о FMTN?")) return;
-        var attemptId = Guid.NewGuid();
         var submitted = Draft ?? original.Fields;
         if (!await ExecuteWriteAsync("delete", async principal =>
         {
-            await SimFmtnData.DeleteJournaledAsync(Db, principal, actor.Id, original, attemptId, Lifetime);
+            await SimFmtnData.DeleteAsync(Db, principal, original, Lifetime);
             AcceptCommitted(submitted, original.Fields);
-        }, serverAttemptId: attemptId)) return;
+        })) return;
         _original = null;
         _deleted = true;
         _prefix.ReadOnly = _shortNumber.ReadOnly = _description.ReadOnly = true;

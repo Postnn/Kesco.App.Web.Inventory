@@ -70,56 +70,8 @@ public partial class TerritorialEntityForm
     private bool CanDeleteTerritory => _recordAvailable && _id > 0 && Access.TerritoryDelete;
     protected override bool CanRegisterDraft => Editable || CanDeleteTerritory;
     protected override bool SupportsEditorCancellation => true;
-    protected override bool RequiresVerifiedWriteReceipt => true;
     /// <inheritdoc />
     protected override bool UsesRamDraft => true;
-    /// <inheritdoc />
-    protected override string LegacyEvidenceEntityKey => _id == 0 ? "new" : EntityKey;
-
-    /// <inheritdoc />
-    protected override async Task ImportLegacyEvidenceAsync(Employee actor, string entityKey,
-        IReadOnlyList<ClayLegacyDraftOperationEvidence> evidence, CancellationToken token)
-    {
-        if (evidence.Count == 0) return;
-        if (entityKey != EntityKey) throw new InvalidOperationException("Контекст территории изменился.");
-        var generation = EditorGeneration;
-        var targetId = _id;
-        var route = RouteKey;
-        var attempts = new List<(Guid AttemptId, string Operation, int TerritoryId, int? ParentId)>(evidence.Count);
-        foreach (var entry in evidence)
-        {
-            if (entry is null || entry.Data is not { Length: <= 128 } ||
-                !Guid.TryParse(entry.AttemptId, out var attemptId) || attemptId == Guid.Empty ||
-                (targetId == 0 ? entry.Kind != "territory.create" : entry.Kind is not ("territory.update" or "territory.delete")))
-                throw new InvalidOperationException("Прежняя попытка записи территории требует сверки.");
-            using var payload = JsonDocument.Parse(entry.Data);
-            var value = payload.RootElement;
-            if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Count() != 2 ||
-                !value.TryGetProperty("Id", out var key) || key.ValueKind != JsonValueKind.Number ||
-                !key.TryGetInt32(out var id) || id != targetId ||
-                !value.TryGetProperty("ParentId", out var parent))
-                throw new InvalidOperationException("Прежняя попытка относится к другой территории.");
-
-            int? parentId = null;
-            if (parent.ValueKind != JsonValueKind.Null)
-            {
-                if (parent.ValueKind != JsonValueKind.Number || !parent.TryGetInt32(out var number) || number <= 0)
-                    throw new InvalidOperationException("Прежняя попытка содержит неверный ключ родителя.");
-                parentId = number;
-            }
-            attempts.Add((attemptId, entry.Kind, id, parentId));
-        }
-
-        var principal = await ReadPrincipalAsync();
-        token.ThrowIfCancellationRequested();
-        if (generation != EditorGeneration || route != RouteKey || targetId != _id ||
-            entityKey != EntityKey || CurrentUser?.Id != actor.Id)
-            throw new InvalidOperationException("Контекст территории изменился.");
-        await TerritorialEntityData.ImportLegacyTerritoryCardOperationsAsync(Db, principal, actor.Id, attempts, token);
-        var pending = await TerritorialEntityData.IsMovePendingAsync(Db, token);
-        if (!token.IsCancellationRequested && generation == EditorGeneration && route == RouteKey && CurrentUser?.Id == actor.Id)
-            _treeWritePending = pending;
-    }
 
     protected override DraftRowVersion? ReadDraftRowVersion() => Clean?.Record is { Id: > 0 } current ? VersionOf(current) : null;
 
@@ -134,12 +86,8 @@ public partial class TerritorialEntityForm
         if (record is null) return null;
         var types = (await TerritorialEntityData.ReadTerritoryTypesAsync(Db, token)).ToArray();
         token.ThrowIfCancellationRequested();
-        var pending = await TerritorialEntityData.IsMovePendingAsync(Db, token);
-        return new FreshEditorState(ToFormState(record), access, id > 0 ? VersionOf(record) : null, () =>
-        {
-            _treeWritePending = pending;
-            ApplyTypes(types);
-        });
+        return new FreshEditorState(ToFormState(record), access, id > 0 ? VersionOf(record) : null,
+            () => ApplyTypes(types));
     }
 
     private static FormState ToFormState(TerritorialEntityRecord record) =>
@@ -193,8 +141,6 @@ public partial class TerritorialEntityForm
         var types = await TerritorialEntityData.ReadTerritoryTypesAsync(Db, routeToken);
         routeToken.ThrowIfCancellationRequested();
         ApplyTypes(types.ToArray());
-        if (CanRegisterDraft)
-            _treeWritePending = await TerritorialEntityData.IsMovePendingAsync(Db, routeToken);
         if (!Editable) Message = "Карточка открыта для просмотра.";
         return ToFormState(record);
     }
@@ -250,34 +196,20 @@ public partial class TerritorialEntityForm
             if (close) await CloseAsync();
             return;
         }
-        if (!Editable || !CanCommit || _treeWritePending) return;
+        if (!Editable || !CanCommit) return;
         var parsed = TerritorialEntityRules.TryParseCountryClassification(draft.Classification, out var classification);
         var record = draft.Record with { CountryClassification = classification };
         var errors = TerritorialEntityRules.Validate(record).ToList();
         if (!parsed) errors.Add("Код ОКСМ должен быть положительным целым числом.");
         Validation = errors;
         if (errors.Count != 0) return;
-        var generation = EditorGeneration;
-        if (!await CheckTreeWriteAsync(generation) || !ReferenceEquals(draft, Draft) ||
-            !ReferenceEquals(original, Clean) || CurrentUser?.Id != actor.Id)
-            return;
         var creating = _id == 0;
-        var attemptId = Guid.NewGuid();
         TerritorialEntityRecord? saved = null;
         if (!await ExecuteWriteAsync(creating ? "territory.create" : "territory.update", async principal =>
-            {
-                try
-                {
-                    saved = creating
-                        ? await TerritorialEntityData.CreateTerritoryAsync(Db, principal, actor.Id, attemptId, record, Lifetime)
-                        : await TerritorialEntityData.UpdateTerritoryAsync(Db, principal, actor.Id, attemptId, original.Record, record, Lifetime);
-                }
-                catch (InventoryOperationPendingException)
-                {
-                    if (generation == EditorGeneration) _treeWritePending = true;
-                    throw;
-                }
-            }, creating ? () => saved!.Id : null, serverAttemptId: attemptId))
+            saved = creating
+                ? await TerritorialEntityData.CreateTerritoryAsync(Db, principal, actor.Id, record, Lifetime)
+                : await TerritorialEntityData.UpdateTerritoryAsync(Db, principal, actor.Id, original.Record, record, Lifetime),
+            creating ? () => saved!.Id : null))
             return;
         AcceptCommitted(draft, ToFormState(saved!));
         await AfterDraftCleanupAsync(() => CompleteWriteAsync(creating && !close ? saved!.Id : null, close, preserveLaterInput: true));
@@ -285,84 +217,22 @@ public partial class TerritorialEntityForm
 
     private async Task DeleteTerritoryAsync()
     {
-        if (!CanDeleteTerritory || !CanCommit || Dirty || _treeWritePending || Clean is not { } original ||
+        if (!CanDeleteTerritory || !CanCommit || Dirty || Clean is not { } original ||
             CurrentUser is not { } actor) return;
-        var generation = EditorGeneration;
         if (!await ConfirmAsync("Удаление территории", $"Удалить территорию «{original.Record.Name}»?") ||
-            generation != EditorGeneration || !CanDeleteTerritory || !CanCommit || Dirty || !ReferenceEquals(Clean, original))
+            !CanDeleteTerritory || !CanCommit || Dirty || !ReferenceEquals(Clean, original))
             return;
 
-        if (!await CheckTreeWriteAsync(generation) || Dirty || !ReferenceEquals(Clean, original) || CurrentUser?.Id != actor.Id)
-            return;
-        var attemptId = Guid.NewGuid();
         if (!await ExecuteWriteAsync("territory.delete", async principal =>
-            {
-                try { await TerritorialEntityData.DeleteTerritoryAsync(Db, principal, actor.Id, attemptId, original.Record, Lifetime); }
-                catch (InventoryOperationPendingException)
-                {
-                    if (generation == EditorGeneration) _treeWritePending = true;
-                    throw;
-                }
-            }, () => original.Record.Id, serverAttemptId: attemptId))
+            await TerritorialEntityData.DeleteTerritoryAsync(Db, principal, actor.Id, original.Record, Lifetime),
+            () => original.Record.Id))
             return;
         _recordAvailable = false;
         await AfterDraftCleanupAsync(() => CompleteWriteAsync(null, close: true, preserveLaterInput: true));
     }
 
     /// <inheritdoc />
-    protected override bool IsDomainRejection(Exception exception) =>
-        exception is TerritorialEntityRuleException or InventoryOperationPendingException or InventoryOperationReservationException;
-
-    private async Task<bool> CheckTreeWriteAsync(int generation)
-    {
-        try
-        {
-            var pending = await TerritorialEntityData.IsMovePendingAsync(Db, Lifetime);
-            if (generation != EditorGeneration) return false;
-            _treeWritePending = pending;
-            return !pending;
-        }
-        catch (Exception error) when (error is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or TimeoutException)
-        {
-            if (generation == EditorGeneration)
-            {
-                _treeWritePending = true;
-                Message = "Не удалось проверить серверный журнал территории.";
-            }
-            return false;
-        }
-    }
-
-    /// <inheritdoc />
-    protected override async Task<InventoryOperationReceipt?> ReadVerifiedReceiptAsync(string kind, Guid attemptId,
-        FormState? original, FormState proposed, Employee actor, CancellationToken token)
-    {
-        if (_id == 0)
-        {
-            var parent = TerritorialEntityRoutes.TryPositiveId(QueryParent, out var parentId) ? (int?)parentId : null;
-            if (kind != "territory.create" || proposed.Record.Id != 0 || proposed.Record.ParentId != parent)
-                return null;
-        }
-        else if (kind is not ("territory.update" or "territory.delete") || original?.Record.Id != _id || proposed.Record.Id != _id)
-            return null;
-
-        return await TerritorialEntityData.ReadTerritoryWriteReceiptAsync(Db, await ReadPrincipalAsync(), actor.Id,
-            attemptId, kind, _id, proposed.Record.ParentId, token);
-    }
-
-    protected override Func<Task>? RestoreConfirmedResult(string operation, int resultId) => operation switch
-    {
-        "territory.create" when _id == 0 && resultId > 0 => () => CompleteVerifiedWriteAsync(resultId, close: false),
-        "territory.delete" when _id > 0 && _id == resultId => () => CompleteVerifiedWriteAsync(null, close: true),
-        _ => null,
-    };
-
-    private Task CompleteVerifiedWriteAsync(int? createdId, bool close)
-    {
-        if (Draft is { } accepted)
-            Accept(accepted);
-        return CompleteWriteAsync(createdId, close, preserveLaterInput: true);
-    }
+    protected override bool IsDomainRejection(Exception exception) => exception is TerritorialEntityRuleException;
 
     private async Task CompleteWriteAsync(int? createdId, bool close, bool preserveLaterInput = false)
     {
@@ -373,7 +243,7 @@ public partial class TerritorialEntityForm
         {
             var scope = await registration.ReadEditorScopeAsync("main", Lifetime);
             if (generation != EditorGeneration || !ReferenceEquals(EditorDraftRegistration, registration)) return;
-            if (Dirty || scope.HasRaw || scope.HasOperation)
+            if (Dirty || scope.HasRaw)
             {
                 Message = "Запись подтверждена. Более поздний ввод остался в открытой карточке.";
                 return;

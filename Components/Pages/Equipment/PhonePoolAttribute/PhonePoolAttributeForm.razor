@@ -53,21 +53,6 @@
                 </div>
             </ClayEditorFocusScope>
         }
-        @if (CanViewSubmittedAttempt)
-        {
-            <ClayToolbarButton Options="SubmittedSnapshotButton" Disabled="@(Busy || _retryingRecovery)" OnClick="ShowSubmittedRecoveryAsync" />
-            @if (_submittedRecovery is { } submitted && _submittedIdentity == SubmittedSnapshotIdentity)
-            {
-                <section aria-label="Снимок незавершённой попытки" data-testid="submitted-attempt">
-                    <div>@(submitted). Значение атрибута скрыто.</div>
-                    <MudText>Журнал не подтверждает отправку или выполнение операции.</MudText>
-                </section>
-            }
-            else if (_submittedUnavailable)
-            {
-                <MudText>Не удалось подтвердить доступ к снимку этой попытки.</MudText>
-            }
-        }
     </ChildContent>
     <Footer>
         @if (!Loading && _presenceTarget is { } presenceTarget)

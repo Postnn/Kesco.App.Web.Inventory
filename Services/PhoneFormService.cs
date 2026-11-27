@@ -128,10 +128,10 @@ public partial class PhoneFormService
             await boundary.Prepare();
         try
         {
-            var receipt = await TelSqlJournal.SaveAsync(_db, windowsPrincipal, employeeId, request.Phone.Id,
+            var savedId = await TelSqlWrite.SaveAsync(_db, windowsPrincipal, employeeId, request.Phone.Id,
                 request.OriginalPhone.ChangedAtUtc, attemptId, command.Sql, command.Parameters, boundary?.Dispatch,
-                CancellationToken.None, workflowBound: boundary?.WorkflowBound == true);
-            return new PhoneSaveResult { PhoneId = receipt.ResultEntityId!.Value, Saved = true, Issues = issues };
+                CancellationToken.None);
+            return new PhoneSaveResult { PhoneId = savedId, Saved = true, Issues = issues };
         }
         catch (TelSqlRejectedException error) when (error.VersionConflict)
         {
@@ -319,47 +319,13 @@ public partial class PhoneFormService
             throw new TelSqlRejectedException("Недопустимый идентификатор удаляемого телефонного номера.");
         if (boundary is not null)
             await boundary.Prepare();
-        await TelSqlJournal.DeleteAsync(_db, windowsPrincipal, employeeId, original, attemptId, boundary?.Dispatch,
-            CancellationToken.None, workflowBound: boundary?.WorkflowBound == true);
+        await TelSqlWrite.DeleteAsync(_db, windowsPrincipal, employeeId, original, attemptId, boundary?.Dispatch,
+            CancellationToken.None);
     }
 
     /// <summary>Проверяет удаление до предварительных команд АТС.</summary>
     public virtual Task ValidateDeleteProposalAsync(Phone original, string? principal, int employeeId, CancellationToken ct) =>
-        TelSqlJournal.ValidateDeleteAsync(_db, principal, employeeId, original, ct);
-
-    /// <summary>Проверяет открытый серверный слот номера или создания.</summary>
-    public virtual Task<bool> ReadSqlPendingAsync(string? principal, int employeeId, int phoneId, CancellationToken ct) =>
-        TelSqlJournal.ReadPendingAsync(_db, principal, employeeId, phoneId, ct);
-
-    /// <summary>Читает подтверждение точной SQL-попытки без отправки записи или команд АТС.</summary>
-    public virtual Task<InventoryOperationReceipt?> ReadSqlReceiptAsync(string? principal, int employeeId, int phoneId,
-        bool deleting, Guid attemptId, CancellationToken ct) =>
-        TelSqlJournal.ReadReceiptAsync(_db, principal, employeeId, phoneId, deleting, attemptId, ct);
-
-    internal virtual Task<TelWorkflowSummary?> ReadActiveWorkflowAsync(string? principal, int employeeId, int phoneId,
-        CancellationToken ct) =>
-        TelAtsWorkflow.ReadActiveAsync(_db, principal, employeeId, phoneId, ct);
-
-    internal virtual Task ImportLegacyTelOperationsAsync(string? principal, int employeeId, int phoneId,
-        IReadOnlyCollection<(Guid AttemptId, bool Deleting)> evidence, CancellationToken ct) =>
-        TelSqlJournal.ImportLegacyOperationsAsync(_db, principal, employeeId, phoneId, evidence, ct);
-
-
-    internal virtual Task BeginWorkflowAsync(string? principal, int employeeId, Guid attemptId, int phoneId,
-        bool deleting, IReadOnlyList<PhoneSyncOperation> prePlan, CancellationToken ct) =>
-        TelAtsWorkflow.BeginAsync(_db, principal, employeeId, attemptId, phoneId, deleting,
-            prePlan.Select(FingerprintPhoneSyncStep).ToArray(), ct);
-
-    internal virtual Task MarkWorkflowSqlReadyAsync(string? principal, int employeeId, Guid attemptId,
-        IReadOnlyList<PhoneSyncOperation> postPlan, CancellationToken ct) =>
-        TelAtsWorkflow.MarkSqlReadyAsync(_db, principal, employeeId, attemptId,
-            postPlan.Select(FingerprintPhoneSyncStep).ToArray(), ct);
-
-    internal virtual Task CompleteWorkflowAsync(string? principal, int employeeId, Guid attemptId, CancellationToken ct) =>
-        TelAtsWorkflow.CompleteAsync(_db, principal, employeeId, attemptId, ct);
-
-    internal virtual Task<bool> TryAbandonWorkflowAsync(string? principal, int employeeId, Guid attemptId, CancellationToken ct) =>
-        TelAtsWorkflow.TryAbandonAsync(_db, principal, employeeId, attemptId, ct);
+        TelSqlWrite.ValidateDeleteAsync(_db, principal, employeeId, original, ct);
 
     internal virtual async Task<PhoneSyncOperationResult> SynchronizeWorkflowStepAsync(Guid attemptId,
         string? principal, int employeeId, int phoneId, bool beforeSql, int stepIndex, PhoneSyncOperation operation,
@@ -378,16 +344,12 @@ public partial class PhoneFormService
                 await prepareDispatch(operation);
             await AuthorizeWorkflowTargetAsync(principal, employeeId, phoneId, beforeSql, operation, ct);
 
-            var fingerprint = FingerprintPhoneSyncStep(operation);
             ct.ThrowIfCancellationRequested();
-            assessingStep = true;
-            if (await TelAtsWorkflow.BeginStepAsync(_db, principal, employeeId, attemptId, phoneId,
-                    beforeSql, stepIndex, fingerprint, ct))
+            await ExecuteReturnCodeAsync(procedure, new DynamicParameters(), fill, () =>
             {
-                await ExecuteReturnCodeAsync(procedure, new DynamicParameters(), fill, () => ct.ThrowIfCancellationRequested());
-                await TelAtsWorkflow.ConfirmStepAsync(_db, principal, employeeId, attemptId, phoneId,
-                    beforeSql, stepIndex, fingerprint, CancellationToken.None);
-            }
+                ct.ThrowIfCancellationRequested();
+                assessingStep = true;
+            });
             return new PhoneSyncOperationResult(identity, operation, PhoneSyncPhase.Succeeded);
         }
         catch (Exception error) when (error is InvalidOperationException or UnauthorizedAccessException or
@@ -401,12 +363,6 @@ public partial class PhoneFormService
             return new PhoneSyncOperationResult(identity, operation, phase,
                 "Не удалось проверить цель или подготовить команду АТС. Команда не отправлена.");
         }
-    }
-
-    private static string FingerprintPhoneSyncStep(PhoneSyncOperation operation)
-    {
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(new { Kind = (int)operation.Kind, operation.Key, operation.Deleting });
-        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     }
 
     /// <summary>Выполняет процедуры АТС и возвращает совместимый результат каждой операции.</summary>

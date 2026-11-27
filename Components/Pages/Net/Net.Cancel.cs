@@ -14,8 +14,7 @@ public partial class Net
     private NetCloseRequest? _pendingNetClose;
 
     private bool ConfirmNetExternalExit => IsModified || _saving || _poeRunning ||
-        _operationContext is { } context &&
-        (context.Attempt is not null || context.NotSentId is not null || _pendingNetClose is not null || HasUnacceptedNetInput(context));
+        _operationContext is { } context && (_pendingNetClose is not null || HasUnacceptedNetInput(context));
 
     private bool HasUnacceptedNetInput(NetOperationContext context) =>
         IsModified || !context.InputReady || context.InputConflict || context.InputFailed || RequiresReconciliation;
@@ -87,11 +86,6 @@ public partial class Net
 
             if (choice == ClayEditorCancelChoice.ResetAndStay)
             {
-                if (scope.HasOperation || context.Attempt is not null || context.NotSentId is not null)
-                {
-                    _validationMessage = "Сначала проверьте исход предыдущей операции.";
-                    return false;
-                }
                 var accepted = false;
                 await LoadDataAsync(id, version, null, null, acceptReset: async (port, actor, fresh) =>
                 {
@@ -128,7 +122,7 @@ public partial class Net
             return await CloseNetDraftAsync(context, scope.Revision, token);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return false; }
-        catch (Exception error) when (IsJournalError(error) || error is SqlException or TimeoutException)
+        catch (Exception error) when (IsOperationStateError(error) || error is SqlException or TimeoutException)
         {
             if (Current()) _validationMessage = "Не удалось завершить отмену. Черновик сохранён.";
             return false;
@@ -175,7 +169,7 @@ public partial class Net
             InvalidateNetInputView();
             return true;
         }
-        catch (Exception error) when (IsJournalError(error))
+        catch (Exception error) when (IsOperationStateError(error))
         {
             if (Current())
                 _validationMessage = "Не удалось подтвердить удаление черновика. Нажмите «Отмена», чтобы повторить закрытие.";

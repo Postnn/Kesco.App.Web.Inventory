@@ -23,7 +23,7 @@ public partial class EquipmentFormService
         return new EquipmentChildPresence(ClayPresenceKey.Create("inventory", "equipment-computer", equipmentId,
             day.ToString("yyyyMMdd", CultureInfo.InvariantCulture)), async (connection, login, employeeId, ct) =>
         {
-            var (actor, context) = await ReadComputerJournalContextAsync(connection, null, login, employeeId, equipmentId, ct);
+            var (actor, context) = await ReadComputerContextAsync(connection, null, login, employeeId, equipmentId, ct);
             return expectedModelId is > 0 && context.ModelId == expectedModelId &&
                    await HasChildPresenceRowAsync(connection, ComputerPresenceRow, new { EquipmentId = equipmentId, Date = day }, ct)
                 ? actor : null;
@@ -32,7 +32,7 @@ public partial class EquipmentFormService
 
     internal EquipmentChildPresence CreateLocationPresence(int equipmentId, DateTime fromUtc)
     {
-        var start = EquipmentPeriodJournalWrite.NormalizeStartUtc(fromUtc);
+        var start = EquipmentPeriodWrite.NormalizeStartUtc(fromUtc);
         return CreateInventoryChildPresence(ClayPresenceKey.Create("inventory", "equipment-location-period", equipmentId, start.Ticks),
             (connection, ct) => HasChildPresenceRowAsync(connection, LocationPresenceRow,
                 new { EquipmentId = equipmentId, FromUtc = start }, ct));
@@ -40,7 +40,7 @@ public partial class EquipmentFormService
 
     internal EquipmentChildPresence CreateResponsiblePresence(int equipmentId, DateTime fromUtc, bool requireActive)
     {
-        var start = EquipmentPeriodJournalWrite.NormalizeStartUtc(fromUtc);
+        var start = EquipmentPeriodWrite.NormalizeStartUtc(fromUtc);
         return CreateInventoryChildPresence(ClayPresenceKey.Create("inventory", "equipment-responsible-period", equipmentId, start.Ticks),
             (connection, ct) => HasChildPresenceRowAsync(connection, ResponsiblePresenceRow,
                 new { EquipmentId = equipmentId, FromUtc = start, RequireActive = requireActive }, ct));

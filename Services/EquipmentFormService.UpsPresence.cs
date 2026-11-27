@@ -24,7 +24,7 @@ public partial class EquipmentFormService
         int serverEquipmentId, int? testId = null) =>
         new(key, async (connection, login, employeeId, token) =>
         {
-            var actor = await RequireUpsJournalAccessAsync(connection, null, login, employeeId, upsEquipmentId, serverEquipmentId, token);
+            var actor = await RequireUpsAccessAsync(connection, null, login, employeeId, upsEquipmentId, serverEquipmentId, token);
             if (!await HasChildPresenceRowAsync(connection, UpsLinkPresenceRow,
                     new { UpsEquipmentId = upsEquipmentId, ServerEquipmentId = serverEquipmentId }, token))
                 return null;

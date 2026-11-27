@@ -30,18 +30,10 @@
         {
             <MudAlert Severity="Severity.Warning" Class="mb-2">@Message</MudAlert>
         }
-        @if (_serverWritePending)
-        {
-            <MudAlert Severity="Severity.Warning" Class="mb-2">Есть незавершённая операция. Повтор записи заблокирован.</MudAlert>
-        }
-        else if (!Loading && (Editable || CanDelete) && !_serverJournalReady)
-        {
-            <MudAlert Severity="Severity.Warning" Class="mb-2">Не удалось проверить серверный журнал. Сохранение недоступно.</MudAlert>
-        }
-        else if (_lastServerCode is { } previousCode)
+        @if (_lastServerCode is { } previousCode)
         {
             <MudAlert Severity="Severity.Info" Class="mb-2">
-                Сервер подтвердил операцию с телефонным кодом @previousCode.
+                Сохранён телефонный код @previousCode.
                 @if (QueryId is null)
                 {
                     <a href="@PhoneCodeEditLink(previousCode)">Открыть сохранённый код</a>

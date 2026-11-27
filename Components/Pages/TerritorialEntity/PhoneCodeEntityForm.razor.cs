@@ -45,8 +45,6 @@ public partial class PhoneCodeEntityForm
     private PhoneCodeEntityRecord? _original;
     private bool _territoryConflict;
     private bool _deleted;
-    private bool _serverJournalReady;
-    private bool _serverWritePending;
     private string? _lastServerCode;
 
     private (int Generation, int EmployeeId, string Key, bool Editing)? _presenceContext;
@@ -75,18 +73,14 @@ public partial class PhoneCodeEntityForm
         ? $"existing:{original.Code}" : RouteKey;
     protected override string RouteKey => string.IsNullOrEmpty(QueryId) ? $"new:{QueryTerritory}" : $"existing:{QueryId}";
     /// <inheritdoc />
-    protected override string LegacyEvidenceEntityKey => string.IsNullOrEmpty(QueryId) ? "new" : EntityKey;
     /// <inheritdoc />
     protected override bool UsesRamDraft => true;
     protected override bool Editable => !_deleted && (_original is null ? string.IsNullOrEmpty(QueryId) && Access.PhoneInsert : Access.PhoneUpdate);
     private bool CanDelete => !_deleted && _original is not null && Access.PhoneDelete;
-    private bool CanCommitPhone => CanCommit && _serverJournalReady && !_serverWritePending;
+    private bool CanCommitPhone => CanCommit;
     protected override bool CanRegisterDraft => Editable || CanDelete;
     /// <inheritdoc />
-    protected override bool RequiresVerifiedWriteReceipt => true;
-    /// <inheritdoc />
-    protected override bool IsDomainRejection(Exception exception) =>
-        exception is InventoryOperationPendingException or InventoryOperationReservationException || base.IsDomainRejection(exception);
+    protected override bool IsDomainRejection(Exception exception) => base.IsDomainRejection(exception);
     /// <inheritdoc />
     protected override bool SupportsEditorCancellation => true;
 
@@ -162,45 +156,6 @@ public partial class PhoneCodeEntityForm
         new("TypeId", "Тип телефонной связи", "phone-code.type"),
         new("Comment", "Комментарий", "phone-code.comment"),
     ];
-    /// <inheritdoc />
-    protected override async Task ImportLegacyEvidenceAsync(Employee actor, string entityKey,
-        IReadOnlyList<ClayLegacyDraftOperationEvidence> evidence, CancellationToken token)
-    {
-        if (evidence.Count == 0) return;
-        var creating = string.IsNullOrEmpty(QueryId);
-        var sourceCode = creating ? null : _original?.Code;
-        if (entityKey != EntityKey || !creating && sourceCode is null)
-            throw new InvalidOperationException("Не удалось подтвердить открытый телефонный код.");
-        var attempts = new Dictionary<Guid, (string Kind, string? Source, string Target)>();
-        foreach (var item in evidence)
-        {
-            if (item is null || !Guid.TryParseExact(item.AttemptId, "N", out var id) || id == Guid.Empty ||
-                item.Data is not { Length: <= 512 })
-                throw new InvalidOperationException("Прежняя попытка не соответствует открытому телефонному коду.");
-            using var json = JsonDocument.Parse(item.Data);
-            var row = json.RootElement;
-            if (row.ValueKind != JsonValueKind.Object || row.EnumerateObject().Count() != 2 ||
-                !row.TryGetProperty("Source", out var source) || source.ValueKind is not (JsonValueKind.Null or JsonValueKind.String) ||
-                !row.TryGetProperty("Target", out var target) || target.ValueKind != JsonValueKind.String ||
-                target.GetString() is not { Length: > 0 and <= 20 } targetCode ||
-                !string.Equals(source.GetString(), sourceCode, StringComparison.Ordinal))
-                throw new InvalidOperationException("Прежняя попытка относится к другому телефонному коду.");
-
-            var value = (item.Kind, source.GetString(), targetCode);
-            if (attempts.TryGetValue(id, out var previous) && previous != value)
-                throw new InvalidOperationException("Сохранены разные цели одной прежней попытки.");
-            attempts[id] = value;
-        }
-        var principal = await ReadPrincipalAsync();
-        token.ThrowIfCancellationRequested();
-        if (entityKey != EntityKey || CurrentUser?.Id != actor.Id)
-            throw new InvalidOperationException("Контекст телефонного кода изменился.");
-        await TerritorialEntityData.ImportLegacyPhoneOperationsAsync(Db, principal, actor.Id, sourceCode,
-            attempts.Select(pair => (pair.Key, pair.Value.Kind, pair.Value.Source, pair.Value.Target)).ToArray(), token);
-        token.ThrowIfCancellationRequested();
-        await ReadServerJournalAsync(sourceCode, token);
-    }
-
     protected override async Task<CompareRead> ReadForComparisonAsync(FormState proposed, Employee actor, CancellationToken token)
     {
         var code = QueryId ?? proposed.Code;
@@ -211,25 +166,11 @@ public partial class PhoneCodeEntityForm
         return new(found is null ? null : ToState(found));
     }
 
-    /// <inheritdoc />
-    protected override async Task<InventoryOperationReceipt?> ReadVerifiedReceiptAsync(string kind, Guid attemptId,
-        FormState? original, FormState proposed, Employee actor, CancellationToken token)
-    {
-        var routeCode = string.IsNullOrEmpty(QueryId) ? null : QueryId;
-        var code = kind == "phone-code.insert" ? routeCode : _original?.Code ?? routeCode ?? original?.Code;
-        if (kind == "phone-code.insert" ? !string.IsNullOrEmpty(code) :
-            string.IsNullOrEmpty(code) || original?.Code != code)
-            return null;
-        return await TerritorialEntityData.ReadPhoneWriteReceiptAsync(Db, await ReadPrincipalAsync(), actor.Id,
-            kind, attemptId, string.IsNullOrEmpty(code) ? null : code, proposed.Code, token);
-    }
-
     protected override async Task<FormState?> LoadCardAsync(CancellationToken routeToken)
     {
         _original = null;
         _deleted = false;
         _territoryConflict = false;
-        _serverJournalReady = _serverWritePending = false;
         _lastServerCode = null;
         var source = _territorySource = new TerritorialEntitySelectDataSource(Db);
         var code = QueryId;
@@ -249,7 +190,6 @@ public partial class PhoneCodeEntityForm
             if (original is null)
             {
                 UpdateAccess();
-                await ReadServerJournalAsync(code, routeToken);
                 Message = $"Телефонный код {code} не найден или недоступен!";
                 return null;
             }
@@ -272,39 +212,10 @@ public partial class PhoneCodeEntityForm
         _territoryConflict = territoryConflict;
         _types = types.ToArray();
         UpdateAccess();
-        await ReadServerJournalAsync(original?.Code, routeToken);
         return _original is null ? new(defaultTerritory, "", null, null, "") : ToState(_original);
     }
 
-    private async Task ReadServerJournalAsync(string? code, CancellationToken ct)
-    {
-        if (CurrentUser is not { } actor || !(Access.PhoneInsert || Access.PhoneUpdate || Access.PhoneDelete)) return;
-        var generation = EditorGeneration;
-        var route = RouteKey;
-        bool Current() => !ct.IsCancellationRequested && generation == EditorGeneration &&
-            route == RouteKey && CurrentUser?.Id == actor.Id;
-        try
-        {
-            var state = await TerritorialEntityData.ReadPhoneWriteStateAsync(Db, await ReadPrincipalAsync(), actor.Id, code, ct);
-            if (!Current()) return;
-            _serverJournalReady = true;
-            _serverWritePending = state.HasPending;
-            _lastServerCode = state.LastConfirmedCode;
-        }
-        catch (Exception error) when (error is Microsoft.Data.SqlClient.SqlException or TimeoutException or InvalidOperationException or UnauthorizedAccessException)
-        {
-            if (Current()) _serverJournalReady = false;
-        }
-    }
-
-    private async Task RefreshPhoneAsync()
-    {
-        if (!CanRefresh) return;
-        var generation = EditorGeneration;
-        await ReadServerJournalAsync(_original?.Code ?? QueryId, Lifetime);
-        if (generation == EditorGeneration)
-            await RefreshAsync();
-    }
+    private Task RefreshPhoneAsync() => RefreshAsync();
 
     private void UpdateAccess()
     {
@@ -505,17 +416,9 @@ public partial class PhoneCodeEntityForm
         if (Validation.Count != 0) return;
         var original = _original;
         var inserting = original is null;
-        var serverAttemptId = Guid.NewGuid();
         PhoneCodeEntityRecord? saved = null;
         if (!await ExecuteWriteAsync(inserting ? "phone-code.insert" : "phone-code.update", async principal =>
-            {
-                try { saved = await TerritorialEntityData.SavePhoneAsync(Db, principal, actor.Id, serverAttemptId, original, value, Lifetime); }
-                catch (Exception error) when (error is InventoryOperationPendingException or InventoryOperationReservationException)
-                {
-                    _serverWritePending = true;
-                    throw;
-                }
-            }, serverAttemptId: serverAttemptId)) return;
+            saved = await TerritorialEntityData.SavePhoneAsync(Db, principal, actor.Id, original, value, Lifetime))) return;
         _lastServerCode = value.Code;
         if (saved is null)
         {
@@ -541,16 +444,8 @@ public partial class PhoneCodeEntityForm
             !await ConfirmAsync("Удаление", "Вы уверены, что хотите удалить информацию о телефонном коде?")) return;
         if (!CanCommitPhone || !ReferenceEquals(_original, original) || Draft is not { } submitted || CurrentUser is not { } actor)
             return;
-        var serverAttemptId = Guid.NewGuid();
         if (!await ExecuteWriteAsync("phone-code.delete", async principal =>
-            {
-                try { await TerritorialEntityData.DeletePhoneAsync(Db, principal, actor.Id, serverAttemptId, original, Lifetime); }
-                catch (Exception error) when (error is InventoryOperationPendingException or InventoryOperationReservationException)
-                {
-                    _serverWritePending = true;
-                    throw;
-                }
-            }, serverAttemptId: serverAttemptId)) return;
+            await TerritorialEntityData.DeletePhoneAsync(Db, principal, actor.Id, original, Lifetime))) return;
         _deleted = true;
         _lastServerCode = original.Code;
         AcceptCommitted(submitted, ToState(original));

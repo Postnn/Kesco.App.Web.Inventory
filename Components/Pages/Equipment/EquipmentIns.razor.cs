@@ -199,17 +199,13 @@ public partial class EquipmentIns : IAsyncDisposable
         _createdEquipmentId = null;
         _createdEditUrl = null;
         _creationResult = null;
-        _unverifiedCreationReceipt = null;
-        _creationAttempt = null;
         _creationSentSnapshot = null;
         _creationLateEditorPayload = null;
         _retainedCreationInput = false;
-        _creationServerChecked = _creationServerPending = false;
-        _creationServerNotice = null;
+        _creationServerChecked = false;
         _priorCreatedEquipmentId = null;
-        _receiptPersisted = _creationUncertain = _creationRawPending = _restoreCreationRaw = false;
+        _creationUncertain = _creationRawPending = _restoreCreationRaw = false;
         _creationRawFailed = _applyingCreationRaw = false;
-        _notSentCreationId = null;
         _sourceUnavailable = _draftNeedsReview = _editorRestored = _editorSaveFailed = false;
         _lastEditorDraft = _freshOriginal = null;
         _pendingCreationClose = null;
@@ -562,7 +558,6 @@ public partial class EquipmentIns : IAsyncDisposable
         }
 
         var version = ++_operationVersion;
-        var serverAttemptId = Guid.NewGuid();
         _saving = true;
         _validationMessage = null;
         StateHasChanged();
@@ -587,16 +582,14 @@ public partial class EquipmentIns : IAsyncDisposable
                 return;
             if (!await ReadCreationServerStateAsync(actor, principal, version, _pageCts.Token))
                 return;
-            var id = await Service.CreateJournaledAsync(_model, principal, actor.Id, serverAttemptId, _pageCts.Token,
-                (request, ct) => BeginCreationAsync(request, registration, version, serverAttemptId, ct));
+            _creationSentSnapshot = Snapshot();
+            var id = await Service.CreateAsync(_model, principal, actor.Id, _pageCts.Token);
             if (!IsCurrent(version))
                 return;
             if (id <= 0)
                 throw new InvalidOperationException("База данных не вернула идентификатор созданного оборудования.");
-            if (_creationAttempt is not { } attempt)
-                throw new InvalidOperationException("Не получено подтверждение отправленной попытки.");
 
-            _creationResult = new CreationReceipt(SourceKey, attempt.AttemptId, attempt.Revision, id);
+            _creationResult = new CreationReceipt(id);
             _createdEquipmentId = id;
             _createdEditUrl = editFormUrl is null ? null : BuildEditUrl(editFormUrl, id);
             var laterInput = _creationSentSnapshot is { } submitted && Snapshot() != submitted;
@@ -614,7 +607,7 @@ public partial class EquipmentIns : IAsyncDisposable
             if (!IsCurrentCreationInput(registration, version)) return;
             var scope = await registration.ReadEditorScopeAsync(CreationScope, _pageCts.Token);
             if (!IsCurrentCreationInput(registration, version)) return;
-            if (laterInput || scope.HasRaw || scope.HasOperation)
+            if (laterInput || scope.HasRaw)
             {
                 _retainedCreationInput = laterInput || scope.HasRaw;
                 _validationMessage = $"Оборудование №{id} создано. Более поздний ввод сохранён.";
@@ -640,34 +633,14 @@ public partial class EquipmentIns : IAsyncDisposable
         catch (OperationCanceledException) when (!IsCurrent(version)) { }
         catch (EquipmentCreationRejectedException error) when (IsCurrent(version) && _creationResult is null)
         {
-            try
-            {
-                if (_creationAttempt is { } rejected)
-                    await registration.RejectOperationAsync(rejected.Revision, _pageCts.Token);
-                if (!IsCurrentCreationInput(registration, version)) return;
-                _creationAttempt = null;
                 _creationUncertain = false;
-                _validationMessage = error.Message;
-            }
-            catch (Exception storageError) when (storageError is JSException or InvalidOperationException or OperationCanceledException)
-            {
-                if (IsCurrentCreationInput(registration, version)) SetCreationUnknown();
-            }
+            _validationMessage = error.Message;
         }
         catch (Exception error) when (IsCurrent(version))
         {
-            if (_creationResult is { } receipt)
-                _validationMessage = CreationCleanupPending
-                    ? $"Оборудование №{receipt.EquipmentId} создано. Для проверки результата нажмите «Обновить»."
-                    : $"Оборудование №{receipt.EquipmentId} создано. Не удалось завершить переход.";
-            else if (_creationAttempt is { } attempt)
-                await MarkCreationUnknownAsync(registration, attempt);
-            else if (_notSentCreationId is not null)
-                _validationMessage = "Команда не отправлена. Проверьте состояние операции кнопкой «Обновить».";
-            else
-                _validationMessage = error is InvalidOperationException or UnauthorizedAccessException
-                    ? error.Message
-                    : "Создание не начато. Не удалось завершить проверку команды.";
+            _validationMessage = _creationResult is { } receipt
+                ? $"Оборудование №{receipt.EquipmentId} создано. Не удалось завершить переход."
+                : error.Message;
         }
         finally
         {
@@ -725,8 +698,7 @@ public partial class EquipmentIns : IAsyncDisposable
             finally { if (!_disposed) _saving = false; }
             return;
         }
-        if (CreationCleanupPending || _notSentCreationId is not null || _creationAttempt is not null ||
-            _unverifiedCreationReceipt is not null)
+        if (_creationResult is not null && _creationLateEditorPayload is not null)
         {
             await RetryCreationCompletionAsync();
             return;
@@ -739,7 +711,7 @@ public partial class EquipmentIns : IAsyncDisposable
             await LoadAsync();
             return;
         }
-        if ((!_creationServerChecked || _creationServerPending) && CurrentUser is { } actor &&
+        if (!_creationServerChecked && CurrentUser is { } actor &&
             actor.HasRole(Роли.Специалист_по_инвентаризации_оборудования))
         {
             var version = _operationVersion;

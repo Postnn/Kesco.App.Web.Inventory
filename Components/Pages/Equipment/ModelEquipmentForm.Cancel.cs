@@ -14,8 +14,7 @@ public partial class ModelEquipmentForm
     private int _editorRenderVersion;
     private bool _modelDraftClosed;
 
-    private bool ConfirmModelExternalExit => _saving || IsModified || InputBlocked ||
-        _writeAttempt is not null || _knownWrite is not null || _notSentAttempt is not null;
+    private bool ConfirmModelExternalExit => _saving || IsModified || InputBlocked;
 
     private async Task CancelAsync()
     {
@@ -42,11 +41,6 @@ public partial class ModelEquipmentForm
         if (_disposed || _loading || _saving || _journalBusy || token.IsCancellationRequested)
             return false;
 
-        if (_knownWrite is not null && _writeAttempt is not null)
-        {
-            _journalNotice = "Сначала завершите обработку подтверждённого сохранения. Журнал сохранён.";
-            return false;
-        }
         if (_journal is not { } registration)
             return _modelDraftClosed || !IsModified && !InputBlocked;
 

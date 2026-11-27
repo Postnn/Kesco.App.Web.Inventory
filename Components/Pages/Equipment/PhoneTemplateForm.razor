@@ -10,7 +10,7 @@
 @inject IJSRuntime JS
 
 <PageTitle>@Title</PageTitle>
-<NavigationLock ConfirmExternalNavigation="@(IsModified || _templateAttempt is not null || _knownWrite || _pendingTemplateClose is not null)" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
+<NavigationLock ConfirmExternalNavigation="@(IsModified || _pendingTemplateClose is not null)" OnBeforeInternalNavigation="BeforeInternalNavigationAsync" />
 
 <ClayEntityForm Options="_entityFormOptions">
     <Toolbar>
@@ -23,17 +23,6 @@
         </ClayToolbar>
     </Toolbar>
     <ChildContent>
-    @if (_journalNotice is not null)
-    {
-        <MudAlert Severity="Severity.Warning" Class="mb-3">
-            <div>@_journalNotice</div>
-        </MudAlert>
-    }
-    else if (_latestOwnTemplateConfirmed)
-    {
-        <div role="status">Предыдущая запись шаблона подтверждена сервером.</div>
-    }
-
     @if (_inputNotice is not null)
     {
         <MudAlert Severity="Severity.Warning" Class="mb-3">

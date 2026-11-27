@@ -57,15 +57,11 @@
             }
             @if (_operationNotice is not null || _observedOutcome is not null)
             {
-                <section aria-label="Журнал операций" data-testid="net-operation-journal">
+                <section aria-label="Состояние записи" data-testid="net-operation-journal">
                     @if (_operationNotice is not null)
                     {
                         <MudAlert Severity="Severity.Warning">@_operationNotice</MudAlert>
-                        <ClayToolbarButton Options="RetryJournalOptions" Disabled="@(!CanInspectOperation)" OnClick="CheckOperationJournalAsync" />
-                        @if (_operationContext is { Attempt: not null, OutcomeVerified: false })
-                        {
-                            <ClayToolbarButton Options="ReadOutcomeOptions" Disabled="@(!CanInspectOperation)" OnClick="ReadObservedOutcomeAsync" />
-                        }
+                        <ClayToolbarButton Options="RetryDraftStorageOptions" Disabled="@(!CanInspectOperation)" OnClick="RetryDraftStorageAsync" />
                     }
                     @if (_observedOutcome is not null)
                     {

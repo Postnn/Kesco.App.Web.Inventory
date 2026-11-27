@@ -150,20 +150,17 @@ public partial class PhoneTemplateForm : IDisposable, IAsyncDisposable
     private async Task SaveAsync(bool closeAfterSave)
     {
         if (_model is not { } model || _writeBaseline is not { } baseline || CurrentUser is not { } actor ||
-            _saving || !_canEdit || TemplateWriteBlocked || _templateJournal is not { } journal)
+            _saving || !_canEdit || TemplateWriteBlocked || _templateJournal is null)
             return;
 
         var version = ++_loadVersion;
         _saving = true;
         _errorMessage = null;
         StateHasChanged();
-        var dispatched = false;
-        var noEffect = false;
         try
         {
             var snapshot = await ReadCurrentTemplateAsync(_pageCts.Token);
-            if (!IsCurrentSave(model, version))
-                return;
+            if (!IsCurrentSave(model, version)) return;
             var submitted = MatchesBrowserTemplateText(model.PhoneTemplate, snapshot.Text)
                 ? model.PhoneTemplate ?? string.Empty : snapshot.Text;
             if (model.PhoneTemplate != submitted)
@@ -180,58 +177,25 @@ public partial class PhoneTemplateForm : IDisposable, IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(baseline.PhoneTemplate) && string.IsNullOrWhiteSpace(submitted) &&
                 !await ConfirmAsync("Очистка шаблона", "Вы уверены, что хотите очистить шаблон телефона для данной модели?"))
                 return;
-            if (!IsCurrentSave(model, version) || model.PhoneTemplate != submitted)
-                return;
+            if (!IsCurrentSave(model, version) || model.PhoneTemplate != submitted) return;
 
             var principal = await ReadPrincipalAsync();
-            if (!IsCurrentSave(model, version))
-                return;
+            if (!IsCurrentSave(model, version)) return;
             var command = new EquipmentModel { Id = model.Id, PhoneTemplate = submitted };
-            var attemptId = Guid.NewGuid();
-            var boundary = new EquipmentModelWriteBoundary(
-                ct => BeginTemplateWriteAsync(journal, model, baseline, submitted, attemptId, version, ct),
-                () =>
-                {
-                    if (!IsCurrentSave(model, version) || model.PhoneTemplate != submitted ||
-                        !ReferenceEquals(_templateJournal, journal))
-                        throw new InvalidOperationException("Ввод или контекст изменился. Запись не отправлена.");
-                    dispatched = true;
-                }, () => noEffect = true);
-            await command.SaveJournaledPhoneTemplateAsync(Db, principal, actor.Id, baseline, attemptId, boundary, _pageCts.Token);
-            if (!IsCurrentSave(model, version))
-                return;
+            await command.SavePhoneTemplateAsync(Db, principal, actor.Id, baseline, _pageCts.Token);
+            if (!IsCurrentSave(model, version)) return;
 
             _templateConflictNeedsReview = false;
-            _knownWrite = true;
-            _confirmedStored = false;
-            _submittedTemplate = submitted;
-            await FinishKnownTemplateWriteAsync(journal);
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener");
-            if (!IsCurrentSave(model, version))
-                return;
-            await ReloadKnownTemplateAsync(model, version);
-            if (closeAfterSave && IsCurrentSave(model, version) && !_knownWrite && !IsModified)
+            if (!IsCurrentSave(model, version)) return;
+            await ReloadSavedTemplateAsync(model, submitted, version);
+            if (closeAfterSave && IsCurrentSave(model, version) && !IsModified)
                 await CloseAtEditorRevisionAsync(snapshot.Revision);
         }
         catch (Exception ex) when (IsJournalError(ex) || ex is IOException)
         {
-            if (!IsCurrentSave(model, version))
-                return;
-            if (ex is InventoryOperationPendingException) _serverWritePending = true;
-            if (!_knownWrite)
-                await RecordTemplateFailureAsync(journal, dispatched, noEffect);
-            if (!IsCurrentSave(model, version) || !ReferenceEquals(_templateJournal, journal))
-                return;
-            ShowTemplateJournalState();
-            if (dispatched && noEffect && ex is EquipmentModel.PhoneTemplateWriteRejectedException { BaselineConflict: true })
-            {
-                _templateConflictNeedsReview = true;
-                _inputNotice = "Сверьте исходную версию через «Обновить». Ваш текст оставлен в редакторе.";
-            }
-            if (noEffect || ex is UnauthorizedAccessException)
+            if (IsCurrentSave(model, version))
                 _errorMessage = ex.Message;
-            else if (!_knownWrite && !dispatched && _notSentAttempt is null)
-                _errorMessage = "Не удалось подготовить сохранение. Запись не отправлена.";
         }
         finally
         {
