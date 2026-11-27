@@ -515,8 +515,7 @@ public partial class Net : IAsyncDisposable
             }
 
             if (!await DispatchOperationAsync(model, version, currentUser, SaveOperationKind,
-                    DescribeSaveIntent(model, expectedChangedAt, submitted),
-                    attemptId => LocalNetworkPort.SaveAsync(Db, _windowsPrincipal, currentUser.Id, command, expectedChangedAt, attemptId,
+                    () => LocalNetworkPort.SaveAsync(Db, _windowsPrincipal, currentUser.Id, command, expectedChangedAt,
                         submitted.SwitchToId is > 0 ? submitted.SwitchToId : null,
                         submitted.ExchangeWithId is > 0 ? submitted.ExchangeWithId : null, _pageCts.Token), submitted) ||
                 !IsCurrentSave(model, version))
@@ -542,7 +541,7 @@ public partial class Net : IAsyncDisposable
             if (!OperationBlocked && _operationContext is { } context)
             {
                 var scope = await ReadNetCloseScopeAsync(context);
-                if (scope is { HasRaw: false, HasOperation: false } &&
+                if (scope is { HasRaw: false } &&
                     IsCurrentSave(model, version) && Snapshot(model) == submitted)
                 {
                     if (await CloseNetDraftAsync(context, scope.Revision, _pageCts.Token))
@@ -608,9 +607,8 @@ public partial class Net : IAsyncDisposable
             if (currentUser is null)
                 throw new UnauthorizedAccessException("Не удалось подтвердить текущего пользователя. Перезапуск PoE запрещён.");
             await DispatchOperationAsync(model, version, currentUser, PoeOperationKind,
-                model.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                attemptId => LocalNetworkPort.ResetPoeJournaledAsync(Db, _windowsPrincipal, currentUser.Id,
-                    model.Id, attemptId, _pageCts.Token));
+                () => LocalNetworkPort.ResetPoeAsync(Db, _windowsPrincipal, currentUser.Id,
+                    model.Id, _pageCts.Token));
         }
         catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or UnauthorizedAccessException)
         {

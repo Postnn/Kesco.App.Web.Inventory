@@ -21,7 +21,7 @@ public partial class EquipmentFormService
     private static EquipmentChildPresence CreateSimPresence(ClayPresenceKey key, int equipmentId, string query, object parameters) =>
         new(key, async (connection, login, employeeId, token) =>
         {
-            var actor = await RequireSimJournalAccessAsync(connection, null, login, employeeId, equipmentId, token);
+            var actor = await RequireSimAccessAsync(connection, null, login, employeeId, equipmentId, token);
             return await HasChildPresenceRowAsync(connection, query, parameters, token) ? actor : null;
         });
 }

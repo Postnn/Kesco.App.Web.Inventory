@@ -26,29 +26,6 @@ public class EquipmentInsService
         Func<Equipment, CancellationToken, Task>? beforeDispatch = null) =>
         equipment.InsertAsync(_db, windowsPrincipal, expectedEmployeeId, ct, beforeDispatch);
 
-    /// <summary>Создаёт оборудование и фиксирует подтверждение точной попытки в той же транзакции.</summary>
-    public virtual Task<int> CreateJournaledAsync(Equipment equipment, string? windowsPrincipal, int expectedEmployeeId,
-        Guid attemptId, CancellationToken ct, Func<Equipment, CancellationToken, Task>? beforeDispatch = null) =>
-        equipment.InsertJournaledAsync(_db, windowsPrincipal, expectedEmployeeId, attemptId, ct, beforeDispatch);
-
-    /// <summary>Читает наличие незавершённой серверной попытки до нового создания.</summary>
-    public virtual Task<bool> ReadCreationPendingAsync(string? principal, int employeeId, CancellationToken ct) =>
-        Equipment.ReadCreationPendingAsync(_db, principal, employeeId, ct);
-
-    /// <summary>Читает последний серверный исход собственного создания оборудования.</summary>
-    public virtual Task<InventoryOperationReceipt?> ReadLatestCreationReceiptAsync(string? principal, int employeeId,
-        CancellationToken ct) => Equipment.ReadLatestCreationReceiptAsync(_db, principal, employeeId, ct);
-
-    /// <summary>Сверяет подтверждение точной попытки без повторного вызова процедуры.</summary>
-    public virtual Task<InventoryOperationReceipt?> ReadCreationReceiptAsync(string? principal, int employeeId,
-        Guid attemptId, CancellationToken ct) =>
-        Equipment.ReadCreationReceiptAsync(_db, principal, employeeId, attemptId, ct);
-
-    /// <summary>Передаёт серверу сведения о незавершённых прежних попытках создания.</summary>
-    public virtual Task ImportLegacyCreationOperationsAsync(string? principal, int employeeId,
-        IReadOnlyCollection<Guid> attempts, CancellationToken ct) =>
-        Equipment.ImportLegacyCreationOperationsAsync(_db, principal, employeeId, attempts, ct);
-
     /// <summary>Проверяет доступность бухгалтерского блока для выбранного владельца и снимка сотрудника формы.</summary>
     public virtual Task<bool> CanUseAccountingAsync(Employee? employee, int? personId, CancellationToken ct) =>
         Equipment.CanUseAccountingAsync(_db, employee, personId, ct);

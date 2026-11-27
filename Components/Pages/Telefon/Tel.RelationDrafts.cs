@@ -41,7 +41,7 @@ public partial class Tel
             var actor = await Service.GetCurrentUserAsync(principal, _pageCts.Token);
             if (!Current() || actor?.Id != employee.Id || !actor.HasRole(Роли.Специалист_по_инвентаризации_оборудования))
                 return null;
-            if (await Service.ReadSqlPendingAsync(principal, actor.Id, route.Id, _pageCts.Token) || !Current())
+            if (!Current())
                 return null;
             if (route.Id > 0)
             {
@@ -68,7 +68,7 @@ public partial class Tel
                 registration.Restore.TypedScopes?.TryGetValue(scope, out stored);
             await registration.OpenScopeAsync(scope, _pageCts.Token);
             var state = await registration.ReadEditorScopeAsync(scope, _pageCts.Token);
-            if (!Current() || state.HasOperation)
+            if (!Current())
             {
                 _telChildOpen = false;
                 return null;

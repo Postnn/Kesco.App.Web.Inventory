@@ -12,7 +12,7 @@
 <ClayEntityForm Options="@(new ClayEntityFormOptions { Class = DraftRootClass })">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="OkButton" Disabled="@(ChangingIdentity || StorageBlocked || _serverPending || Busy || Loading || Draft is null || (Dirty && !CanCommit))" OnClick="SaveAsync" />
+            <ClayToolbarButton Options="OkButton" Disabled="@(ChangingIdentity || StorageBlocked || Busy || Loading || Draft is null || (Dirty && !CanCommit))" OnClick="SaveAsync" />
             <ClayToolbarButton Options="ReloadButton" Disabled="@(!CanRefresh)" OnClick="RefreshAsync" />
             <ClayToolbarButton Options="CancelButton" Disabled="@Busy" OnClick="CancelAsync" />
             @if (CanDelete)
@@ -34,7 +34,7 @@
         @if (Draft is { } draft)
         {
             var baseline = AcceptedDraftBaseline;
-            <ClayEditorFocusScope @key="RouteKey" Label="Поля FMTN" Ready="@(Editable && CanCommit && !ChangingIdentity && !_serverPending)" AdvanceOnEnter="true">
+            <ClayEditorFocusScope @key="RouteKey" Label="Поля FMTN" Ready="@(Editable && CanCommit && !ChangingIdentity)" AdvanceOnEnter="true">
                 <div class="d-flex flex-column gap-2" data-draft-scope="main" inert="@(DraftInputSuppressed || ChangingIdentity || StorageBlocked)">
                     <ClayFieldChange Changed="@(Editable && !_prefix.ReadOnly && !_prefix.Disabled && baseline is not null && draft.Prefix != baseline.Prefix)"
                                      RawBaseline="@(Editable && baseline is not null ? baseline.Prefix ?? string.Empty : null)">

@@ -74,27 +74,6 @@ public partial class PhonePoolAttributeForm
     /// <inheritdoc />
     protected override bool UsesRamDraft => true;
 
-    /// <inheritdoc />
-    protected override async Task ImportLegacyEvidenceAsync(Employee actor, string entityKey,
-        IReadOnlyList<ClayLegacyDraftOperationEvidence> evidence, CancellationToken token)
-    {
-        if (evidence.Count == 0) return;
-        if (PhonePoolAttributeKey.Parse(entityKey) is not { } key || key.RouteId != entityKey)
-            throw new InvalidOperationException("Не удалось подтвердить ключ прежней попытки.");
-        var attempts = new List<(Guid AttemptId, string Kind)>(evidence.Count);
-        foreach (var entry in evidence)
-        {
-            if (entry.Data != entityKey || !Guid.TryParse(entry.AttemptId, out var id) || id == Guid.Empty)
-                throw new InvalidOperationException("Прежняя попытка относится к другому атрибуту.");
-            attempts.Add((id, entry.Kind));
-        }
-
-        await PhonePoolAttributeData.ImportLegacyOperationsAsync(Db, await ReadPrincipalAsync(), actor.Id, key, attempts, token);
-        var fresh = await PhonePoolAttributeData.ReadEditorAsync(Db, actor, key, token);
-        token.ThrowIfCancellationRequested();
-        _writePending = fresh.WritePending;
-    }
-
 
     /// <inheritdoc />
     protected override bool SupportsEditorCancellation => Editable;
@@ -110,10 +89,7 @@ public partial class PhonePoolAttributeForm
     protected override Task LoadAccessAsync(Employee user, CancellationToken routeToken) => Task.CompletedTask;
 
     /// <inheritdoc />
-    protected override bool IsDomainRejection(Exception exception) =>
-        exception is PhonePoolAttributeRejectedException or InventoryOperationPendingException;
-
-    private bool CanViewSubmittedAttempt => !Loading && _card is not null && HasUnknownSubmittedSnapshot;
+    protected override bool IsDomainRejection(Exception exception) => exception is PhonePoolAttributeRejectedException;
 
     private bool CanDeleteAttribute => !_writePending && !_deleted && _card?.Attribute is not null && _rights?.CanDelete == true;
     private bool CanApply => !_writePending && !_confirmingDelete && !_retryingRecovery && CanCommit && Editable &&
@@ -140,11 +116,10 @@ public partial class PhonePoolAttributeForm
 
         try
         {
-            var result = await PhonePoolAttributeData.ReadEditorAsync(Db, CurrentUser!, key, routeToken);
+            var result = await PhonePoolAttributeData.ReadAsync(Db, CurrentUser!, key, routeToken);
             routeToken.ThrowIfCancellationRequested();
             _card = result.Card;
             _rights = result.Rights;
-            _writePending = result.WritePending;
             UpdateOptions();
             return new(_card.Attribute?.Value ?? "");
         }
@@ -162,24 +137,6 @@ public partial class PhonePoolAttributeForm
         if ((_card?.Key ?? RequestedKey) is not { } key) return new(null);
         var current = await PhonePoolAttributeData.ReadAsync(Db, actor, key, token);
         return current.Card.Attribute is { } attribute ? new(new FormState(attribute.Value)) : new(null);
-    }
-
-    /// <inheritdoc />
-    protected override async Task<InventoryOperationReceipt?> ReadVerifiedReceiptAsync(string kind, Guid attemptId,
-        FormState? original, FormState proposed, Employee actor, CancellationToken token)
-    {
-        if (CurrentUser?.Id != actor.Id || RequestedKey is not { } key || attemptId == Guid.Empty)
-            return null;
-
-        bool? delete = kind switch
-        {
-            "phone-pool-attribute.insert" or "phone-pool-attribute.update" => false,
-            "phone-pool-attribute.delete" => true,
-            _ => null,
-        };
-        if (delete is not { } deleting) return null;
-        return await PhonePoolAttributeData.ReadWriteReceiptAsync(Db, await ReadPrincipalAsync(), actor.Id, key,
-            attemptId, deleting, token);
     }
 
     /// <inheritdoc />
@@ -219,95 +176,7 @@ public partial class PhonePoolAttributeForm
         Loading || Busy || _confirmingDelete || _retryingRecovery ? Task.CompletedTask
             : Editable || ConfirmedCleanupPending ? CancelAsync() : CloseAsync();
 
-    private async Task ShowSubmittedRecoveryAsync()
-    {
-        if (!CanViewSubmittedAttempt || Busy || _retryingRecovery ||
-            _card is not { } opened || CurrentUser is not { } openedBy) return;
-
-        var generation = EditorGeneration;
-        var identity = SubmittedSnapshotIdentity;
-        var token = Lifetime;
-        _submittedRecovery = null;
-        _submittedUnavailable = false;
-        _retryingRecovery = true;
-        try
-        {
-            var actor = await Employee.GetCurrentWithRolesAsync(Db, await ReadPrincipalAsync(), token);
-            if (!Current()) return;
-            if (actor?.Id != openedBy.Id)
-            {
-                _submittedUnavailable = true;
-                return;
-            }
-
-            var (card, rights) = await PhonePoolAttributeData.ReadAsync(Db, actor, opened.Key, token);
-            if (!Current()) return;
-            if (card.Key != opened.Key || !(rights.CanInsert || rights.CanUpdate || rights.CanDelete))
-            {
-                _submittedUnavailable = true;
-                return;
-            }
-
-            var snapshot = await ReadOwnSubmittedSnapshotAsync<string>((kind, _) => kind switch
-            {
-                "phone-pool-attribute.update" => "Изменение значения",
-                "phone-pool-attribute.delete" => "Удаление значения",
-                _ => null,
-            });
-            if (!Current()) return;
-            _submittedIdentity = identity;
-            _submittedRecovery = snapshot;
-            _submittedUnavailable = snapshot is null;
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception error) when (error is UnauthorizedAccessException or InvalidOperationException or SqlException or TimeoutException)
-        {
-            if (Current()) _submittedUnavailable = true;
-        }
-        finally
-        {
-            if (generation == EditorGeneration) _retryingRecovery = false;
-        }
-
-        bool Current() => !token.IsCancellationRequested && generation == EditorGeneration &&
-            ReferenceEquals(_card, opened) && identity == SubmittedSnapshotIdentity && CanViewSubmittedAttempt;
-    }
-
-    private async Task RefreshAttributeAsync()
-    {
-        if (!_writePending)
-        {
-            await RefreshAsync();
-            return;
-        }
-        if (Loading || Busy || _retryingRecovery || _card is not { } opened || CurrentUser is not { } user)
-            return;
-
-        var generation = EditorGeneration;
-        var token = Lifetime;
-        _retryingRecovery = true;
-        try
-        {
-            var actor = await Employee.GetCurrentWithRolesAsync(Db, await ReadPrincipalAsync(), token);
-            if (actor?.Id != user.Id || !Current()) return;
-            var fresh = await PhonePoolAttributeData.ReadEditorAsync(Db, actor, opened.Key, token);
-            if (!Current()) return;
-            _writePending = fresh.WritePending;
-            if (!_writePending && CanRefresh)
-                await RefreshAsync();
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception error) when (error is UnauthorizedAccessException or InvalidOperationException or SqlException or TimeoutException)
-        {
-            if (Current()) Message = "Не удалось проверить исход попытки изменения атрибута.";
-        }
-        finally
-        {
-            if (generation == EditorGeneration) _retryingRecovery = false;
-        }
-
-        bool Current() => !token.IsCancellationRequested && generation == EditorGeneration && ReferenceEquals(_card, opened);
-    }
+    private Task RefreshAttributeAsync() => RefreshAsync();
 
     private static string DescribeReadFailure(Exception error) => error switch
     {
@@ -335,10 +204,9 @@ public partial class PhonePoolAttributeForm
         }
         Validation = [];
         PhonePoolAttributeCard? saved = null;
-        var attemptId = Guid.NewGuid();
         if (!await ExecuteWriteAsync(original.Attribute is null ? "phone-pool-attribute.insert" : "phone-pool-attribute.update",
-            async principal => saved = await ObserveWriteAsync(PhonePoolAttributeData.SaveAsync(Db, principal, CurrentUser!.Id,
-                original.Key, original.Attribute, draft.Value, Lifetime, attemptId)), serverAttemptId: attemptId)) return;
+            async principal => saved = await PhonePoolAttributeData.SaveAsync(Db, principal, CurrentUser!.Id,
+                original.Key, original.Attribute, draft.Value, Lifetime))) return;
 
         _card = saved!;
         AcceptCommitted(draft, new(saved!.Attribute!.Value));
@@ -371,10 +239,9 @@ public partial class PhonePoolAttributeForm
 
             var submitted = Draft;
             PhonePoolAttributeCard? saved = null;
-            var attemptId = Guid.NewGuid();
             if (!await ExecuteWriteAsync("phone-pool-attribute.delete", async principal =>
-                saved = await ObserveWriteAsync(PhonePoolAttributeData.DeleteAsync(Db, principal, CurrentUser!.Id, original.Key,
-                    attribute, Lifetime, attemptId)), serverAttemptId: attemptId))
+                saved = await PhonePoolAttributeData.DeleteAsync(Db, principal, CurrentUser!.Id, original.Key,
+                    attribute, Lifetime)))
                 return;
             _card = saved!;
             _deleted = true;
@@ -388,17 +255,6 @@ public partial class PhonePoolAttributeForm
             });
         }
         finally { _confirmingDelete = false; }
-    }
-
-    private async Task<PhonePoolAttributeCard> ObserveWriteAsync(Task<PhonePoolAttributeCard> write)
-    {
-        var generation = EditorGeneration;
-        try { return await write; }
-        catch (Exception error) when (error is InventoryOperationPendingException or PhonePoolAttributeUnknownException)
-        {
-            if (generation == EditorGeneration) _writePending = true;
-            throw;
-        }
     }
 
     private Task BeforeLocationAsync(LocationChangingContext context)

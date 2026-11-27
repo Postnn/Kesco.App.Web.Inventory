@@ -154,7 +154,7 @@ public sealed class TelRelationDraftSession<T> where T : class
         {
             var visible = JsonSerializer.Serialize(readVisible());
             var state = await _registration.ReadEditorScopeAsync(Scope, _cancellation);
-            if (!_current() || state.HasOperation)
+            if (!_current())
                 return false;
 
             var choice = ClayEditorCancelChoice.CloseWithoutSaving;

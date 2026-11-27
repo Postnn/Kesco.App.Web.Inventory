@@ -148,9 +148,6 @@ builder.Services.AddScoped<Kesco.App.Web.Inventory.Services.PhoneFormService>();
 // Сервис авто-переподключения к БД (оверлей при потере соединения)
 builder.Services.AddScoped<ClayDbReconnectService>();
 builder.Services.AddScoped<ClayDraftService>();
-var presenceConnectionString = builder.Configuration.GetConnectionString("InventoryPresence") ?? claySettings.ConnectionString;
-builder.Services.AddScoped<IClayPresenceRegistry>(sp => new Kesco.App.Web.Inventory.Services.InventorySqlPresenceRegistry(
-    new DbManager(presenceConnectionString), sp.GetRequiredService<ClayPresenceOptions>()));
 builder.Services.AddClayEntityPresence(options => builder.Configuration.GetSection("ClayPresence").Bind(options));
 builder.Services.AddScoped<ClaySelectAdvancedSearchService>();
 

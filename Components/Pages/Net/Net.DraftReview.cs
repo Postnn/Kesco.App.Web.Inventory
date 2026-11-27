@@ -49,7 +49,7 @@ public partial class Net
             context.InputReview = new NetInputReview(storage, original, local, fresh, freshPort.ChangedAtUtc, rawFields,
                 fresh.GetConflicts(original, local, rawFields));
         }
-        catch (Exception ex) when (IsJournalError(ex) || ex is Microsoft.Data.SqlClient.SqlException or UnauthorizedAccessException)
+        catch (Exception ex) when (IsOperationStateError(ex) || ex is Microsoft.Data.SqlClient.SqlException or UnauthorizedAccessException)
         {
             if (IsCurrentInput(context))
                 _validationMessage = "Не удалось открыть сверку. Ввод сохранён.";
@@ -106,7 +106,7 @@ public partial class Net
             _inputViewRevision++;
             context.InputReview = null;
         }
-        catch (Exception ex) when (IsJournalError(ex) || ex is Microsoft.Data.SqlClient.SqlException or UnauthorizedAccessException)
+        catch (Exception ex) when (IsOperationStateError(ex) || ex is Microsoft.Data.SqlClient.SqlException or UnauthorizedAccessException)
         {
             if (IsCurrentInput(context))
             {

@@ -18,7 +18,7 @@ public partial class EquipmentForm
     private bool _finishingMainClose;
     private bool MainCloseInProgress => _pendingMainClose is not null;
 
-    private bool PreserveMainOutcome => _draftRestoreBlocked || _draftOperationUnresolved || HasPendingPhoneSync ||
+    private bool PreserveMainOutcome => _draftRestoreBlocked || _phoneSyncCheckpoint is not null || HasPendingPhoneSync ||
         ConfigureNeedsReconciliation || _activeEditor is not null;
     private bool ConfirmExternalExit => !_mainDraftCancelled && !_allowNavigation &&
         (IsModified || PreserveMainOutcome || _mainRawRestorePending || MainCloseInProgress);
@@ -53,11 +53,6 @@ public partial class EquipmentForm
         if (ConfigureNeedsReconciliation)
         {
             await ReconcileConfigureAsync();
-            return;
-        }
-        if (PendingSavedAts is not null && !_draftOperationUnresolved)
-        {
-            await ReconcileSavedAtsAsync();
             return;
         }
         await RunMainTransitionAsync(true, CloseAsync, _pageCts.Token);
@@ -122,16 +117,15 @@ public partial class EquipmentForm
             if (!IsCurrent(decision))
                 return;
 
-            var protectedOutcome = PreserveMainOutcome || scope.HasOperation || HasNestedInput(scope);
+            var protectedOutcome = PreserveMainOutcome || HasNestedInput(scope);
             var dirty = HasUnsavedDraft || scope.HasRaw || _mainRawRestorePending || _mainConflictMessage is not null;
             if (refresh && protectedOutcome)
             {
-                if (_draftRestoreBlocked || _draftOperationUnresolved || scope.HasOperation ||
+                if (_draftRestoreBlocked || _phoneSyncCheckpoint is not null ||
                     _activeEditor is not null || HasNestedInput(scope) || dirty)
                 {
-                    await ReconcileDraftOperationAsync();
                     if (IsCurrent(decision))
-                        _warningMessage ??= "Обновление сохранило локальный ввод и состояние предыдущей команды.";
+                        _warningMessage ??= "Обновление сохранило локальный ввод.";
                     return;
                 }
 
@@ -197,17 +191,9 @@ public partial class EquipmentForm
             _validationMessage = "Ввод изменился во время подтверждения. Проверьте текущие данные.";
             return;
         }
-        if (decision.Scope.HasOperation)
+        if (_phoneSyncCheckpoint is not null || _legacyConfigurePending || HasPendingPhoneSync)
         {
-            var evidence = await decision.Registration.ReadCloseOperationEvidenceAsync(decision.Scope.Revision, decision.Token);
-            if (evidence is null)
-                throw new InvalidOperationException("Не удалось прочитать сведения о предыдущей операции.");
-            await Service.ImportEquipmentLegacyEvidenceAsync(decision.Model.Id, decision.EmployeeId, [evidence], decision.Token);
-        }
-        else if (_draftOperationUnresolved || _legacyConfigurePending ||
-                 HasPendingPhoneSync && PendingSavedAts is null && PendingConfigure is null)
-        {
-            _validationMessage = "Исход предыдущей команды не подтверждён долговечным журналом. Сначала выполните сверку.";
+            _validationMessage = "Исход предыдущей команды не подтверждён. Сверьте данные перед закрытием.";
             return;
         }
         if (!IsCurrent(decision) || decision.Snapshot != Snapshot())
@@ -273,7 +259,7 @@ public partial class EquipmentForm
                 throw new InvalidOperationException("Не удалось прочитать состояние редактора.");
             var decision = new MainEditorDecision(registration, scope, model, version, generation, actor.Id, snapshot, ct);
             if (!IsCurrent(decision)) return;
-            if (snapshot != Snapshot() || HasUnsavedDraft || PreserveMainOutcome || scope.HasRaw || scope.HasOperation ||
+            if (snapshot != Snapshot() || HasUnsavedDraft || PreserveMainOutcome || scope.HasRaw ||
                 HasNestedInput(scope) || _activeEditorContext is not null || _restoredEditorState is not null ||
                 _upsTestDraft is not null || _mainRawRestorePending)
             {

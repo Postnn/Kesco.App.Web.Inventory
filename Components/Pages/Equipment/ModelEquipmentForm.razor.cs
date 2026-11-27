@@ -119,12 +119,12 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
     private bool ShowComputer => _selectedType?.HasComputerCharacteristics > 0;
     private bool ShowNetwork => _selectedType?.MacAddressCount > 0;
     private bool ShowPhoneTemplate => _model?.Id > 0 && _selectedType?.Id == (int)ТипыОборудования.IP_телефон && _isDutyEngineer;
-    private ModelEditorFields? EditorComparisonFields => _knownWrite?.SubmittedFields ?? _editorOriginal?.Fields;
+    private ModelEditorFields? EditorComparisonFields => _editorOriginal?.Fields;
     private bool IsModified => _loaded && _model is not null &&
         EditorComparisonFields is { } baseline && baseline != ModelEditorFields.From(_model);
-    private bool CanSave => IsModified && _canEdit && !_loading && !_saving && !WriteBlocked;
+    private bool CanSave => IsModified && _canEdit && !_loading && !_saving && !InputBlocked && !_journalBusy;
     private bool ModelFocusReady => !_disposed && _loaded && _canEdit && !_loading && !_saving &&
-        !WriteBlocked && _loadedKey == CurrentLoadKey;
+        !InputBlocked && !_journalBusy && _loadedKey == CurrentLoadKey;
     private decimal? MonitorSize => _model is null || _model.MonitorSize == 0 ? null : (decimal)_model.MonitorSize;
     private string EquipmentUsageUrl(int modelId) => Navigation.GetUriWithQueryParameters(Navigation.BaseUri,
         new Dictionary<string, object?> { ["id"] = (int)Запросы.Оборудование, ["modelId"] = modelId });
@@ -346,7 +346,8 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
 
     private async Task SaveAsync(bool closeAfterSave)
     {
-        if (_model is null || CurrentUser is not { } actor || _saving || !_canEdit || WriteBlocked || _journal is not { } registration)
+        if (_model is null || CurrentUser is not { } actor || _saving || !_canEdit || InputBlocked || _journalBusy ||
+            _journal is not { } registration)
             return;
         if (!IsModified)
         {
@@ -357,23 +358,18 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
 
         var model = _model;
         var baseline = _writeBaseline;
-        var route = (Id, InitialTypeId);
         var version = ++_loadVersion;
-        var dispatched = false;
-        var noEffect = false;
         _saving = true;
         _validationMessage = null;
         StateHasChanged();
         try
         {
             await Task.Delay(100);
-            if (!IsCurrentSave(model, version))
-                return;
+            if (!IsCurrentSave(model, version)) return;
             if (_form is not null)
             {
                 await _form.ValidateAsync();
-                if (!IsCurrentSave(model, version) || !_form.IsValid)
-                    return;
+                if (!IsCurrentSave(model, version) || !_form.IsValid) return;
             }
             if (model.Validate() is { } validation)
             {
@@ -386,15 +382,13 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
                     _validationMessage = "Модель с таким наименованием и PN уже существует.";
                 return;
             }
-            if (!IsCurrentSave(model, version))
-                return;
+            if (!IsCurrentSave(model, version)) return;
             int? confirmedTypeId = null;
             var requestedTypeId = model.EquipmentTypeId;
             if (model.Id > 0 && baseline?.EquipmentTypeId != requestedTypeId)
             {
                 var usage = await EquipmentModel.GetUsageAsync(Db, model.Id, requestedTypeId, _pageCts.Token);
-                if (!IsCurrentSave(model, version))
-                    return;
+                if (!IsCurrentSave(model, version)) return;
                 if (usage.Total > 0)
                 {
                     var writtenOff = usage.WrittenOff > 0 ? $", из них списано {usage.WrittenOff}" : string.Empty;
@@ -402,54 +396,32 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
                         "Внимание!",
                         $"С этой моделью связано {usage.Total} единиц оборудования{writtenOff}. " +
                         "Изменение типа изменит характеристики этого оборудования. Продолжить?");
-                    if (!IsCurrentSave(model, version) || !confirmed)
-                        return;
+                    if (!IsCurrentSave(model, version) || !confirmed) return;
                     confirmedTypeId = requestedTypeId;
                 }
             }
 
             var principal = await ReadPrincipalAsync();
-            if (!IsCurrentSave(model, version))
-                return;
-            var submittedFields = ModelEditorFields.From(model);
+            if (!IsCurrentSave(model, version)) return;
             var fingerprint = EditableFingerprint(model);
-            var input = SerializeEditorDraft(model);
-            var serverAttemptId = Guid.NewGuid();
-            var id = await model.SaveAsync(Db, principal, actor.Id, serverAttemptId, baseline, confirmedTypeId, _pageCts.Token,
-                new EquipmentModelWriteBoundary(
-                    ct => PrepareJournalAsync(registration, model.Id, baseline?.ChangedAt, fingerprint, input, actor.Id, serverAttemptId, ct),
-                    () =>
-                    {
-                        if (!IsCurrentSave(model, version) || route != (Id, InitialTypeId))
-                            throw new OperationCanceledException();
-                        dispatched = true;
-                    },
-                    () => noEffect = true));
-            _knownWrite = new KnownModelWrite(serverAttemptId.ToString("N"), id, fingerprint)
-            {
-                SubmittedFields = submittedFields,
-            };
-            await FinishKnownJournalAsync(registration);
-            if (!IsCurrentSave(model, version))
-                return;
+            var id = await model.SaveAsync(Db, principal, actor.Id, baseline, confirmedTypeId, _pageCts.Token);
+            if (!IsCurrentSave(model, version)) return;
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener");
-            if (!IsCurrentSave(model, version))
-                return;
+            if (!IsCurrentSave(model, version)) return;
             if (await HasLaterEditorInputAsync(registration, fingerprint))
             {
                 _lateInput = true;
-                UpdateJournalNotice();
+                _inputNotice = "Сохранение подтверждено. Более поздний ввод оставлен в форме.";
                 return;
             }
             if (closeAfterSave)
             {
                 var scope = await registration.ReadEditorScopeAsync(EditorScope, _pageCts.Token);
-                if (!IsCurrentSave(model, version))
-                    return;
+                if (!IsCurrentSave(model, version)) return;
                 if (scope.HasRaw || EditableFingerprint(model) != fingerprint)
                 {
                     _lateInput = true;
-                    UpdateJournalNotice();
+                    _inputNotice = "Сохранение подтверждено. Более поздний ввод оставлен в форме.";
                     return;
                 }
                 if (await TryDeleteModelDraftAsync(registration, scope.Revision, version, _pageCts.Token))
@@ -461,20 +433,10 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
         catch (Exception ex) when (IsJournalError(ex) ||
             ex is Microsoft.Data.SqlClient.SqlException or UnauthorizedAccessException)
         {
-            if (_knownWrite is not null)
-            {
-                if (!_disposed)
-                    _journalNotice = "Сохранение подтверждено. Не удалось перечитать модель, обновить окно или завершить журнал.";
-            }
-            else
-            {
-                if (ex is InventoryOperationPendingException or InventoryOperationReservationException)
-                    _serverPending = true;
-                await MarkWriteFailureAsync(registration, dispatched, noEffect);
-                if (IsCurrentSave(model, version) && (!dispatched || noEffect))
-                    _validationMessage = ex is Microsoft.Data.SqlClient.SqlException
-                        ? "Не удалось подготовить сохранение модели." : ex.Message;
-            }
+            if (IsCurrentSave(model, version))
+                _validationMessage = ex is Microsoft.Data.SqlClient.SqlException
+                    ? "Не удалось сохранить модель. Подробности — в сообщении базы данных."
+                    : ex.Message;
         }
         finally
         {
@@ -488,8 +450,7 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
 
     private async Task PublishSavedModelAsync(int id, ClayDraftRegistration registration)
     {
-        var fingerprint = _knownWrite is { SubmittedFields: not null } receipt ? receipt.Fingerprint
-            : _model is { } original ? EditableFingerprint(original) : null;
+        var fingerprint = _model is { } original ? EditableFingerprint(original) : null;
         var version = ++_loadVersion;
         var canonicalTransition = Id != id;
         var published = false;
@@ -514,7 +475,7 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
             return;
         if (_lateInput)
         {
-            UpdateJournalNotice();
+            _inputNotice = "Сохранение подтверждено. Более поздний ввод оставлен в форме.";
             return;
         }
         if (_notFound || !published || _model?.Id != id || !_loaded)
@@ -528,8 +489,6 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
             _loadedKey = (id, 0);
             Navigation.NavigateTo($"/Equipment/ModelEquipmentForm?id={id}", replace: true);
         }
-        else
-            await ClearConfirmedReceiptAsync(registration);
     }
 
     private bool IsCurrentSave(EquipmentModel model, int version) =>
@@ -547,21 +506,9 @@ public partial class ModelEquipmentForm : IDisposable, IAsyncDisposable
             return;
         if (_model is null)
             return;
-        if (_rawPending && _knownWrite is null)
+        if (_rawPending)
         {
             await RetryEditorRawAsync();
-            return;
-        }
-        if (_writeAttempt is not null && _knownWrite is null && _notSentAttempt is null)
-        {
-            await ObserveWriteAsync();
-            return;
-        }
-        if (_journalNotice is not null)
-        {
-            await RetryJournalAsync();
-            if (_knownWrite is not null && _writeAttempt is null)
-                await ReadKnownWriteAsync();
             return;
         }
         if (_inputSaveFailed)

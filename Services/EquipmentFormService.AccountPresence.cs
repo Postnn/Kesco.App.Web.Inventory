@@ -38,7 +38,7 @@ public partial class EquipmentFormService
         return new(ClayPresenceKey.Create("inventory", "equipment-account", opaqueIdentity),
             async (connection, principal, employeeId, token) =>
             {
-                var actor = await RequireJournalAccountAccessAsync(connection, null, principal, employeeId, equipmentId, token);
+                var actor = await RequireAccountAccessAsync(connection, null, principal, employeeId, equipmentId, token);
                 var stored = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
                     EquipmentChildPresenceQueries.AccountPresenceLogin,
                     new { EquipmentId = equipmentId, Login = new DbString { Value = canonicalLogin, IsAnsi = true, Length = 50 } },

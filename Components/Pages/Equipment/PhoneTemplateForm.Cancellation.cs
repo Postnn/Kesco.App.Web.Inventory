@@ -27,19 +27,9 @@ public partial class PhoneTemplateForm
     {
         if (_disposed || _loading || _saving || _journalBusy || _pendingTemplateClose is not null)
             return;
-        if (_rawPending && !_editorWatchFailed && !_knownWrite)
+        if (_rawPending && !_editorWatchFailed)
         {
             await RetryTemplateRawAsync();
-            return;
-        }
-        if ((_templateAttempt is not null || HasUnprovedTemplateSubmission) && !_knownWrite && _notSentAttempt is null)
-        {
-            await ObserveTemplateAsync();
-            return;
-        }
-        if (_journalNotice is not null)
-        {
-            await RetryTemplateJournalAsync();
             return;
         }
         if (_inputSaveFailed || _editorWatchFailed)
@@ -60,8 +50,7 @@ public partial class PhoneTemplateForm
         if (!_canEdit || _model is not { } model || _writeBaseline is not { } original ||
             _templateJournal is not { } journal || _templateTextModule is not { } module ||
             _editorWatchGeneration is not { } generation || CurrentUser is not { Id: > 0 } employee ||
-            TemplateInputBlocked || !_journalReady || _serverWritePending || _templateAttempt is not null ||
-            _protectedSubmission is not null || _knownWrite || _notSentAttempt is not null)
+            TemplateInputBlocked || !_journalReady)
         {
             _inputNotice = "Не удалось начать сверку шаблона. Ввод сохранён.";
             return;
@@ -85,7 +74,7 @@ public partial class PhoneTemplateForm
             var readiness = await journal.GetRestoreReadinessAsync(token);
             if (!Current())
                 return;
-            if (scope.HasOperation || scope.Revision != captured.Revision || !readiness.Complete)
+            if (scope.Revision != captured.Revision || !readiness.Complete)
             {
                 _inputNotice = "Ввод изменился или не восстановлен полностью. Повторите сверку.";
                 return;
@@ -94,7 +83,7 @@ public partial class PhoneTemplateForm
             var shown = await ReadCurrentTemplateForResetAsync(model, requireEdit: true, token);
             if (!Current())
                 return;
-            if (shown is null || await EquipmentModel.HasPendingPhoneTemplateWriteAsync(Db, employee, model.Id, token))
+            if (shown is null)
             {
                 if (Current())
                     _inputNotice = "Не удалось подтвердить доступ к актуальному шаблону. Ввод сохранён.";
@@ -124,8 +113,7 @@ public partial class PhoneTemplateForm
             var fresh = await ReadCurrentTemplateForResetAsync(model, requireEdit: true, token);
             if (!Current())
                 return;
-            if (fresh is null || !SameTemplateVersion(fresh.CaptureWriteBaseline(), freshBaseline) ||
-                await EquipmentModel.HasPendingPhoneTemplateWriteAsync(Db, employee, model.Id, token))
+            if (fresh is null || !SameTemplateVersion(fresh.CaptureWriteBaseline(), freshBaseline))
             {
                 if (Current())
                     _inputNotice = "Актуальная версия или доступ изменились. Повторите сверку. Ввод сохранён.";
@@ -222,8 +210,7 @@ public partial class PhoneTemplateForm
         if (_allowNavigation)
         {
             _allowNavigation = false;
-            if (_templateAttempt is null && !_knownWrite)
-                return;
+            return;
         }
         if (_model is null && !_loading && !_saving)
             return;
@@ -244,13 +231,7 @@ public partial class PhoneTemplateForm
             return;
         }
 
-        var unresolved = _templateAttempt is not null || _protectedSubmission is not null || _knownWrite ||
-            _notSentAttempt is not null;
-        if (refresh && unresolved)
-        {
-            _inputNotice = "Сначала завершите сверку предыдущей операции. Ввод и попытка сохранены.";
-            return;
-        }
+        var unresolved = false;
 
 
         var model = _model;
@@ -294,7 +275,7 @@ public partial class PhoneTemplateForm
             var scope = await journal.ReadEditorScopeAsync(TemplateInputScope, token);
             if (!Current())
                 return;
-            var dirty = unresolved || scope.HasOperation || IsModified || scope.HasRaw || _inputMissingOriginal ||
+            var dirty = unresolved || IsModified || scope.HasRaw || _inputMissingOriginal ||
                 !MatchesBrowserTemplateText(_writeBaseline?.PhoneTemplate, snapshot.Text);
             var choice = dirty ? await AskTemplateCancelChoiceAsync() : refresh
                 ? ClayEditorCancelChoice.ResetAndStay : ClayEditorCancelChoice.CloseWithoutSaving;
@@ -304,9 +285,9 @@ public partial class PhoneTemplateForm
             EquipmentModel? fresh = null;
             if (choice == ClayEditorCancelChoice.ResetAndStay)
             {
-                if (unresolved || scope.HasOperation)
+                if (unresolved)
                 {
-                    _inputNotice = "Сначала завершите сверку предыдущей операции. Ввод и попытка сохранены.";
+                    _inputNotice = "Сначала проверьте состояние черновика. Ввод сохранён.";
                     return;
                 }
                 fresh = await ReadCurrentTemplateForResetAsync(model, requireEdit: true, token);
@@ -431,7 +412,7 @@ public partial class PhoneTemplateForm
                 return;
             var scope = await journal.ReadEditorScopeAsync(TemplateInputScope, token);
             if (!IsCurrentSave(model, version) || !ReferenceEquals(journal, _templateJournal) ||
-                generation != _editorWatchGeneration || scope.HasOperation || scope.HasRaw || IsModified)
+                generation != _editorWatchGeneration || scope.HasRaw || IsModified)
                 return;
             await CloseApprovedTemplateAsync(journal, scope.Revision, revision);
         }
@@ -449,7 +430,7 @@ public partial class PhoneTemplateForm
         {
             var scope = await journal.ReadEditorScopeAsync(TemplateInputScope, _pageCts.Token);
             if (!Current()) return;
-            if ((unresolved || scope.HasRaw || scope.HasOperation || IsModified) &&
+            if ((unresolved || scope.HasRaw || IsModified) &&
                 await AskTemplateCancelChoiceAsync() != ClayEditorCancelChoice.CloseWithoutSaving)
                 return;
             if (Current())

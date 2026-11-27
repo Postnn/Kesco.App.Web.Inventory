@@ -199,18 +199,11 @@ public partial class ModelEquipmentForm
             return;
         try
         {
-            // Передаём только собственную доказанную метку «не отправлено», если она есть.
-            var status = await registration.RetryStorageAsync(_notSentAttempt, _pageCts.Token);
-            if (!ReferenceEquals(_journal, registration) || _disposed)
-                return;
-            _writeAttempt = status;
-            _notSentAttempt = null;
             _inputSaveFailed = false;
             _scheduledInput = null;
             if (!_inputConflict)
                 _inputNotice = null;
             await PersistEditedInputAsync();
-            await ScanJournalAsync(registration);
         }
         catch (Exception ex) when (IsJournalError(ex))
         {

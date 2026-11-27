@@ -11,6 +11,29 @@ namespace Kesco.App.Web.Inventory.Services;
 /// <summary>Операции чтения и сохранения основной записи оборудования.</summary>
 public partial class EquipmentFormService
 {
+    internal const string InsertAccountCommand = "equipment-account.insert";
+    internal const string UpdateAccountCommand = "equipment-account.update";
+    internal const string DeleteAccountCommand = "equipment-account.delete";
+    internal const string InsertAccountingCommand = "equipment-accounting.insert";
+    internal const string UpdateAccountingCommand = "equipment-accounting.update";
+    internal const string DeleteAccountingCommand = "equipment-accounting.delete";
+    internal const string InsertComputerCommand = "equipment-computer.insert";
+    internal const string UpdateComputerCommand = "equipment-computer.update";
+    internal const string InsertLicenseCommand = "equipment-license.insert";
+    internal const string UpdateLicenseCommand = "equipment-license.update";
+    internal const string InsertSimCommand = "equipment-sim.insert";
+    internal const string UpdateSimCommand = "equipment-sim.update";
+    internal const string DeleteSimCommand = "equipment-sim.delete";
+    internal const string InsertSimServiceCommand = "equipment-sim-service.insert";
+    internal const string UpdateSimServiceCommand = "equipment-sim-service.update";
+    internal const string InsertSoftwareCommand = "equipment-software.insert";
+    internal const string UpdateSoftwareCommand = "equipment-software.update";
+    internal const string AddUpsLinkCommand = "equipment-ups.link.insert";
+    internal const string DeleteUpsLinkCommand = "equipment-ups.link.delete";
+    internal const string SaveUpsDetailsCommand = "equipment-ups.details.save";
+    internal const string AttachNetworkCommand = "equipment-worknet-attach";
+    internal const string DetachNetworkCommand = "equipment-worknet-detach";
+
     private readonly DbManager _db;
     private readonly ICurrentUserPrincipalProvider? _principalProvider;
     private readonly ILogger<EquipmentFormService>? _logger;
@@ -152,39 +175,48 @@ public partial class EquipmentFormService
         await equipment.UpdateAsync(_db);
     }
 
-    /// <summary>Обновляет основную запись и подтверждает попытку в той же SQL-транзакции.</summary>
-    public virtual Task UpdateAsync(Equipment equipment, int employeeId, Guid attemptId, CancellationToken ct) =>
-        SaveMainJournaledAsync(equipment, employeeId, attemptId, original: null, current: null, ct);
+    /// <summary>Сохраняет основную запись с проверкой сотрудника и исходной версии.</summary>
+    public virtual Task UpdateAsync(Equipment equipment, int employeeId, CancellationToken ct) =>
+        SaveMainAsync(equipment, employeeId, null, null, ct);
 
-    /// <summary>Проверяет открытый серверный слот доступного оборудования.</summary>
-    public virtual async Task<bool> ReadMainWritePendingAsync(int equipmentId, int employeeId, CancellationToken ct)
+    private async Task SaveMainAsync(Equipment equipment, int employeeId,
+        IReadOnlyCollection<EquipmentPhoneLink>? original, IReadOnlyCollection<EquipmentPhoneLink>? current, CancellationToken ct)
     {
-        await RequireMainActorAsync(await GetWindowsPrincipalAsync(), employeeId, ct);
-        if (await ReadMainEquipmentAsync(equipmentId, ct) is null)
-            throw new UnauthorizedAccessException("Оборудование недоступно для сверки.");
-        return await InventoryOperationJournal.IsScopePendingAsync(_db, MainEquipmentScope(equipmentId), ct);
-    }
-
-    /// <summary>Читает собственный последний SQL-исход основного сохранения оборудования.</summary>
-    public virtual async Task<InventoryOperationReceipt?> ReadLatestMainWriteReceiptAsync(
-        int equipmentId, int employeeId, CancellationToken ct)
-    {
-        var actor = await RequireMainActorAsync(await GetWindowsPrincipalAsync(), employeeId, ct);
-        if ((await ReadMainEquipmentAsync(equipmentId, ct))?.Id != equipmentId)
-            return null;
-        return await InventoryOperationJournal.ReadLatestAsync(_db, actor, MainEquipmentScope(equipmentId),
-            new[] { "equipment-save", EquipmentAtsWorkflow.SaveCommand }, ct);
-    }
-
-    /// <summary>Читает точное подтверждение SQL-попытки без отправки записи или команд АТС.</summary>
-    public virtual async Task<InventoryOperationReceipt?> ReadMainWriteReceiptAsync(int equipmentId, int employeeId,
-        Guid attemptId, bool includesPhones, CancellationToken ct)
-    {
-        var actor = await RequireMainActorAsync(await GetWindowsPrincipalAsync(), employeeId, ct);
-        if (await ReadMainEquipmentAsync(equipmentId, ct) is null)
-            return null;
-        return await InventoryOperationJournal.ReadAttemptAsync(_db,
-            MainEquipmentAttempt(actor, equipmentId, attemptId, includesPhones), ct);
+        try
+        {
+            var principal = await GetWindowsPrincipalAsync();
+            await RequireMainActorAsync(principal, employeeId, ct);
+            await ValidateEquipmentForSaveAsync(equipment);
+            await _db.RunDbAsync(async connection =>
+            {
+                await using var transaction = await connection.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
+                AssertMainActor(await Employee.GetCurrentWithRolesAsync(connection, transaction, principal, ct), employeeId);
+                var phones = original is not null && current is not null
+                    ? EquipmentPhoneSaveBuilder.BuildEnlisted(equipment, original, current) : null;
+                var parameters = phones?.Parameters ?? equipment.CreateUpdateParameters();
+                if (phones is null)
+                    equipment.AddUpdateConcurrencyParameter(parameters);
+                var sql = phones?.Sql ?? SQLQueries.UPDATE_Оборудование + ";\nSELECT CASE WHEN @@ROWCOUNT = 1 THEN 0 ELSE -1 END;";
+                var status = await connection.ExecuteScalarAsync<int?>(new CommandDefinition(sql, parameters, transaction,
+                    commandType: CommandType.Text, cancellationToken: ct));
+                if (status == -1)
+                    throw MainVersionConflict();
+                if (status != 0)
+                    throw new InvalidOperationException("Ответ SQL не подтвердил сохранение оборудования.");
+                await transaction.CommitAsync(ct);
+                return status;
+            });
+        }
+        catch (EquipmentMainWriteRejectedException error)
+        {
+            throw new EquipmentOperationException(EquipmentWritePhase.Rejected, error.Message, error);
+        }
+        catch (Exception error) when (error is System.Data.Common.DbException or TimeoutException or InvalidOperationException or
+            UnauthorizedAccessException or OperationCanceledException)
+        {
+            throw new EquipmentOperationException(EquipmentWritePhase.Rejected,
+                error.Message, error);
+        }
     }
 
     /// <summary>Загружает телефонные связи оборудования.</summary>
@@ -371,7 +403,7 @@ public partial class EquipmentFormService
         try { await preflight(); }
         catch (Microsoft.Data.SqlClient.SqlException ex)
         {
-            throw new EquipmentOperationException(EquipmentWritePhase.NotSent,
+            throw new EquipmentOperationException(EquipmentWritePhase.Rejected,
                 "Не удалось проверить исходные данные периода. Команда записи не отправлена.", ex);
         }
 
@@ -379,7 +411,7 @@ public partial class EquipmentFormService
         catch (Microsoft.Data.SqlClient.SqlException ex)
         {
             // RAISERROR 50000 и текст исключения не подтверждают rollback полученной команды.
-            throw new EquipmentOperationException(EquipmentWritePhase.Unknown,
+            throw new EquipmentOperationException(EquipmentWritePhase.Rejected,
                 "Результат записи периода неизвестен. Перед повторной записью требуется сверка.", ex);
         }
     }
@@ -443,9 +475,7 @@ public partial class EquipmentFormService
         try { await write(); }
         catch (EquipmentAccountStorageException ex)
         {
-            var phase = ex.MayHaveWritten ? EquipmentWritePhase.Unknown
-                : ex.WasDispatched ? EquipmentWritePhase.Rejected : EquipmentWritePhase.NotSent;
-            throw new EquipmentOperationException(phase, ex.Message, ex);
+            throw new EquipmentOperationException(EquipmentWritePhase.Rejected, ex.Message, ex);
         }
     }
 
@@ -459,7 +489,7 @@ public partial class EquipmentFormService
         }
         catch (Microsoft.Data.SqlClient.SqlException ex)
         {
-            throw new EquipmentOperationException(EquipmentWritePhase.NotSent,
+            throw new EquipmentOperationException(EquipmentWritePhase.Rejected,
                 "Не удалось проверить права или тип оборудования. Команда не отправлена.", ex);
         }
     }
@@ -558,8 +588,8 @@ public partial class EquipmentFormService
         }
         catch (Microsoft.Data.SqlClient.SqlException)
         {
-            var error = new EquipmentSimStorageException(false, false);
-            throw new EquipmentOperationException(EquipmentWritePhase.NotSent, error.Message, error);
+            var error = new EquipmentSimStorageException(false);
+            throw new EquipmentOperationException(EquipmentWritePhase.Rejected, error.Message, error);
         }
     }
 
@@ -568,9 +598,7 @@ public partial class EquipmentFormService
         try { await write(); }
         catch (EquipmentSimStorageException error)
         {
-            var phase = error.MayHaveWritten ? EquipmentWritePhase.Unknown
-                : error.WasDispatched ? EquipmentWritePhase.Rejected : EquipmentWritePhase.NotSent;
-            throw new EquipmentOperationException(phase, error.Message, error);
+            throw new EquipmentOperationException(EquipmentWritePhase.Rejected, error.Message, error);
         }
     }
 
@@ -675,77 +703,39 @@ public partial class EquipmentFormService
         await ExecuteRequiredScalarAsync<int>(SQLQueries.SELECT_ID_ConnectedWorkNet,
             new { EquipmentId = equipmentId }, commandType: CommandType.Text);
 
-    internal const string AttachNetworkCommand = "equipment-worknet-attach";
-    internal const string DetachNetworkCommand = "equipment-worknet-detach";
-
-    /// <summary>Меняет подключение рабочей сети и подтверждает точную попытку в той же транзакции.</summary>
-    public virtual async Task SetNetworkAttachmentAsync(int equipmentId, int employeeId, Guid attemptId, bool attach,
+    /// <summary>Меняет подключение рабочей сети после проверки прав и исходного состояния.</summary>
+    public virtual async Task SetNetworkAttachmentAsync(int equipmentId, int employeeId, bool attach,
         int expectedCount, CancellationToken ct)
     {
-        var submitting = false;
-        try
+        if (equipmentId <= 0 || (attach ? expectedCount != 0 : expectedCount <= 0))
+            throw new NetworkWriteRejectedException("Состояние подключения изменилось. Обновите карточку.");
+        var principal = await GetWindowsPrincipalAsync();
+        AssertNetworkActor(await Employee.GetCurrentWithRolesAsync(_db, principal, ct), employeeId);
+        await _db.RunDbAsync(async connection =>
         {
-            if (equipmentId <= 0 || attemptId == Guid.Empty || (attach ? expectedCount != 0 : expectedCount <= 0))
+            await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+            AssertNetworkActor(await Employee.GetCurrentWithRolesAsync(connection, transaction, principal, ct), employeeId);
+            var type = await connection.QuerySingleOrDefaultAsync<EquipmentType>(new CommandDefinition(
+                SQLQueries.SELECT_ОборудованиеТипДляДочернихЗаписей, new { EquipmentId = equipmentId },
+                transaction, cancellationToken: ct));
+            if (type is not { HasComputerCharacteristics: > 0 })
+                throw new NetworkWriteRejectedException("Компьютер не найден или его тип изменился.");
+
+            Task<int> ReadCountAsync() => connection.ExecuteScalarAsync<int>(new CommandDefinition(
+                SQLQueries.SELECT_ID_ConnectedWorkNet, new { EquipmentId = equipmentId }, transaction,
+                cancellationToken: ct));
+            if (await ReadCountAsync() != expectedCount)
                 throw new NetworkWriteRejectedException("Состояние подключения изменилось. Обновите карточку.");
-            var principal = await GetWindowsPrincipalAsync();
-            var actor = AssertNetworkActor(await Employee.GetCurrentWithRolesAsync(_db, principal, ct), employeeId);
-            var attempt = NetworkAttempt(actor, equipmentId, attemptId, attach);
-            submitting = true;
-            var receipt = await InventoryOperationJournal.RunSqlAsync<NetworkWriteRejectedException>(_db, attempt,
-                async (connection, transaction, token) =>
-                {
-                    AssertNetworkActor(await Employee.GetCurrentWithRolesAsync(connection, transaction, principal, token), employeeId);
-                    var type = await connection.QuerySingleOrDefaultAsync<EquipmentType>(new CommandDefinition(
-                        SQLQueries.SELECT_ОборудованиеТипДляДочернихЗаписей, new { EquipmentId = equipmentId },
-                        transaction, cancellationToken: token));
-                    if (type is not { HasComputerCharacteristics: > 0 })
-                        throw new NetworkWriteRejectedException("Компьютер не найден или его тип изменился.");
 
-                    Task<int> ReadCountAsync() => connection.ExecuteScalarAsync<int>(new CommandDefinition(
-                        SQLQueries.SELECT_ID_ConnectedWorkNet, new { EquipmentId = equipmentId }, transaction,
-                        cancellationToken: token));
-                    if (await ReadCountAsync() != expectedCount)
-                        throw new NetworkWriteRejectedException("Состояние подключения изменилось. Обновите карточку.");
-
-                    await connection.ExecuteAsync(new CommandDefinition(attach ? SQLQueries.INSERT_Net : SQLQueries.UPDATE_Net,
-                        new { КодОборудования = equipmentId }, transaction, cancellationToken: token));
-                    var actualCount = await ReadCountAsync();
-                    if (attach ? actualCount <= 0 : actualCount != 0)
-                        throw new NetworkWriteRejectedException("База не подтвердила новое состояние подключения.");
-                    return equipmentId;
-                }, ct);
-            if (receipt.State == InventoryOperationState.Rejected)
-                throw new NetworkWriteRejectedException("Предыдущая попытка изменения подключения отклонена.");
-            if (receipt.State != InventoryOperationState.Confirmed || receipt.ResultEntityId != equipmentId)
-                throw new InventoryOperationPendingException();
-        }
-        catch (NetworkWriteRejectedException error)
-        {
-            throw new EquipmentOperationException(EquipmentWritePhase.Rejected, error.Message, error);
-        }
-        catch (InventoryOperationPendingException error) when (error.BlockedBeforeReservation)
-        {
-            throw new EquipmentOperationException(EquipmentWritePhase.NotSent, error.Message, error);
-        }
-        catch (Exception error) when (error is Microsoft.Data.SqlClient.SqlException or TimeoutException or
-            InvalidOperationException or OperationCanceledException)
-        {
-            throw new EquipmentOperationException(submitting ? EquipmentWritePhase.Unknown : EquipmentWritePhase.NotSent,
-                error.Message, error);
-        }
+            await connection.ExecuteAsync(new CommandDefinition(attach ? SQLQueries.INSERT_Net : SQLQueries.UPDATE_Net,
+                new { КодОборудования = equipmentId }, transaction, cancellationToken: ct));
+            var actualCount = await ReadCountAsync();
+            if (attach ? actualCount <= 0 : actualCount != 0)
+                throw new NetworkWriteRejectedException("База не подтвердила новое состояние подключения.");
+            await transaction.CommitAsync(CancellationToken.None);
+            return true;
+        });
     }
-
-    /// <summary>Читает подтверждение подключения только для текущего сотрудника и указанной попытки.</summary>
-    public virtual async Task<InventoryOperationReceipt?> ReadNetworkWriteReceiptAsync(int equipmentId, int employeeId,
-        Guid attemptId, bool attach, CancellationToken ct)
-    {
-        var actor = AssertNetworkActor(await Employee.GetCurrentWithRolesAsync(_db, await GetWindowsPrincipalAsync(), ct), employeeId);
-        return await InventoryOperationJournal.ReadAttemptAsync(_db, NetworkAttempt(actor, equipmentId, attemptId, attach), ct);
-    }
-
-    private static InventoryOperationJournal.Attempt NetworkAttempt(Employee actor, int equipmentId, Guid attemptId, bool attach) =>
-        InventoryOperationJournal.ForEmployee(actor, attemptId, MainEquipmentScope(equipmentId),
-            attach ? AttachNetworkCommand : DetachNetworkCommand);
 
     private static Employee AssertNetworkActor(Employee? actor, int employeeId) =>
         actor is not null && actor.Id == employeeId &&
@@ -976,90 +966,16 @@ public partial class EquipmentFormService
             return intent;
         });
 
-    /// <summary>Сохраняет оборудование, связи и данные для АТС атомарно. Возврат той же попытки читает журнал.</summary>
+    /// <summary>Сохраняет оборудование и телефонные связи одной штатной транзакцией.</summary>
     public virtual async Task<EquipmentPhoneSyncIntent?> SaveWithPhonesAsync(Equipment equipment,
         IReadOnlyCollection<EquipmentPhoneLink> original, IReadOnlyCollection<EquipmentPhoneLink> current,
-        int employeeId, Guid attemptId, CancellationToken ct)
+        int employeeId, CancellationToken ct)
     {
-        await SaveMainJournaledAsync(equipment, employeeId, attemptId, original, current, ct);
-        return SavedPhoneTicket(attemptId, equipment.Id);
-    }
-
-    private async Task SaveMainJournaledAsync(Equipment equipment, int employeeId, Guid attemptId,
-        IReadOnlyCollection<EquipmentPhoneLink>? original, IReadOnlyCollection<EquipmentPhoneLink>? current,
-        CancellationToken ct)
-    {
-        var includesPhones = original is not null && current is not null;
-        var submitting = false;
-        try
-        {
-            var principal = await GetWindowsPrincipalAsync();
-            var actor = await RequireMainActorAsync(principal, employeeId, ct);
-            var persisted = await ReadMainEquipmentAsync(equipment.Id, ct);
-            if (persisted is null || persisted.Id != equipment.Id)
-                throw MainVersionConflict();
-            EquipmentAtsSaveCandidate[] candidates = includesPhones
-                ? EquipmentPhoneSaveBuilder.AtsCandidates(equipment.Id, original!, current!) : [];
-            string[] relatedScopes = includesPhones
-                ? EquipmentPhoneSaveBuilder.ChangedPhoneIds(equipment.Id, original!, current!)
-                    .Select(id => "tel/" + id.ToString(CultureInfo.InvariantCulture))
-                    .Concat(candidates.Where(target => target.Kind == EquipmentAtsSaveCandidate.Ccm)
-                        .Select(target => MainEquipmentScope(target.TargetId))).ToArray()
-                : [];
-            var attempt = MainEquipmentAttempt(actor, equipment.Id, attemptId, includesPhones, relatedScopes);
-            if (await InventoryOperationJournal.ReadAttemptAsync(_db, attempt, ct) is { } previous)
-            {
-                EnsureMainSqlConfirmed(previous, equipment.Id);
-                return;
-            }
-            if (persisted.ChangedAtUtc != equipment.ChangedAtUtc)
-                throw MainVersionConflict();
-            await ValidateEquipmentForSaveAsync(equipment);
-
-            var command = includesPhones ? EquipmentPhoneSaveBuilder.BuildEnlisted(equipment, original!, current!) : null;
-            var parameters = command?.Parameters ?? equipment.CreateUpdateParameters();
-            if (!includesPhones)
-                equipment.AddUpdateConcurrencyParameter(parameters);
-            var sql = command?.Sql ?? SQLQueries.UPDATE_Оборудование + ";\nSELECT CASE WHEN @@ROWCOUNT = 1 THEN 0 ELSE -1 END;";
-            submitting = true;
-            var receipt = await InventoryOperationJournal.RunSqlAsync<EquipmentMainWriteRejectedException>(_db, attempt,
-                async (connection, transaction, token) =>
-                {
-                    AssertMainActor(await Employee.GetCurrentWithRolesAsync(connection, transaction, principal, token), employeeId);
-                    var status = await connection.ExecuteScalarAsync<int?>(new CommandDefinition(sql, parameters, transaction,
-                        commandType: CommandType.Text, cancellationToken: token));
-                    if (status == -1) throw MainVersionConflict();
-                    if (status != 0) throw new InvalidOperationException("Ответ SQL не подтвердил сохранение оборудования.");
-                    if (includesPhones)
-                    {
-                        try
-                        {
-                            await EquipmentAtsWorkflow.EnlistSavedAsync(connection, transaction, attempt, equipment.Id, original!, current!, token);
-                        }
-                        catch (EquipmentAtsSaveConflictException)
-                        {
-                            throw MainVersionConflict();
-                        }
-                    }
-                    return equipment.Id;
-                }, ct);
-            EnsureMainSqlConfirmed(receipt, equipment.Id);
-        }
-        catch (EquipmentMainWriteRejectedException error)
-        {
-            throw new EquipmentOperationException(EquipmentWritePhase.Rejected, error.Message, error);
-        }
-        catch (Exception error) when (error is InventoryOperationPendingException or InventoryOperationReservationException)
-        {
-            var phase = error is InventoryOperationPendingException pending && (!submitting || pending.BlockedBeforeReservation)
-                ? EquipmentWritePhase.NotSent : EquipmentWritePhase.Unknown;
-            throw new EquipmentOperationException(phase, error.Message, error);
-        }
-        catch (Exception error) when (error is Microsoft.Data.SqlClient.SqlException or TimeoutException or InvalidOperationException)
-        {
-            throw new EquipmentOperationException(submitting ? EquipmentWritePhase.Unknown : EquipmentWritePhase.NotSent,
-                error.Message, error);
-        }
+        await SaveMainAsync(equipment, employeeId, original, current, ct);
+        var intent = CreatePhoneIntent(equipment.Id, EquipmentPhoneSyncOrigin.EquipmentSave,
+            equipment.ChangedAtUtc, equipment.OwnerId, equipment.EquipmentTypeId, original, current);
+        _confirmedPhoneIntents[intent.AttemptId] = intent;
+        return intent;
     }
 
     private async Task<Equipment?> ReadMainEquipmentAsync(int id, CancellationToken ct) =>
@@ -1072,20 +988,7 @@ public partial class EquipmentFormService
         actor is not null && actor.Id == employeeId && actor.HasRole(Роли.Специалист_по_инвентаризации_оборудования)
             ? actor : throw new EquipmentMainWriteRejectedException("Недостаточно прав для изменения оборудования.");
 
-    private static InventoryOperationJournal.Attempt MainEquipmentAttempt(Employee actor, int id, Guid attemptId, bool phones,
-        IReadOnlyCollection<string>? relatedScopes = null) =>
-        InventoryOperationJournal.ForEmployee(actor, attemptId, MainEquipmentScope(id),
-            phones ? EquipmentAtsWorkflow.SaveCommand : "equipment-save", relatedScopes);
-
     private static string MainEquipmentScope(int id) => "equipment/" + id.ToString(CultureInfo.InvariantCulture);
-
-    private static void EnsureMainSqlConfirmed(InventoryOperationReceipt receipt, int equipmentId)
-    {
-        if (receipt.State == InventoryOperationState.Rejected)
-            throw new EquipmentMainWriteRejectedException("Предыдущая попытка сохранения оборудования отклонена.");
-        if (receipt.State != InventoryOperationState.Confirmed || receipt.ResultEntityId != equipmentId)
-            throw new InventoryOperationPendingException();
-    }
 
     private static EquipmentMainWriteRejectedException MainVersionConflict() =>
         new("Оборудование или телефонные связи были изменены другим пользователем. Обновите данные и повторите операцию.");
@@ -1153,8 +1056,6 @@ public partial class EquipmentFormService
     public virtual async Task<PhoneSyncAttempt> SynchronizePhoneAttemptAsync(EquipmentPhoneSyncIntent intent,
         Func<PhoneSyncAttempt, Task>? checkpoint = null)
     {
-        if (intent.DurableSave)
-            return await SynchronizeSavedPhonesAsync(intent);
         _ = await RunPhasedAsync(async _ =>
         {
             await ValidateTrustedIntentAsync(intent);
@@ -1250,10 +1151,6 @@ public partial class EquipmentFormService
     public virtual async Task<PhoneSyncAttempt> RetryPhoneSyncAttemptAsync(PhoneSyncAttempt attempt,
         Func<PhoneSyncAttempt, Task>? checkpoint = null)
     {
-        if (attempt.Intent.DurableSave)
-            return await SynchronizeSavedPhonesAsync(attempt.Intent);
-        if (attempt.Intent.Origin == EquipmentPhoneSyncOrigin.ExplicitConfigure)
-            return await RetryConfigurePhoneAsync(attempt, checkpoint);
         if (_phoneSyncPlanningGate.CurrentCount == 0)
             throw new InvalidOperationException("Дождитесь завершения планирования синхронизации АТС.");
         if (!_phoneSyncAttempts.TryGetValue(attempt.Intent.AttemptId, out var current) ||
@@ -1286,10 +1183,6 @@ public partial class EquipmentFormService
     /// <summary>Только читает фактическое состояние; не изменяет outcomes и не выполняет DML/ATS replay.</summary>
     public virtual async Task<PhoneSyncReconciliation> ReconcilePhoneSyncAttemptAsync(PhoneSyncAttempt attempt)
     {
-        if (attempt.Intent.DurableSave)
-            return await ReconcileSavedPhonesAsync(attempt.Intent);
-        if (attempt.Intent.Origin == EquipmentPhoneSyncOrigin.ExplicitConfigure)
-            return await ReconcileConfigurePhoneAsync(attempt);
         if (!_phoneSyncAttempts.TryGetValue(attempt.Intent.AttemptId, out var current) ||
             !IntentMatches(current.Intent, attempt.Intent) || current.PlanningError != attempt.PlanningError ||
             !OperationResultsMatch(current.Operations, attempt.Operations))
@@ -1297,7 +1190,16 @@ public partial class EquipmentFormService
         var equipment = await GetAsync(current.Intent.EquipmentId);
         if (equipment is null)
             return new PhoneSyncReconciliation(current, null, [], false);
-        await EnsureInventoryEditAsync();
+        if (current.Intent.Origin == EquipmentPhoneSyncOrigin.ExplicitConfigure)
+        {
+            await EnsureConfigureActorAsync(equipment, null, default);
+            if (equipment.OwnerId != current.Intent.OwnerId || equipment.ChangedAtUtc != current.Intent.ExpectedChangedAtUtc)
+                return new PhoneSyncReconciliation(current, equipment, [], false);
+        }
+        else
+        {
+            await EnsureInventoryEditAsync();
+        }
         var actual = await GetPhonesAsync(current.Intent.EquipmentId);
         var actualById = actual.ToDictionary(item => item.PhoneId);
         var currentIds = current.Intent.Current.Select(item => item.PhoneId).ToHashSet();
@@ -1343,9 +1245,18 @@ public partial class EquipmentFormService
     {
         if (!_confirmedPhoneIntents.TryGetValue(intent.AttemptId, out var confirmed) || !IntentMatches(confirmed, intent))
             throw new UnauthorizedAccessException("ATS intent не подтверждён сохранением в текущем серверном контексте.");
-        _ = await GetAsync(intent.EquipmentId) ??
+        var equipment = await GetAsync(intent.EquipmentId) ??
             throw new InvalidOperationException("Оборудование не найдено. Повтор синхронизации отменён.");
-        await EnsureInventoryEditAsync();
+        if (intent.Origin == EquipmentPhoneSyncOrigin.ExplicitConfigure)
+        {
+            if (equipment.OwnerId != intent.OwnerId || equipment.ChangedAtUtc != intent.ExpectedChangedAtUtc)
+                throw new InvalidOperationException("Владелец или версия оборудования изменились. Повтор настройки отменён.");
+            await EnsureConfigureActorAsync(equipment, null, default);
+        }
+        else
+        {
+            await EnsureInventoryEditAsync();
+        }
         await EnsurePhoneSyncContextCurrentAsync(intent);
     }
 
@@ -1624,10 +1535,8 @@ public partial class EquipmentFormService
 
     private static async Task<T> RunPhasedAsync<T>(Func<PhasedDispatch, Task<T>> operation)
     {
-        var dispatched = false;
         async Task Dispatch(Func<Task> write)
         {
-            dispatched = true;
             await write();
         }
         try
@@ -1641,12 +1550,12 @@ public partial class EquipmentFormService
         catch (Microsoft.Data.SqlClient.SqlException ex)
         {
             throw new EquipmentOperationException(
-                dispatched ? EquipmentWritePhase.Unknown : EquipmentWritePhase.NotSent, ex.Message, ex);
+                EquipmentWritePhase.Rejected, ex.Message, ex);
         }
         catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
             throw new EquipmentOperationException(
-                dispatched ? EquipmentWritePhase.Unknown : EquipmentWritePhase.Rejected, ex.Message, ex);
+                EquipmentWritePhase.Rejected, ex.Message, ex);
         }
     }
 
@@ -1702,8 +1611,6 @@ public sealed record PhoneSyncAttempt(
     /// <summary>Причина незавершённого планирования до отправки какой-либо операции АТС.</summary>
     public string? PlanningError { get; init; }
 
-    /// <summary>Сервер закрыл устаревший план после проверки, что ни один шаг не был отправлен.</summary>
-    public bool Abandoned { get; init; }
 
     /// <summary>Стабильный идентификатор попытки и всех её операций.</summary>
     public string AttemptId => Intent.AttemptId;
@@ -1752,14 +1659,8 @@ public sealed record PhoneSyncOperationResult(
 /// <summary>Фаза серверной записи и последующего обновления прочитанного состояния.</summary>
 public enum EquipmentWritePhase
 {
-    /// <summary>Ошибка preflight до DML; команда не отправлялась.</summary>
-    NotSent,
-
-    /// <summary>Ввод, контекст или права отклонены до DML.</summary>
+    /// <summary>Запись отклонена или завершилась ошибкой; исходная ошибка доступна вызывающему коду.</summary>
     Rejected,
-
-    /// <summary>Ответ потерян после DML dispatch; повтор запрещён до сверки.</summary>
-    Unknown,
 
     /// <summary>Запись и последующее чтение подтверждены.</summary>
     Committed,

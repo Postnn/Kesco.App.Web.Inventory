@@ -23,7 +23,7 @@
 <ClayEntityForm Options="_entityFormOptions">
     <Toolbar>
         <ClayToolbar>
-            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit || WriteBlocked)" OnClick="@(() => SaveAsync(true))" />
+            <ClayToolbarButton Options="_okOptions" Disabled="@(_loading || _saving || !_loaded || !_canEdit || InputBlocked)" OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="_applyOptions" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
             <ClayToolbarButton Options="_refreshOptions" Disabled="@(_loading || _saving)" OnClick="RefreshAsync" />
             <ClayToolbarButton Options="_cancelOptions" Disabled="@(_saving || _loading || _journalBusy)" OnClick="CancelAsync" />
@@ -34,25 +34,6 @@
     @if (!string.IsNullOrWhiteSpace(_validationMessage))
     {
         <MudAlert Severity="Severity.Error" Class="mb-3">@_validationMessage</MudAlert>
-    }
-    @if (_journalNotice is not null)
-    {
-        <section aria-label="Журнал сохранения модели" data-testid="model-save-journal">
-            <MudAlert Severity="Severity.Warning">@_journalNotice</MudAlert>
-        </section>
-    }
-    @if (_loaded && !_loading && _loadedKey == CurrentLoadKey && _journalNotice is null &&
-        _writeAttempt is null && _knownWrite is null && _restoredBrowserReceipt is null && !_serverPending &&
-        _serverLatest is { State: InventoryOperationState.Confirmed, ResultEntityId: > 0 } priorSave &&
-        (Id == 0 || priorSave.ResultEntityId == Id))
-    {
-        <MudAlert Severity="Severity.Info">
-            @($"Предыдущее сохранение модели №{priorSave.ResultEntityId} подтверждено сервером.")
-            @if (Id == 0)
-            {
-                <a href="@($"/Equipment/ModelEquipmentForm?id={priorSave.ResultEntityId}")">Открыть сохранённую модель</a>
-            }
-        </MudAlert>
     }
     @if (_inputNotice is not null)
     {

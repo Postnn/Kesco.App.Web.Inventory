@@ -179,8 +179,8 @@ public partial class Tel : IDisposable, IAsyncDisposable
     private bool CanSave => IsModified && _canEdit && !_loading && !_saving && !_deleted && !_versionConflict && !TelWriteBlocked;
     private string CloseConfirmation(string draftMessage)
     {
-        if (_telMarker is not null && _telProgress?.SqlConfirmed != true)
-            return $"{draftMessage} Результат предыдущей попытки требует сверки. Журнал сохранён.";
+        if (_telProgress is { SqlConfirmed: false })
+            return $"{draftMessage} Результат предыдущей попытки требует сверки. Черновик сохранён.";
         if (!HasPendingSync) return draftMessage;
         return HasUnsavedDraft ? $"{draftMessage} {PendingSyncWarning}" : PendingSyncWarning;
     }
@@ -931,9 +931,8 @@ public partial class Tel : IDisposable, IAsyncDisposable
         }
         catch (Exception ex) when (IsTelJournalError(ex) || ex is Microsoft.Data.SqlClient.SqlException or UnauthorizedAccessException)
         {
-            await ReportTelWriteExceptionAsync((dispatched && ex is not TelSqlRejectedException) ||
-                ex is InventoryOperationReservationException);
-            if (IsCurrent(version) && _telProgress is null && _notSentAttemptId is null)
+            await ReportTelWriteExceptionAsync((dispatched && ex is not TelSqlRejectedException));
+            if (IsCurrent(version) && _telProgress is null)
                 _validationMessage = ex is Microsoft.Data.SqlClient.SqlException
                     ? "Не удалось подготовить запись телефонного номера." : ex.Message;
         }
@@ -1113,9 +1112,8 @@ public partial class Tel : IDisposable, IAsyncDisposable
         }
         catch (Exception ex) when (IsTelJournalError(ex) || ex is InvalidOperationException or UnauthorizedAccessException or Microsoft.Data.SqlClient.SqlException)
         {
-            await ReportTelWriteExceptionAsync((dispatched && ex is not TelSqlRejectedException) ||
-                ex is InventoryOperationReservationException);
-            if (IsCurrent(version) && _telProgress is null && _notSentAttemptId is null)
+            await ReportTelWriteExceptionAsync((dispatched && ex is not TelSqlRejectedException));
+            if (IsCurrent(version) && _telProgress is null)
                 _validationMessage = ex is Microsoft.Data.SqlClient.SqlException
                     ? "Не удалось подготовить удаление номера." : ex.Message;
         }
@@ -1154,9 +1152,9 @@ public partial class Tel : IDisposable, IAsyncDisposable
             {
                 var scope = await registration.ReadEditorScopeAsync(TelInputScope, token);
                 if (!Current()) return false;
-                if (scope.HasRaw || scope.HasOperation)
+                if (scope.HasRaw)
                 {
-                    _telInputNotice = "В форме остался ввод или незавершённая попытка. Подтвердите закрытие.";
+                    _telInputNotice = "В форме остался ввод. Подтвердите закрытие.";
                     return false;
                 }
                 expected = scope.Revision;
@@ -1222,7 +1220,7 @@ public partial class Tel : IDisposable, IAsyncDisposable
                 context.PreventNavigation();
                 return;
             }
-            if (HasTelParentInput || HasUnresolvedTelEditorWrite || scope is { HasRaw: true } or { HasOperation: true })
+            if (HasTelParentInput || HasUnresolvedTelEditorWrite || scope is { HasRaw: true })
             {
                 if (!await ConfirmAsync("Переход на другую страницу", CloseConfirmation("Покинуть форму без сохранения изменений?")))
                 {

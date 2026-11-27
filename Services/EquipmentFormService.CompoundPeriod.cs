@@ -6,24 +6,24 @@ public partial class EquipmentFormService
 {
     /// <summary>Записывает расположение, перемещение связанных SIM и при необходимости выдачу в одной транзакции.</summary>
     public virtual Task AddLocationAsync(EquipmentLocationPeriod location, EquipmentResponsiblePeriod? responsible,
-        bool expectedActiveResponsible, int employeeId, Guid attemptId, CancellationToken ct)
+        bool expectedActiveResponsible, int employeeId, CancellationToken ct)
     {
         var move = CopyLocationPeriod(location);
         var issue = responsible is null ? null : CopyResponsiblePeriod(responsible);
         var validation = ValidatePeriodRequest(() => ValidateLocationAddition(move, issue));
         if (issue is not null) issue.FromUtc = move.FromUtc;
-        return RunPeriodJournalWriteAsync(move.EquipmentId, move.FromUtc, AddLocationPeriodCommand, employeeId,
-            attemptId, validation, (connection, transaction, _, simIds, token) =>
+        return RunPeriodWriteAsync(move.EquipmentId, move.FromUtc, employeeId,
+            validation, (connection, transaction, _, simIds, token) =>
             {
                 var command = EquipmentLocationSaveBuilder.BuildAddEnlisted(move, issue, expectedActiveResponsible, simIds);
-                return EquipmentPeriodJournalWrite.ExecuteAsync(connection, transaction, command.Sql, command.Parameters,
+                return EquipmentPeriodWrite.ExecuteAsync(connection, transaction, command.Sql, command.Parameters,
                     move.EquipmentId, token, AddLocationRefusal);
             }, ct, new CompoundPeriodContext(move, issue));
     }
 
     /// <summary>Атомарно закрывает ответственность, фиксирует перенос SIM и выдачу следующему ответственному.</summary>
     public virtual Task WithdrawResponsibleAsync(EquipmentResponsiblePeriod current, EquipmentResponsiblePeriod? next,
-        EquipmentLocationPeriod? location, DateTime? nextFromLocalDate, int employeeId, Guid attemptId, CancellationToken ct)
+        EquipmentLocationPeriod? location, DateTime? nextFromLocalDate, int employeeId, CancellationToken ct)
     {
         var closing = CopyResponsiblePeriod(current);
         var issue = next is null ? null : CopyResponsiblePeriod(next);
@@ -44,12 +44,12 @@ public partial class EquipmentFormService
                 validation ??= "Срок возврата следующего ответственного не может быть раньше его выдачи.";
         }
 
-        return RunPeriodJournalWriteAsync(closing.EquipmentId, closing.FromUtc, WithdrawResponsiblePeriodCommand,
-            employeeId, attemptId, validation, (connection, transaction, start, simIds, token) =>
+        return RunPeriodWriteAsync(closing.EquipmentId, closing.FromUtc,
+            employeeId, validation, (connection, transaction, start, simIds, token) =>
             {
                 closing.FromUtc = start;
                 var command = EquipmentResponsibleSaveBuilder.BuildWithdrawEnlisted(closing, issue, move, simIds);
-                return EquipmentPeriodJournalWrite.ExecuteAsync(connection, transaction, command.Sql, command.Parameters,
+                return EquipmentPeriodWrite.ExecuteAsync(connection, transaction, command.Sql, command.Parameters,
                     closing.EquipmentId, token, WithdrawRefusal);
             }, ct, new CompoundPeriodContext(move, issue));
     }

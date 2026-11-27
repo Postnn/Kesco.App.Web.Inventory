@@ -16,7 +16,7 @@
     {
         <MudAlert Severity="@_messageSeverity" Class="mb-2">@_message</MudAlert>
     }
-    @if ((_loadFailed || RecoveryRequired) && !IsBusy)
+    @if (_loadFailed && !IsBusy)
     {
         <MudButton OnClick="ReloadAsync">Перечитать список</MudButton>
     }

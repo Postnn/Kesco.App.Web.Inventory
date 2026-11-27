@@ -31,7 +31,7 @@
                 @(_rawRestoreFailed ? "Не удалось восстановить часть ввода." : "Часть ввода ожидает восстановления.")
             </MudAlert>
         }
-        @if ((_unknown && _attemptDate is not null) || _conflict)
+        @if (_conflict)
         {
             <MudButton OnClick="CompareAsync" Disabled="@_busy">Сверить состояние записи</MudButton>
         }
@@ -63,10 +63,6 @@
                 <MudText Typo="Typo.subtitle2" HtmlTag="h2">Актуальные данные для сверки</MudText>
                 <div>@comparison</div>
             </section>
-        }
-        @if (_recoveredOperation is { } operation)
-        {
-            <MudText Typo="Typo.body2">Попытка @operation.AttemptId, ревизия @operation.Revision.</MudText>
         }
         @foreach (var (title, snapshot) in RecoverySnapshots())
         {

@@ -17,7 +17,7 @@ public partial class Tel
     private long? _telCloseRevision;
 
     private bool HasUnresolvedTelEditorWrite =>
-        _telMarker is not null || _telProgress is not null || _notSentAttemptId is not null || HasPendingSync;
+        _telProgress is not null || HasPendingSync;
 
     private bool HasTelParentInput =>
         HasUnsavedDraft || !string.IsNullOrEmpty(_parallelQuickNumber) || TelInputBlocked;
@@ -41,7 +41,7 @@ public partial class Tel
             var fingerprint = CurrentTelInputFingerprint();
             var scope = registration is null ? null : await registration.ReadEditorScopeAsync(TelInputScope, _pageCts.Token);
             if (!Current()) return;
-            if (!HasTelParentInput && !HasUnresolvedTelEditorWrite && scope is not { HasRaw: true } and not { HasOperation: true })
+            if (!HasTelParentInput && !HasUnresolvedTelEditorWrite && scope is not { HasRaw: true })
             {
                 await CloseAsync(scope?.Revision);
                 return;
@@ -57,12 +57,12 @@ public partial class Tel
                 choice == ClayEditorCancelChoice.Continue)
                 return;
 
-            if (HasUnresolvedTelEditorWrite || scope?.HasOperation == true)
+            if (HasUnresolvedTelEditorWrite)
             {
                 if (choice == ClayEditorCancelChoice.CloseWithoutSaving && fingerprint == CurrentTelInputFingerprint())
                     await CloseAsync(scope?.Revision);
                 else
-                    _telInputNotice = "Сначала требуется сверка предыдущей операции. Ввод и журнал сохранены.";
+                    _telInputNotice = "Сначала проверьте результат предыдущей записи. Ввод сохранён.";
                 return;
             }
             if (registration is null || scope is null || fingerprint != CurrentTelInputFingerprint())
@@ -128,7 +128,7 @@ public partial class Tel
             var fingerprint = CurrentTelInputFingerprint();
             var scope = registration is null ? null : await registration.ReadEditorScopeAsync(TelInputScope, _pageCts.Token);
             if (!Current()) return;
-            if (HasTelParentInput || scope is { HasRaw: true } or { HasOperation: true })
+            if (HasTelParentInput || scope is { HasRaw: true })
             {
                 var available = Id <= 0 && CopyId <= 0 || await ReadFreshTelEditorAsync(requireEdit: false, Current) is not null;
                 if (Current())

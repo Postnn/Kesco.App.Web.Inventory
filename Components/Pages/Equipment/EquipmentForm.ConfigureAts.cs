@@ -71,8 +71,8 @@ public partial class EquipmentForm
             if (registration is null)
                 throw new InvalidOperationException("Не удалось проверить состояние редактора.");
             if (!Current() || !ReferenceEquals(registration, _draftRegistration)) return;
-            if (EquipmentRecoveryWriteBlocked || _draftOperationUnresolved || !MainRawReady || beginning && HasUnsavedDraft)
-                throw new InvalidOperationException("Сначала проверьте незавершённую операцию или ввод в карточке.");
+            if (EquipmentRecoveryWriteBlocked || _phoneSyncCheckpoint is not null || !MainRawReady || beginning && HasUnsavedDraft)
+                throw new InvalidOperationException("Сначала проверьте сохранённый этап АТС или ввод в карточке.");
 
             _configureAttemptId = attemptId;
             var result = await action();
@@ -82,11 +82,8 @@ public partial class EquipmentForm
                 throw new InvalidOperationException("Сервер не подтвердил идентификатор настройки.");
 
             PresentConfigureResult(result, completedNow: true);
-            if (!ConfigureNeedsReconciliation)
-                await CheckMainServerWriteAsync(model.Id, actor.Id, version);
         }
-        catch (Exception error) when (error is UnauthorizedAccessException or InventoryOperationPendingException
-            { BlockedBeforeReservation: true })
+        catch (Exception error) when (error is UnauthorizedAccessException)
         {
             if (Current())
             {
@@ -101,7 +98,7 @@ public partial class EquipmentForm
             {
                 _configureCheckRequired = _configureAttemptId is not null;
                 _warningMessage = _configureCheckRequired
-                    ? "Не удалось подтвердить исход настройки. Обновите журнал АТС перед повтором."
+                    ? "Не удалось подтвердить исход настройки. Сверьте данные перед повтором."
                     : error.Message;
             }
         }
@@ -119,59 +116,31 @@ public partial class EquipmentForm
     {
         if (_model is not { } model || CurrentUser is not { } actor || _loading || _saving || _mainTransition)
             return;
-        if (_legacyConfigurePending)
+        if (_legacyConfigurePending || PendingConfigure is not { } pending)
         {
             ShowLegacyConfigurePending();
             StateHasChanged();
             return;
         }
-        var version = _operationVersion;
-        var id = _configureAttemptId;
-        var result = await ReadConfigureForFormAsync(model.Id, actor.Id, id);
-        if (!IsCurrentSave(model, version) || CurrentUser?.Id != actor.Id || id != _configureAttemptId)
-            return;
-        ApplyConfigureRead(result);
-        if (!ConfigureNeedsReconciliation)
-            await CheckMainServerWriteAsync(model.Id, actor.Id, version);
-        StateHasChanged();
-    }
 
-    private async Task<(bool Read, PhoneSyncAttempt? Attempt)> ReadConfigureForFormAsync(int equipmentId, int employeeId,
-        Guid? attemptId)
-    {
+        var version = _operationVersion;
+        bool Current() => IsCurrentSave(model, version) && CurrentUser?.Id == actor.Id &&
+            ReferenceEquals(PendingConfigure, pending);
         try
         {
-            var result = await Service.ReadConfigurePhoneAttemptAsync(equipmentId, employeeId, attemptId, _pageCts.Token);
-            if (result is not null && (result.Intent.EquipmentId != equipmentId ||
-                result.Intent.Origin != EquipmentPhoneSyncOrigin.ExplicitConfigure ||
-                !Guid.TryParseExact(result.AttemptId, "N", out var verified) || verified == Guid.Empty ||
-                attemptId is not null && verified != attemptId))
-                return (false, null);
-            // Если точная попытка не дошла до резерва, отдельно проверяем ранее открытый план этой карточки.
-            return attemptId is not null && result is null
-                ? await ReadConfigureForFormAsync(equipmentId, employeeId, null) : (true, result);
+            var result = await Service.ReconcilePhoneSyncAttemptAsync(pending);
+            if (!Current()) return;
+            if (result.PersistedStateMatches)
+                PresentConfigureResult(result.Attempt);
+            else
+                _warningMessage = "Данные оборудования изменились. Повтор команды АТС заблокирован.";
         }
-        catch (Exception error) when (error is DbException or InvalidOperationException or UnauthorizedAccessException or
-            TimeoutException or OperationCanceledException)
+        catch (Exception error) when (error is DbException or InvalidOperationException or UnauthorizedAccessException or TimeoutException)
         {
-            return (false, null);
+            if (Current())
+                _warningMessage = "Не удалось сверить данные оборудования. Повтор команды АТС заблокирован.";
         }
-    }
-
-    private void ApplyConfigureRead((bool Read, PhoneSyncAttempt? Attempt) result)
-    {
-        if (_legacyConfigurePending)
-        {
-            ShowLegacyConfigurePending();
-            return;
-        }
-        if (result.Read)
-            PresentConfigureResult(result.Attempt);
-        else
-        {
-            _configureCheckRequired = true;
-            _warningMessage = "Не удалось прочитать журнал АТС оборудования. Повтор настройки заблокирован.";
-        }
+        if (!_disposed) StateHasChanged();
     }
 
     private void ShowLegacyConfigurePending() =>
@@ -187,11 +156,6 @@ public partial class EquipmentForm
         if (attempt is null)
         {
             if (reconciling) _warningMessage = null;
-            return;
-        }
-        if (attempt.Abandoned)
-        {
-            _warningMessage = "Устаревший план закрыт. Команды АТС не отправлялись. Обновите карточку перед новой настройкой.";
             return;
         }
         var incomplete = attempt.Operations.Where(step => step.Phase != PhoneSyncPhase.Succeeded).ToArray();

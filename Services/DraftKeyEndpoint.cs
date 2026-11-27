@@ -1,9 +1,12 @@
 using System.Globalization;
+using System.Net;
 using System.Security.Cryptography;
 using Clayzor.Lib.DALC;
 using Clayzor.Lib.Entities.Inventory;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Hosting;
 
 namespace Kesco.App.Web.Inventory.Services;
 
@@ -30,7 +33,7 @@ internal static class DraftKeyEndpoint
             return Task.CompletedTask;
         });
 
-        if (!context.Request.IsHttps)
+        if (!HasAllowedTransport(context))
         {
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             return;
@@ -45,7 +48,7 @@ internal static class DraftKeyEndpoint
         if (identity?.IsAuthenticated != true || string.IsNullOrWhiteSpace(identity.Name))
             return Results.Unauthorized();
 
-        if (!IsSameOriginRequest(request))
+        if (!IsSameOriginRequest(context))
             return Results.StatusCode(StatusCodes.Status403Forbidden);
 
         if (request.QueryString.HasValue || request.ContentLength is > 0 ||
@@ -67,13 +70,19 @@ internal static class DraftKeyEndpoint
         }
     }
 
-    private static bool IsSameOriginRequest(HttpRequest request)
+    private static bool HasAllowedTransport(HttpContext context) =>
+        context.Request.IsHttps ||
+        context.RequestServices.GetService<IWebHostEnvironment>()?.IsDevelopment() == true &&
+        context.Connection.RemoteIpAddress is { } remoteAddress && IPAddress.IsLoopback(remoteAddress);
+
+    private static bool IsSameOriginRequest(HttpContext context)
     {
+        var request = context.Request;
         var origin = request.Headers.Origin;
         var site = request.Headers["Sec-Fetch-Site"];
         var marker = request.Headers[RequestHeader];
-        return request.IsHttps && request.Host.HasValue &&
-            origin.Count == 1 && string.Equals(origin[0], $"https://{request.Host.ToUriComponent()}", StringComparison.OrdinalIgnoreCase) &&
+        return HasAllowedTransport(context) && request.Host.HasValue &&
+            origin.Count == 1 && string.Equals(origin[0], $"{request.Scheme}://{request.Host.ToUriComponent()}", StringComparison.OrdinalIgnoreCase) &&
             (site.Count == 0 || site.Count == 1 && string.Equals(site[0], "same-origin", StringComparison.Ordinal)) &&
             marker.Count == 1 && marker[0] == "1";
     }

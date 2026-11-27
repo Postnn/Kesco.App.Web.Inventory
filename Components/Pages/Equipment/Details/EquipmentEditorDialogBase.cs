@@ -117,9 +117,9 @@ public abstract partial class EquipmentEditorDialogBase<TDraft> : ComponentBase,
             var scope = await cancellation.ReadScope();
             if (!Current())
                 return;
-            if (visible is null || scope is null || scope.HasOperation || _saveBlocked)
+            if (visible is null || scope is null || _saveBlocked)
             {
-                _error = "Сначала завершите сверку журнала. Ввод оставлен в редакторе.";
+                _error = "Не удалось проверить состояние редактора. Ввод оставлен в редакторе.";
                 return;
             }
 

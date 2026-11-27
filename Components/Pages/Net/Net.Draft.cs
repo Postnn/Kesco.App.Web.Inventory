@@ -41,7 +41,7 @@ public partial class Net
             context.InputConflict = input.Original != fresh || input.ChangedAt != freshVersion;
             return input.Current;
         }
-        catch (Exception ex) when (IsJournalError(ex))
+        catch (Exception ex) when (IsOperationStateError(ex))
         {
             context.InputConflict = true;
             return fresh;
@@ -64,7 +64,7 @@ public partial class Net
             context.InputReady = false;
             context.InputFailed = readiness is null || readiness.FailedScopes.Contains(NetInputScope);
         }
-        catch (Exception error) when (IsJournalError(error))
+        catch (Exception error) when (IsOperationStateError(error))
         {
             if (!IsCurrentInput(context)) return false;
             context.InputReady = false;
@@ -102,7 +102,7 @@ public partial class Net
             context.InputReady = !hasPending && NetScopeReady(readiness);
             context.InputFailed = readiness is null || readiness.FailedScopes.Contains(NetInputScope);
         }
-        catch (Exception ex) when (IsJournalError(ex))
+        catch (Exception ex) when (IsOperationStateError(ex))
         {
             if (IsCurrentInput(context))
             {
@@ -168,7 +168,7 @@ public partial class Net
             context.InputFailed = false;
             return revision;
         }
-        catch (Exception ex) when (IsJournalError(ex))
+        catch (Exception ex) when (IsOperationStateError(ex))
         {
             if (IsCurrentInput(context))
             {
@@ -233,7 +233,7 @@ public partial class Net
             var scope = await context.Registration.ReadEditorScopeAsync(NetInputScope, _pageCts.Token);
             return IsCurrentInput(context) ? scope : null;
         }
-        catch (Exception ex) when (IsJournalError(ex))
+        catch (Exception ex) when (IsOperationStateError(ex))
         {
             if (IsCurrentInput(context))
                 _validationMessage = "Запись подтверждена. Проверка более позднего ввода недоступна, форма оставлена открытой.";

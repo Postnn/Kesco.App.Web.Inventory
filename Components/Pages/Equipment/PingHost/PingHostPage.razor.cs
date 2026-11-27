@@ -136,14 +136,7 @@ public partial class PingHostPage : IAsyncDisposable
                 bool Current() => !_disposed && revision == _hostRevision && CurrentUser?.Id == actor.Id && !ct.IsCancellationRequested;
                 Task<ClayDraftRegistration> OpenRam(CancellationToken token) => Drafts.RegisterRamHandleAsync(
                     "ping-host", key, userKey, 1, "." + _formOptions.Class, instance, token);
-                var registration = key.Contains('|') || key.Any(char.IsControl)
-                    ? await OpenRam(ct)
-                    : await Drafts.TransferLegacyAndRegisterRamAsync("ping-host", key, userKey, (evidence, token) =>
-                    {
-                        if (evidence.Count != 0)
-                            throw new InvalidOperationException("В прежнем журнале диагностики найдено неизвестное действие.");
-                        return OpenRam(token);
-                    }, Current, ct);
+                var registration = await OpenRam(ct);
                 if (_disposed)
                 {
                     await registration.DisposeAsync();
@@ -358,8 +351,7 @@ public partial class PingHostPage : IAsyncDisposable
         budget.CancelAfter(TimeSpan.FromSeconds(2));
         try
         {
-            var remaining = await registration.RetryStorageAsync(null, budget.Token);
-            if (remaining is null && IsCurrentJournal(registration, revision))
+            if (IsCurrentJournal(registration, revision))
                 await SaveJournalAsync(false, budget.Token);
         }
         catch (Exception e) when (e is JSException or OperationCanceledException or InvalidOperationException) { }

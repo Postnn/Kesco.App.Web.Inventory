@@ -28,7 +28,6 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
     private const int OnHandsLocationId = (int)Расположения.На_руках;
 
     [Inject] private ILogger<EquipmentForm> Logger { get; set; } = default!;
-    [Inject] private Clayzor.Lib.Web.Controls.ClayErrorService ErrorService { get; set; } = default!;
     [Inject] private ISnackbar Snackbar { get; set; } = default!;
 
     private readonly CancellationTokenSource _pageCts = new();
@@ -157,9 +156,6 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
     private int? _originalReceiptDocumentId;
     private int? _originalWriteOffDocumentId;
     private string _originalSnapshot = string.Empty;
-    private bool _mainServerWriteChecked;
-    private bool _mainServerWritePending;
-    private bool MainServerWriteBlocked => !_mainServerWriteChecked || _mainServerWritePending;
     private string? _mainConflictMessage;
     private string? _validationMessage;
 
@@ -174,9 +170,9 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
     private bool HasUnsavedDraft => _loaded && _model is not null && Snapshot() != _originalSnapshot;
     private bool IsModified => HasUnsavedDraft || HasPendingPhoneSync;
     private bool EquipmentFocusReady => !_disposed && _loaded && _canEdit && !_loading && !_saving &&
-        MainRawReady && !EquipmentRecoveryWriteBlocked && !_draftOperationUnresolved && !_mainTransition && _activeEditor is null;
-    private bool CanSave => CanResumeConfigure || CanResumeSavedAts || !ConfigureNeedsReconciliation && PendingSavedAts is null &&
-        IsModified && !EquipmentRecoveryWriteBlocked && !MainServerWriteBlocked &&
+        MainRawReady && !EquipmentRecoveryWriteBlocked && _phoneSyncCheckpoint is null && !_mainTransition && _activeEditor is null;
+    private bool CanSave => CanResumeConfigure || !ConfigureNeedsReconciliation &&
+        IsModified && !EquipmentRecoveryWriteBlocked &&
         _canEdit && !_loading && !_saving && !_mainTransition && MainRawReady && _mainConflictMessage is null;
     private bool HasSelectedModel => _model?.ModelId is > 0 && _selectedModel is not null;
     private bool ShowNetworkName => HasSelectedModel && _selectedType?.HasNetworkName > 0;
@@ -524,11 +520,6 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
                     _validationMessage = "Не удалось перечитать оборудование. Черновик сохранён.";
                 return;
             }
-            if (canEdit && employee is not null)
-            {
-                await CheckMainServerWriteAsync(id, employee.Id, version);
-                if (!IsCurrent(version, id)) return;
-            }
             var selectedType = model.EquipmentTypeId is > 0
                 ? await EquipmentTypeSource.GetByIdAsync(model.EquipmentTypeId, _pageCts.Token)
                 : null;
@@ -544,28 +535,6 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
                                       EmployeeRoleScope.PersonOrGlobal, model.TenantId) == true);
             var canViewPhoneConfig = selectedType?.Id == (int)ТипыОборудования.IP_телефон &&
                                      employee?.HasRole(Роли.Дежурный_инженер) == true;
-            var canReadConfigure = model.EquipmentTypeId == (int)ТипыОборудования.IP_телефон &&
-                                   employee?.HasRole(Роли.Специалист_по_инвентаризации_оборудования,
-                                       EmployeeRoleScope.PersonOrGlobal, model.OwnerId) == true;
-            var configure = canReadConfigure && employee is not null
-                ? await ReadConfigureForFormAsync(id, employee.Id, _configureAttemptId) : (Read: true, Attempt: (PhoneSyncAttempt?)null);
-            if (!IsCurrent(version, id)) return;
-            PhoneSyncAttempt? savedAts = null;
-            if (canEdit && employee is not null && (_mainServerWritePending || PendingSavedAts is not null))
-            {
-                try
-                {
-                    var atsId = Guid.TryParseExact(PendingSavedAts?.AttemptId, "N", out var exact) ? (Guid?)exact : null;
-                    savedAts = await ReadSavedAtsAsync(id, employee.Id, atsId);
-                }
-                catch (Exception error) when (error is System.Data.Common.DbException or InvalidOperationException or
-                    UnauthorizedAccessException or TimeoutException)
-                {
-                    if (IsCurrent(version, id))
-                        _warningMessage = "Не удалось получить серверный план АТС. Сохранение заблокировано до сверки.";
-                }
-                if (!IsCurrent(version, id)) return;
-            }
             var canViewAccounts = selectedType?.MacAddressCount > 0 &&
                                   employee?.HasRole(Роли.Дежурный_инженер, EmployeeRoleScope.Global) == true;
             var canManageUps = model.EquipmentTypeId is < 100 && selectedType?.HasSimCharacteristics == 0 &&
@@ -705,9 +674,6 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             _canManageUps = canManageUps;
             _canChangeNetwork = canChangeNetwork;
             _canUseAccounting = canUseAccounting;
-            ApplyConfigureRead(configure);
-            if (savedAts is not null)
-                PresentSavedAtsResult(savedAts);
             UpsSource.LocationId = model.LocationId;
             SetAccountingBaseline();
             _loaded = true;
@@ -1290,8 +1256,8 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         {
             if (!IsCurrentSave(model, pageVersion) || CurrentUser?.Id != employeeId || version != _locationVersion)
                 return EquipmentEditorSaveResult.Reject("Контекст расположения изменился. Запись не отправлена.");
-            return await SaveJournaledPeriodDraftAsync(EquipmentFormService.UpdateLocationPeriodCommand, location.FromUtc,
-                equipmentId, version, (actorId, attemptId) => Service.UpdateLocationAsync(location, actorId, attemptId, _pageCts.Token));
+            return await SavePeriodDraftAsync(UpdateLocationPeriodCommand, location.FromUtc,
+                equipmentId, version, (actorId) => Service.UpdateLocationAsync(location, actorId, _pageCts.Token));
         }
         if (!IsCurrentSave(model, pageVersion) || CurrentUser?.Id != employeeId || version != _locationVersion)
             return EquipmentEditorSaveResult.Reject("Контекст расположения изменился. Запись не отправлена.");
@@ -1304,9 +1270,9 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
                 Notes = string.Empty,
             }
             : null;
-        return await SaveJournaledPeriodDraftAsync(EquipmentFormService.AddLocationPeriodCommand, location.FromUtc,
-            equipmentId, version, (actorId, attemptId) => Service.AddLocationAsync(location, responsible,
-                expectedActiveResponsible, actorId, attemptId, _pageCts.Token));
+        return await SavePeriodDraftAsync(AddLocationPeriodCommand, location.FromUtc,
+            equipmentId, version, (actorId) => Service.AddLocationAsync(location, responsible,
+                expectedActiveResponsible, actorId, _pageCts.Token));
     }
 
     private async Task RefreshLocationsAsync()
@@ -1498,16 +1464,16 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
                 EquipmentId = equipmentId, EmployeeId = value.EmployeeId.Value, FromUtc = fromUtc.Value,
                 ReturnDate = value.ReturnDate, Notes = value.Notes,
             };
-            return await SaveJournaledPeriodDraftAsync(EquipmentFormService.IssueResponsiblePeriodCommand, issued.FromUtc,
-                equipmentId, version, (actorId, attemptId) => Service.IssueResponsibleAsync(issued, actorId, attemptId, _pageCts.Token));
+            return await SavePeriodDraftAsync(IssueResponsiblePeriodCommand, issued.FromUtc,
+                equipmentId, version, (actorId) => Service.IssueResponsibleAsync(issued, actorId, _pageCts.Token));
         }
         if (mode == EquipmentResponsibleDialogMode.Edit)
         {
             var edited = baseline!;
             edited.ReturnDate = value.ReturnDate;
             edited.Notes = value.Notes;
-            return await SaveJournaledPeriodDraftAsync(EquipmentFormService.UpdateResponsiblePeriodCommand, edited.FromUtc,
-                equipmentId, version, (actorId, attemptId) => Service.UpdateResponsibleAsync(edited, actorId, attemptId, _pageCts.Token));
+            return await SavePeriodDraftAsync(UpdateResponsiblePeriodCommand, edited.FromUtc,
+                equipmentId, version, (actorId) => Service.UpdateResponsibleAsync(edited, actorId, _pageCts.Token));
         }
 
         if (mode != EquipmentResponsibleDialogMode.Withdraw || toUtc is null || value.EmployeeId is not null && fromUtc is null)
@@ -1524,9 +1490,9 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             EquipmentId = equipmentId, LocationId = value.LocationId.Value, FromUtc = toUtc.Value,
             ReturnDate = null, Notes = string.Empty,
         };
-        return await SaveJournaledPeriodDraftAsync(EquipmentFormService.WithdrawResponsiblePeriodCommand, current.FromUtc,
-            equipmentId, version, (actorId, attemptId) => Service.WithdrawResponsibleAsync(current, next, location,
-                value.FromLocal?.Date, actorId, attemptId, _pageCts.Token));
+        return await SavePeriodDraftAsync(WithdrawResponsiblePeriodCommand, current.FromUtc,
+            equipmentId, version, (actorId) => Service.WithdrawResponsibleAsync(current, next, location,
+                value.FromLocal?.Date, actorId, _pageCts.Token));
     }
 
     private async Task OpenAccountDialogAsync(EquipmentAccount? existing)
@@ -1613,22 +1579,15 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             LimitedRights = value.LimitedRights ? (byte)1 : (byte)0,
             Notes = value.Notes,
         };
-        var attemptId = Guid.NewGuid();
-        var nonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
-        try
-        {
-            var binding = EquipmentAccount.AttemptBinding(equipmentId, account.Login, nonce);
-            return await SaveChildDraftAsync(
-                existing is null ? "Добавление учётной записи" : "Изменение учётной записи",
-                "Учётная запись сохранена.", new { Binding = binding },
-                () => existing is null ? Service.AddAccountAsync(account, actor.Id, attemptId, nonce, _pageCts.Token) :
-                    Service.UpdateAccountAsync(account, actor.Id, attemptId, nonce, _pageCts.Token),
-                RefreshAccountsAsync,
-                () => IsCurrent(pageVersion, equipmentId) && version == _accountVersion && _model?.Id == equipmentId &&
-                    CurrentUser?.Id == actor.Id && ReferenceEquals(_activeEditor, editor),
-                attemptId: attemptId, commandKind: existing is null ? EquipmentFormService.InsertAccountCommand : EquipmentFormService.UpdateAccountCommand);
-        }
-        finally { System.Security.Cryptography.CryptographicOperations.ZeroMemory(nonce); }
+        return await SaveChildDraftAsync(
+            existing is null ? "Добавление учётной записи" : "Изменение учётной записи",
+            "Учётная запись сохранена.", new { account.Login },
+            () => existing is null ? Service.AddAccountAsync(account, actor.Id, _pageCts.Token) :
+                Service.UpdateAccountAsync(account, actor.Id, _pageCts.Token),
+            RefreshAccountsAsync,
+            () => IsCurrent(pageVersion, equipmentId) && version == _accountVersion && _model?.Id == equipmentId &&
+                CurrentUser?.Id == actor.Id && ReferenceEquals(_activeEditor, editor),
+            commandKind: existing is null ? EquipmentFormService.InsertAccountCommand : EquipmentFormService.UpdateAccountCommand);
     }
 
     private async Task DeleteAccountAsync(EquipmentAccount account)
@@ -1667,19 +1626,11 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
 
         var version = ++_accountVersion;
         var target = new EquipmentAccount { EquipmentId = model.Id, Login = login, ExpectedVersion = expectedVersion };
-        var attemptId = Guid.NewGuid();
-        var nonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
         bool SameWrite() => IsCurrent(pageVersion, model.Id) && version == _accountVersion && _model?.Id == model.Id &&
             CurrentUser?.Id == actor.Id && _activeEditor is null;
-        EquipmentEditorSaveResult result;
-        try
-        {
-            var binding = EquipmentAccount.AttemptBinding(model.Id, login, nonce);
-            result = await SaveChildDraftAsync("Удаление учётной записи", "Учётная запись удалена.", new { Binding = binding },
-                () => Service.DeleteAccountAsync(target, actor.Id, attemptId, nonce, _pageCts.Token), RefreshAccountsAsync,
-                SameWrite, attemptId: attemptId, commandKind: EquipmentFormService.DeleteAccountCommand);
-        }
-        finally { System.Security.Cryptography.CryptographicOperations.ZeroMemory(nonce); }
+        var result = await SaveChildDraftAsync("Удаление учётной записи", "Учётная запись удалена.", new { login },
+            () => Service.DeleteAccountAsync(target, actor.Id, _pageCts.Token), RefreshAccountsAsync,
+            SameWrite, commandKind: EquipmentFormService.DeleteAccountCommand);
         if (SameWrite() && !result.CanClose && result.Message is not null)
         {
             _validationMessage = result.Message;
@@ -1734,9 +1685,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             { dialog => dialog.Notes, latest?.Notes ?? string.Empty },
             { dialog => dialog.Configurations, _standardConfigurations },
             { dialog => dialog.Save, (Func<EquipmentComputerSnapshot, Task<EquipmentEditorSaveResult>>)(snapshot => SaveComputerDraftAsync(snapshot, opening, expectedModelId)) },
-            { dialog => dialog.HasUnresolvedComputerOperation,
-                _draftOperationUnresolved && _draftOperation?.Kind is "Сохранение конфигурации компьютера" or
-                    EquipmentFormService.InsertComputerCommand or EquipmentFormService.UpdateComputerCommand },
+            { dialog => dialog.HasUnresolvedComputerOperation, false },
         };
         await ShowDialogAsync<EquipmentComputerDialog>(
             "Компьютер", parameters, new DialogOptionsEx { MaxWidth = MaxWidth.Medium, FullWidth = true },
@@ -1779,7 +1728,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             var date = snapshot.Date.Date.ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture);
             var result = await SaveChildDraftAsync(
                 "Сохранение конфигурации компьютера", "Конфигурация компьютера сохранена.", new { Date = date },
-                () => Service.SaveComputerPhasedAsync(snapshot, businessDay, expectedModelId, actor.Id, attemptId, _pageCts.Token),
+                () => Service.SaveComputerAsync(snapshot, businessDay, expectedModelId, actor.Id, _pageCts.Token),
                 RefreshComputerAsync, () => IsCurrent(opening) && version == _computerVersion && CurrentUser?.Id == actor.Id &&
                     ReferenceEquals(_activeEditor, editor),
                 async () =>
@@ -1955,7 +1904,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         return await SaveChildDraftAsync(
             "Сохранение SIM", "Сведения SIM сохранены.",
             new { DuplicateEquipmentId = duplicateId },
-            () => Service.SaveSimAsync(sim, value.Mode, value.OriginalVersion, duplicateId, actor.Id, attemptId, _pageCts.Token),
+            () => Service.SaveSimAsync(sim, value.Mode, value.OriginalVersion, duplicateId, actor.Id, _pageCts.Token),
             RefreshSimAsync, () => IsCurrent(opening) && version == _simVersion && CurrentUser?.Id == actor.Id &&
                 ReferenceEquals(_activeEditor, editor), attemptId: attemptId,
             commandKind: value.Mode == EquipmentSimWriteMode.Add ? EquipmentFormService.InsertSimCommand : EquipmentFormService.UpdateSimCommand);
@@ -1998,7 +1947,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         var result = await SaveChildDraftAsync(
             "Удаление сведений SIM", "Сведения SIM удалены.",
             new { DuplicateEquipmentId = (int?)null },
-            () => Service.DeleteSimAsync(opening.EquipmentId, expectedVersion, actor.Id, attemptId, _pageCts.Token),
+            () => Service.DeleteSimAsync(opening.EquipmentId, expectedVersion, actor.Id, _pageCts.Token),
             RefreshSimAsync, Current, attemptId: attemptId, commandKind: EquipmentFormService.DeleteSimCommand);
         if (Current() && !result.CanClose && result.Message is not null)
         {
@@ -2087,7 +2036,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         DateTime businessDay = default;
         return SaveChildDraftAsync(
             "Сохранение дополнительной услуги SIM", "Дополнительная услуга SIM сохранена.", new { ServiceId = service.Id },
-            () => Service.SaveSimServiceAsync(service, businessDay, actor.Id, attemptId, _pageCts.Token), RefreshSimServicesAsync,
+            () => Service.SaveSimServiceAsync(service, businessDay, actor.Id, _pageCts.Token), RefreshSimServicesAsync,
             () => IsCurrent(pageVersion, equipmentId) && version == _simServiceVersion && _model?.Id == equipmentId &&
                 CurrentUser?.Id == actor.Id && ReferenceEquals(_activeEditor, editor),
             async () =>
@@ -2147,8 +2096,6 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         if (_model is not { } model || CurrentUser is not { } actor || !_canEditLicense || _saving)
             return;
         var version = _operationVersion;
-        if (!_draftOperationUnresolved && !await CheckLicenseEditorAvailableAsync(model, actor, version))
-            return;
         if (!IsCurrentSave(model, version) || CurrentUser?.Id != actor.Id || !_canEditLicense || _saving)
             return;
         var existing = _licenses.SingleOrDefault();
@@ -2200,7 +2147,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         var licenseType = _licenseTypes.FirstOrDefault(item => item.Id == license.LicenseTypeId);
         return SaveChildDraftAsync(
             "Сохранение лицензии", "Лицензия сохранена.", new { license.ExpectedExisting },
-            () => Service.SaveLicenseAsync(license, licenseType, actor.Id, attemptId, _pageCts.Token),
+            () => Service.SaveLicenseAsync(license, licenseType, actor.Id, _pageCts.Token),
             RefreshLicensesAsync,
             () => IsCurrent(pageVersion, equipmentId) && version == _licenseVersion && _model?.Id == equipmentId &&
                 CurrentUser?.Id == actor.Id && ReferenceEquals(_activeEditor, editor),
@@ -2271,7 +2218,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         installation.EquipmentId = equipmentId;
         return SaveChildDraftAsync(
             "Сохранение установленного ПО", "Установленное ПО сохранено.", new { InstallationId = installation.Id },
-            () => Service.SaveSoftwareInstallationAsync(installation, actor.Id, attemptId, _pageCts.Token), RefreshSoftwareAsync,
+            () => Service.SaveSoftwareInstallationAsync(installation, actor.Id, _pageCts.Token), RefreshSoftwareAsync,
             () => IsCurrent(pageVersion, equipmentId) && version == _softwareVersion && _model?.Id == equipmentId &&
                 CurrentUser?.Id == actor.Id && ReferenceEquals(_activeEditor, editor),
             attemptId: attemptId, commandKind: installation.Id == 0 ? EquipmentFormService.InsertSoftwareCommand : EquipmentFormService.UpdateSoftwareCommand);
@@ -2348,7 +2295,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         accounting.EquipmentId = equipmentId;
         return await SaveChildDraftAsync(
             "Сохранение бухгалтерского учёта", "Бухгалтерский учёт сохранён.", new { AccountingId = accounting.Id },
-            () => Service.SaveAccountingAsync(accounting, actor.Id, attemptId, _pageCts.Token), RefreshAccountingAsync,
+            () => Service.SaveAccountingAsync(accounting, actor.Id, _pageCts.Token), RefreshAccountingAsync,
             () => IsCurrent(pageVersion, equipmentId) && version == _accountingVersion && _model?.Id == equipmentId &&
                 CurrentUser?.Id == actor.Id && ReferenceEquals(_activeEditor, editor),
             attemptId: attemptId, commandKind: accounting.Id == 0 ? EquipmentFormService.InsertAccountingCommand : EquipmentFormService.UpdateAccountingCommand);
@@ -2359,9 +2306,6 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         options.VisibleStateDuration = 4000;
         options.ShowCloseIcon = true;
     });
-
-    private static bool IsUnknownWriteException(Microsoft.Data.SqlClient.SqlException exception) =>
-        exception.Number is -2 or -1 or 2 or 53 or 64 or 121 or 1231 or 10054 or 10060 or 40143 or 40501 or 40613;
 
     private async Task<EquipmentEditorSaveResult> SaveChildDraftAsync(
         string operationName,
@@ -2378,113 +2322,37 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         _validationMessage = null;
         var original = OriginalSnapshotModel();
         StateHasChanged();
-        long? draftRevision = null;
-        ClayDraftRegistration registration;
-        ClayDraftOperation operation;
         try
         {
             try
             {
-                var prepared = prepareIntent is null ? intent : await prepareIntent();
+                if (prepareIntent is not null) await prepareIntent();
                 if (!contextIsCurrent())
                     return EquipmentEditorSaveResult.Reject("Контекст оборудования изменился. Команда не отправлена.");
-                var sent = JsonSerializer.SerializeToElement(prepared);
-                draftRevision = await BeginDraftOperationCoreAsync(commandKind ?? operationName, sent, attemptId);
-                registration = _draftRegistration ?? throw new InvalidOperationException("Хранилище команды недоступно.");
-                operation = _draftOperation ?? throw new InvalidOperationException("Команда не зарегистрирована.");
-            }
-            catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or OperationCanceledException)
-            {
-                return EquipmentEditorSaveResult.Reject($"Черновик не сохранён. Команда «{operationName}» не отправлена. {ex.Message}");
-            }
-            EquipmentEditorSaveResult? outcome = null;
-            try
-            {
-                if (!contextIsCurrent())
-                {
-                    await RejectDraftOperationAsync(draftRevision);
-                    return EquipmentEditorSaveResult.Reject("Контекст оборудования изменился. Команда не отправлена.");
-                }
                 await write();
-            }
-            catch (EquipmentOperationException ex) when (ex.Phase == EquipmentWritePhase.Unknown)
-            {
-                await UnknownDraftOperationAsync(draftRevision);
-                return EquipmentEditorSaveResult.Unknown(
-                    $"Результат команды «{operationName}» неизвестен. Повторная запись заблокирована; обновите форму и сверьте данные.");
-            }
-            catch (EquipmentOperationException ex) when (ex.Phase == EquipmentWritePhase.RefreshFailed)
-            {
-                outcome = EquipmentEditorSaveResult.RefreshFailed(
-                    $"Запись «{operationName}» подтверждена, но последующее чтение не выполнено. Повторяйте только обновление данных. {ex.Message}");
-            }
-            catch (EquipmentOperationException ex)
-            {
-                await RejectDraftOperationAsync(draftRevision);
-                return EquipmentEditorSaveResult.Reject(ex.Message);
-            }
-            catch (Microsoft.Data.SqlClient.SqlException ex) when (IsUnknownWriteException(ex))
-            {
-                await UnknownDraftOperationAsync(draftRevision);
-                return EquipmentEditorSaveResult.Unknown(
-                    $"Результат команды «{operationName}» неизвестен. Повторная запись заблокирована; обновите форму и сверьте данные.");
             }
             catch (Microsoft.Data.SqlClient.SqlException)
             {
-                await RejectDraftOperationAsync(draftRevision);
                 return EquipmentEditorSaveResult.Reject($"Команда «{operationName}» не выполнена. Подробности — в сообщении базы данных.");
             }
-            catch (System.Data.SqlTypes.SqlTypeException ex)
+            catch (Exception ex) when (ex is System.Data.SqlTypes.SqlTypeException or InvalidOperationException or UnauthorizedAccessException)
             {
-                await RejectDraftOperationAsync(draftRevision);
                 return EquipmentEditorSaveResult.Reject(ex.Message);
-            }
-            catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
-            {
-                await RejectDraftOperationAsync(draftRevision);
-                return EquipmentEditorSaveResult.Reject(ex.Message);
-            }
-
-            try
-            {
-                await RecordConfirmedChildOperationAsync(registration, operation);
-            }
-            catch (Exception ex) when (ex is JSException or InvalidOperationException or OperationCanceledException)
-            {
-                return EquipmentEditorSaveResult.RefreshFailed(
-                    "Запись подтверждена, но результат ещё не зафиксирован в черновике. Повторите только сверку журнала.");
             }
 
             ShowStatus(successMessage);
-            if (outcome is null && !contextIsCurrent())
-            {
-                outcome = EquipmentEditorSaveResult.RefreshFailed("Запись подтверждена, но контекст формы изменился. Обновите данные.");
-            }
-            else if (outcome is null)
-            {
-                try
-                {
-                    await RefreshMainAfterChildWriteAsync(original);
-                    await refresh();
-                    outcome = EquipmentEditorSaveResult.Commit();
-                }
-                catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or UnauthorizedAccessException)
-                {
-                    _validationMessage = $"{operationName}: запись подтверждена, но экран не обновлён. Повторите только обновление данных.";
-                    outcome = EquipmentEditorSaveResult.RefreshFailed(_validationMessage);
-                }
-            }
+            if (!contextIsCurrent())
+                return EquipmentEditorSaveResult.RefreshFailed("Запись подтверждена, но контекст формы изменился. Обновите данные.");
             try
             {
-                if (ReferenceEquals(_draftRegistration, registration) && _draftOperation?.AttemptId == operation.AttemptId)
-                    await CommitDraftOperationAsync(draftRevision);
-                return outcome;
+                await RefreshMainAfterChildWriteAsync(original);
+                await refresh();
+                return EquipmentEditorSaveResult.Commit();
             }
-            catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or OperationCanceledException)
+            catch (Exception ex) when (ex is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or UnauthorizedAccessException)
             {
-                _warningMessage = "Запись подтверждена. Повторите только сверку журнала.";
-                return EquipmentEditorSaveResult.RefreshFailed(
-                    $"Запись «{operationName}» подтверждена, но локальная фиксация результата не завершена. Повторяйте только чтение/сверку, не бизнес-запись. {ex.Message}");
+                _validationMessage = $"{operationName}: запись подтверждена, но экран не обновлён. Повторите только обновление данных.";
+                return EquipmentEditorSaveResult.RefreshFailed(_validationMessage);
             }
         }
         finally
@@ -2517,7 +2385,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         var result = await SaveChildDraftAsync(
             "Удаление бухгалтерского учёта", "Запись бухгалтерского учёта удалена.",
             new { AccountingId = accountingId },
-            () => Service.DeleteAccountingAsync(equipmentId, accountingId, actor.Id, attemptId, _pageCts.Token),
+            () => Service.DeleteAccountingAsync(equipmentId, accountingId, actor.Id, _pageCts.Token),
             RefreshAccountingAsync, Current, attemptId: attemptId, commandKind: EquipmentFormService.DeleteAccountingCommand);
         if (Current() && !result.CanClose && result.Message is not null)
         {
@@ -2684,7 +2552,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             attach ? "Подключение к локальной сети" : "Отключение от локальной сети",
             attach ? "Оборудование подключено к рабочей сети." : "Оборудование отключено от рабочей сети.",
             new { EquipmentId = equipmentId, Attach = attach, ExpectedCount = expectedCount },
-            () => Service.SetNetworkAttachmentAsync(equipmentId, actor.Id, attemptId, attach, expectedCount, _pageCts.Token),
+            () => Service.SetNetworkAttachmentAsync(equipmentId, actor.Id, attach, expectedCount, _pageCts.Token),
             async () =>
             {
                 var count = await Service.GetNetworkAttachmentCountAsync(equipmentId);
@@ -2734,7 +2602,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         var result = await SaveChildDraftAsync(
             "Подключение UPS", "UPS подключён.",
             new { UpsEquipmentId = upsId },
-            () => Service.AddUpsLinkAsync(upsId, equipmentId, actor.Id, attemptId, _pageCts.Token), RefreshUpsLinksAsync, Current,
+            () => Service.AddUpsLinkAsync(upsId, equipmentId, actor.Id, _pageCts.Token), RefreshUpsLinksAsync, Current,
             attemptId: attemptId, commandKind: EquipmentFormService.AddUpsLinkCommand);
         if (Current() && !result.CanClose && result.Message is not null)
         {
@@ -2951,7 +2819,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             new { UpsEquipmentId = upsId },
             () => Service.SaveUpsDetailsAsync(
                 upsId, equipmentId, priorServers, currentServers, priorTests, currentTests,
-                actor.Id, attemptId, _pageCts.Token),
+                actor.Id, _pageCts.Token),
             RefreshUpsLinksAsync, Current,
             attemptId: attemptId, commandKind: EquipmentFormService.SaveUpsDetailsCommand);
     }
@@ -3132,17 +3000,8 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             if (_disposed || ConfigureNeedsReconciliation || !ReferenceEquals(openedModel, _model) || CurrentUser?.Id != employeeId)
                 return;
         }
-        if (PendingSavedAts is not null)
-        {
-            if (!CanResumeSavedAts) return;
-            var openedModel = _model;
-            var employeeId = CurrentUser?.Id;
-            await ResumeSavedAtsAsync();
-            if (_disposed || PendingSavedAts is not null || !ReferenceEquals(openedModel, _model) || CurrentUser?.Id != employeeId)
-                return;
-        }
         if (_model is null || !_loaded || !_canEdit || _loading || _saving || _mainTransition || !MainRawReady ||
-            EquipmentRecoveryWriteBlocked || MainServerWriteBlocked || _mainConflictMessage is not null ||
+            EquipmentRecoveryWriteBlocked || _mainConflictMessage is not null ||
             CurrentUser is not { } actor)
             return;
         if (_pendingPhoneSync is not null)
@@ -3165,13 +3024,10 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         var model = _model;
         var version = ++_operationVersion;
         var phonesModified = PhonesModified;
-        var attemptId = Guid.NewGuid();
-        var registration = _draftRegistration;
         _saving = true;
         _validationMessage = null;
         _warningMessage = null;
         StateHasChanged();
-        long? draftRevision = null;
         var writeCommitted = false;
         EquipmentPhoneSyncIntent? phoneIntent = null;
         try
@@ -3188,36 +3044,30 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             model.WriteOffAtUtc = await ConvertWriteOffToUtcAsync();
             if (!IsCurrentSave(model, version))
                 return;
-            var operationKind = phonesModified ? "equipment-phone-save" : "equipment-save";
             var submitted = Snapshot();
             var command = JsonSerializer.Deserialize<EquipmentEntity>(JsonSerializer.Serialize(model))!;
             var originalPhones = ClonePhones(_originalPhones);
             var submittedPhones = ClonePhones(_phones);
-            draftRevision = await BeginDraftOperationCoreAsync(operationKind,
-                new EquipmentMainDraftIntent(_originalSnapshot, submitted), attemptId);
+            await PersistDraftAsync();
+            if (_draftRegistration is not { } registration || !await VerifyMainDraftReadyAsync(registration, model.Id))
+            {
+                _validationMessage = "Сначала полностью восстановите ввод.";
+                return;
+            }
             if (!IsCurrentSave(model, version) || Snapshot() != submitted)
             {
                 if (IsCurrentSave(model, version))
-                {
-                    await RejectDraftOperationAsync(draftRevision);
                     _validationMessage = "Ввод изменился перед отправкой. Проверьте данные и сохраните повторно.";
-                }
                 return;
             }
             if (phonesModified)
                 phoneIntent = await Service.SaveWithPhonesAsync(command, originalPhones, submittedPhones,
-                    actor.Id, attemptId, _pageCts.Token);
+                    actor.Id, _pageCts.Token);
             else
-                await Service.UpdateAsync(command, actor.Id, attemptId, _pageCts.Token);
+                await Service.UpdateAsync(command, actor.Id, _pageCts.Token);
             writeCommitted = true;
             if (!IsCurrentSave(model, version))
-            {
-                if (ReferenceEquals(registration, _draftRegistration) && _draftOperation?.AttemptId == attemptId.ToString("N") &&
-                    (!phonesModified || phoneIntent is { DurableSave: true, Origin: EquipmentPhoneSyncOrigin.EquipmentSave } &&
-                        phoneIntent.AttemptId == attemptId.ToString("N") && phoneIntent.EquipmentId == model.Id))
-                    await CommitKnownDraftOperationAsync(draftRevision);
                 return;
-            }
             _mainConflictMessage = null;
             _originalSnapshot = submitted;
             SetAccountingBaseline();
@@ -3225,7 +3075,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             var unknownSync = false;
             if (phonesModified && phoneIntent is null)
             {
-                await UnknownDraftOperationAsync(draftRevision);
+                await PersistDraftAsync();
                 _warningMessage = "Сервер подтвердил SQL-запись. Исход АТС требует отдельной сверки.";
                 return;
             }
@@ -3238,8 +3088,8 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
                 try
                 {
                     var attempt = await Service.SynchronizePhoneAttemptAsync(phoneIntent, CreatePhoneSyncCheckpointWriter());
-                    if (phoneIntent.DurableSave && (attempt.AttemptId != phoneIntent.AttemptId || !attempt.Intent.DurableSave ||
-                        attempt.Intent.Origin != EquipmentPhoneSyncOrigin.EquipmentSave || attempt.Intent.EquipmentId != model.Id))
+                    if (attempt.AttemptId != phoneIntent.AttemptId ||
+                        attempt.Intent.Origin != EquipmentPhoneSyncOrigin.EquipmentSave || attempt.Intent.EquipmentId != model.Id)
                         throw new InvalidOperationException("Ответ АТС не соответствует исходной серверной попытке.");
                     var errors = attempt.Operations.Where(result => result.Phase != PhoneSyncPhase.Succeeded).ToList();
                     warnings.AddRange(errors.Select(result => result.Error!));
@@ -3256,29 +3106,25 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
                             : null,
                     };
                 }
-                catch (EquipmentOperationException ex) when (ex.Phase == EquipmentWritePhase.Unknown)
-                {
-                    unknownSync = true;
-                    warnings.Add($"Результат синхронизации АТС неизвестен: {ex.Message}");
-                    pending = pending with { Unknown = true, UnknownMessage = ex.Message };
-                }
                 catch (Microsoft.Data.SqlClient.SqlException)
                 {
                     warnings.Add("Синхронизация с АТС не выполнена. Подробности — в сообщении базы данных.");
-                    if (phoneIntent.DurableSave) pending = pending with { Unknown = true };
+                    unknownSync = true;
+                    pending = pending with { Unknown = true };
                 }
                 catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
                 {
                     warnings.Add($"Синхронизация с АТС не выполнена: {ex.Message}");
-                    if (phoneIntent.DurableSave) pending = pending with { Unknown = true };
+                    unknownSync = true;
+                    pending = pending with { Unknown = true };
                 }
-                _pendingPhoneSync = pending.Attempt?.Abandoned != true && (warnings.Count > 0 || unknownSync) ? pending : null;
+                _pendingPhoneSync = warnings.Count > 0 || unknownSync ? pending : null;
             }
             _originalPhones = submittedPhones;
-            if (unknownSync && phoneIntent?.DurableSave != true)
-                await UnknownDraftOperationAsync(draftRevision);
+            if (unknownSync)
+                await PersistDraftAsync();
             else
-                await CommitKnownDraftOperationAsync(draftRevision);
+                await PersistDraftAsync();
             if (!IsCurrentSave(model, version))
                 return;
             await JS.InvokeVoidAsync("clayModelEquipmentForm.refreshOpener", _pageCts.Token);
@@ -3301,13 +3147,6 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         catch (OperationCanceledException) when (_disposed || !IsCurrentSave(model, version))
         {
         }
-        catch (EquipmentOperationException ex) when (ex.Phase == EquipmentWritePhase.Unknown)
-        {
-            if (!IsCurrentSave(model, version))
-                return;
-            await UnknownDraftOperationAsync(draftRevision);
-            _validationMessage = "Результат сохранения оборудования неизвестен. Автоматический повтор не выполняется; обновите форму и сверьте данные.";
-        }
         catch (EquipmentOperationException ex)
         {
             if (!IsCurrentSave(model, version))
@@ -3319,7 +3158,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             }
             else
             {
-                await RejectDraftOperationAsync(draftRevision);
+                await PersistDraftAsync();
                 _validationMessage = ex.Message;
             }
         }
@@ -3331,14 +3170,9 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             {
                 _validationMessage = "Оборудование сохранено, но последующее действие не выполнено. Повторяйте только обновление данных.";
             }
-            else if (IsUnknownWriteException(ex))
-            {
-                await UnknownDraftOperationAsync(draftRevision);
-                _validationMessage = "Результат сохранения оборудования неизвестен. Автоматический повтор не выполняется; обновите форму и сверьте данные.";
-            }
             else
             {
-                await RejectDraftOperationAsync(draftRevision);
+                await PersistDraftAsync();
                 _validationMessage = "Оборудование не сохранено. Подробности — в сообщении базы данных.";
             }
         }
@@ -3361,7 +3195,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             if (IsCurrentSave(model, version))
             {
                 if (!writeCommitted)
-                    await RejectDraftOperationAsync(draftRevision);
+                    await PersistDraftAsync();
                 _validationMessage = writeCommitted
                     ? $"Оборудование сохранено, но экран не обновлён: {ex.Message}"
                     : ex.Message;
@@ -3397,12 +3231,10 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         _saving = true;
         _validationMessage = null;
         StateHasChanged();
-        long? draftRevision = null;
         var knownCompletion = false;
         try
         {
             await Task.Delay(100);
-            draftRevision = await BeginDraftOperationAsync("retry-phone-sync");
             PhoneSyncAttempt? attempt = null;
             List<(PhoneSyncOperation Operation, string? Error, bool Unknown)> errors;
             if (pending.Attempt is not null)
@@ -3434,13 +3266,13 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
                 }
                 : null;
             if (unknown)
-                await UnknownDraftOperationAsync(draftRevision);
+                await PersistDraftAsync();
             else if (planningError is not null)
-                await RejectDraftOperationAsync(draftRevision);
+                await PersistDraftAsync();
             else
             {
                 knownCompletion = true;
-                await CommitKnownDraftOperationAsync(draftRevision);
+                await PersistDraftAsync();
             }
             if (!IsCurrentSave(model, version))
                 return false;
@@ -3462,13 +3294,11 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         }
         catch (Exception ex) when (ex is JSException or JSDisconnectedException)
         {
-            if (draftRevision is not null)
-                _draftOperationUnresolved = true;
             if (!knownCompletion && _pendingPhoneSync is not null)
                 _pendingPhoneSync = _pendingPhoneSync with { Unknown = true, UnknownMessage = ex.Message };
             if (IsCurrentSave(model, version))
                 _warningMessage = knownCompletion
-                    ? "Исход АТС получен. Повторите завершение журнала через «Обновить»."
+                    ? "Результат АТС получен. Обновите данные формы."
                     : "Канал хранилища потерян. Результат повторной команды не подтверждён. Новый вызов АТС заблокирован до сверки.";
             return false;
         }
@@ -3476,34 +3306,27 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
         {
             return false;
         }
-        catch (EquipmentOperationException ex) when (ex.Phase == EquipmentWritePhase.Unknown)
-        {
-            await UnknownDraftOperationAsync(draftRevision);
-            if (IsCurrentSave(model, version))
-                _warningMessage = "Результат повторной синхронизации АТС неизвестен. Автоматический повтор не выполняется; сверьте состояние.";
-            return false;
-        }
         catch (EquipmentOperationException ex)
         {
-            await RejectDraftOperationAsync(draftRevision);
+            await PersistDraftAsync();
             if (IsCurrentSave(model, version))
                 _warningMessage = $"Телефонные связи сохранены, синхронизация не выполнена: {ex.Message}";
             return false;
         }
         catch (Microsoft.Data.SqlClient.SqlException)
         {
-            await UnknownDraftOperationAsync(draftRevision);
+            await PersistDraftAsync();
             if (IsCurrentSave(model, version))
-                _warningMessage = "Результат повторной синхронизации АТС неизвестен. Автоматический повтор не выполняется; сверьте состояние.";
+                _warningMessage = "Повторная синхронизация АТС не выполнена. Подробности — в сообщении базы данных.";
             return false;
         }
         catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
         {
             if (!knownCompletion)
-                await RejectDraftOperationAsync(draftRevision);
+                await PersistDraftAsync();
             if (IsCurrentSave(model, version))
                 _warningMessage = knownCompletion
-                    ? "Исход АТС получен. Повторите завершение журнала через «Обновить»."
+                    ? "Результат АТС получен. Обновите данные формы."
                     : $"Телефонные связи сохранены, синхронизация не выполнена: {ex.Message} Повторите через «Применить».";
             return false;
         }
@@ -3519,18 +3342,13 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
 
     private async Task ReconcilePendingPhoneSyncAsync()
     {
-        if (PendingSavedAts is not null)
-        {
-            await ReconcileSavedAtsAsync();
-            return;
-        }
         if (ConfigureNeedsReconciliation)
         {
             await ReconcileConfigureAsync();
             StateHasChanged();
             return;
         }
-        if (_draftOperationUnresolved && _phoneSyncCheckpoint is not null)
+        if (_phoneSyncCheckpoint is not null)
         {
             _warningMessage = PhoneSyncCheckpointMessage();
             StateHasChanged();
@@ -3572,15 +3390,8 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
             {
                 _warningMessage = "Read-only сверка завершена. Можно повторить только подтверждённые Failed/NotSent операции через «Применить».";
             }
-            else if (_draftOperationUnresolved &&
-                (_draftOperation is null || _draftOperation.AttemptId != _locallyConfirmedAttemptId))
-            {
-                _warningMessage = "Состояние связей совпадает. Для закрытия операции требуется её серверное подтверждение.";
-            }
             else
             {
-                if (_draftOperationUnresolved && _draftOperation is { } confirmed)
-                    await CommitKnownDraftOperationAsync(confirmed.Revision);
                 _pendingPhoneSync = null;
                 _warningMessage = null;
                 ShowStatus("Read-only сверка завершена. Повторная ATS-команда не выполнялась.");
@@ -4160,7 +3971,7 @@ public partial class EquipmentForm : IDisposable, IAsyncDisposable
                         await DiscardDraftScopeAsync(draftScope);
                     else
                         await OpenDraftScopeAsync(MainDraftScope);
-                    if (keepUnrestored || _draftOperationUnresolved && draftScope == _draftOperationScope)
+                    if (keepUnrestored)
                         _restoredEditorState = editorContext?.CaptureDraftState() ?? _restoredEditorState;
                     else
                     {

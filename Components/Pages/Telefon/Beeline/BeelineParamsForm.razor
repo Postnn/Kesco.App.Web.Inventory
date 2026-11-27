@@ -15,7 +15,7 @@
             <ClayToolbarButton Options="Ok" Disabled="@(Busy || Loading || _openingSim || ConfirmedCleanupPending || _contract is null || Draft is null || Dirty && !CanSave)"
                                OnClick="@(() => SaveAsync(true))" />
             <ClayToolbarButton Options="SaveButton" Disabled="@(!CanSave)" OnClick="@(() => SaveAsync(false))" />
-            <ClayToolbarButton Options="ReloadButton" Disabled="@(!(CanRefresh || CanRetryRecovery) || _openingSim || _retryingRecovery || _checkingServerJournal)" OnClick="RefreshBeelineAsync" />
+            <ClayToolbarButton Options="ReloadButton" Disabled="@(!(CanRefresh || CanRetryRecovery) || _openingSim || _retryingRecovery)" OnClick="RefreshBeelineAsync" />
             <ClayToolbarButton Options="CancelButton" Disabled="@(Busy || Loading || _openingSim || _retryingRecovery)" OnClick="CancelBeelineAsync" />
         </ClayToolbar>
     </Toolbar>
@@ -28,10 +28,6 @@
         @if (Message is not null)
         {
             <MudAlert Severity="Severity.Warning" Class="mb-2">@Message</MudAlert>
-        }
-        @if (!Loading && ServerJournalMessage is { } journalMessage)
-        {
-            <MudAlert Severity="@(ServerJournalBlocked ? Severity.Warning : Severity.Info)" Class="mb-2">@journalMessage</MudAlert>
         }
         @if (Validation.Count != 0)
         {
@@ -55,7 +51,7 @@
             }
 
             var baseline = AcceptedDraftBaseline;
-            <ClayEditorFocusScope @key="RouteKey" Label="Параметры договора Билайн" Ready="@(Editable && CanCommit && !ServerJournalBlocked && !_openingSim)" AdvanceOnEnter="true">
+            <ClayEditorFocusScope @key="RouteKey" Label="Параметры договора Билайн" Ready="@(Editable && CanCommit && !_openingSim)" AdvanceOnEnter="true">
                 <div class="d-flex flex-column gap-2" data-draft-scope="main" inert="@(DraftInputSuppressed || _openingSim)">
                     <ClayTextBox Options="BaseNumberOptions" Value="@contract.BaseNumber" />
                     @if (contract.MobileBudget)
@@ -105,21 +101,6 @@
                 <ClayTextBox Options="RecoveryEmailOptions" Value="@Draft?.EmailManager" />
                 <div>
                 </div>
-                @if (HasUnknownSubmittedSnapshot)
-                {
-                    <ClayToolbarButton Options="SubmittedSnapshotButton" Disabled="@Busy" OnClick="ShowSubmittedRecoveryAsync" />
-                    @if (_submittedRecovery is { } submitted && _submittedIdentity == SubmittedSnapshotIdentity)
-                    {
-                        <section aria-label="Снимок незавершённой попытки" data-testid="submitted-attempt">
-                            <div>Time zone: @submitted.TimeZone</div><div>Email менеджера: @submitted.EmailManager</div>
-                            <MudText>Журнал не подтверждает отправку или выполнение операции.</MudText>
-                        </section>
-                    }
-                    else if (_submittedUnavailable)
-                    {
-                        <MudText>Не удалось подтвердить доступ к снимку этой попытки.</MudText>
-                    }
-                }
                 @if (_freshRecovery is { } fresh)
                 {
                     <div>Актуальные параметры для сверки:</div>

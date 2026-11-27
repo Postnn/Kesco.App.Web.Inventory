@@ -15,8 +15,7 @@ public partial class EquipmentIns
     private CreationCloseRequest? _pendingCreationClose;
     private bool _creationDraftClosed;
 
-    private bool PreservesCreationOutcome =>
-        _creationUncertain || _creationAttempt is not null || _notSentCreationId is not null || _creationResult is not null;
+    private bool PreservesCreationOutcome => _creationUncertain || _creationResult is not null;
 
     private bool HasUnacceptedCreationInput =>
         IsModified || _draftNeedsReview || _creationRawPending || _restoreCreationRaw || _editorSaveFailed || _retainedCreationInput;
@@ -59,12 +58,6 @@ public partial class EquipmentIns
     {
         if (_disposed || _loading || _saving || _applyingCreationRaw || _pendingCreationClose is not null || token.IsCancellationRequested)
             return;
-
-        if (_creationResult is not null && (!_receiptPersisted || _creationLateEditorPayload is not null))
-        {
-            _validationMessage = "Нажмите «Обновить», чтобы проверить результат создания оборудования.";
-            return;
-        }
 
         if (_creationDraft is not { } registration)
         {
@@ -114,7 +107,7 @@ public partial class EquipmentIns
             CreationReset? fresh = null;
             if (choice == ClayEditorCancelChoice.ResetAndStay)
             {
-                if (scope.HasOperation || PreservesCreationOutcome)
+                if (PreservesCreationOutcome)
                 {
                     _validationMessage = "Сначала проверьте исход предыдущего создания.";
                     return;

@@ -11,7 +11,7 @@ namespace Kesco.App.Web.Inventory.Components.Pages.Maintenance;
 
 public partial class MaintenancePage
 {
-    private bool HasUnsentConfirmation => _pendingConfirmation is > 0 && !RecoveryRequired;
+    private bool HasUnsentConfirmation => _pendingConfirmation is > 0;
 
     private async Task CancelPendingAsync()
     {
@@ -69,7 +69,6 @@ public partial class MaintenancePage
         {
             var scope = await registration.ReadEditorScopeAsync(ConfirmationScope, token);
             if (!Current()) return false;
-            if (scope.HasOperation) return true;
 
             var dialog = await Dialogs.ShowExAsync<ClayEditorCancelDialog>("Отмена вопроса", new DialogParameters(),
                 new DialogOptionsEx { DragMode = MudDialogDragMode.Simple, CloseButton = true, CloseOnEscapeKey = true });
